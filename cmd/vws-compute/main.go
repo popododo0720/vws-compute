@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"google.golang.org/grpc"
 
@@ -65,7 +66,7 @@ func run(ctx context.Context, listen, db string) error {
 
 	select {
 	case <-ctx.Done():
-		srv.GracefulStop()
+		stopServer(srv, shutdownGrace)
 		err = <-served
 	case err = <-served:
 	}
@@ -74,6 +75,27 @@ func run(ctx context.Context, listen, db string) error {
 		err = errors.Join(err, rerr)
 	}
 	return err
+}
+
+// shutdownGrace is how long Stop waits for in-flight RPCs before it cancels
+// them. WaitOperation may block for up to a minute, and GracefulStop does
+// not cancel handlers.
+const shutdownGrace = 2 * time.Second
+
+func stopServer(srv *grpc.Server, grace time.Duration) {
+	stopped := make(chan struct{})
+	go func() {
+		srv.GracefulStop()
+		close(stopped)
+	}()
+	timer := time.NewTimer(grace)
+	defer timer.Stop()
+	select {
+	case <-stopped:
+	case <-timer.C:
+		srv.Stop()
+		<-stopped
+	}
 }
 
 func open(ctx context.Context, path string) (store.Repository, error) {
