@@ -123,8 +123,8 @@ type Operation struct {
 // the ID from env.Rand and takes Target and TargetGeneration from ch.Spec,
 // so the operation cannot point at a different resource than the change.
 func NewOperation(env Env, req RequestID, in Intent, ch Change) (Operation, error) {
-	if req.IsZero() || in == nil || ch.Spec == nil {
-		return Operation{}, Errorf(CodeInternal, "operation needs a request id, an intent, and a change")
+	if req.IsZero() || in == nil || ch.Spec == nil || env.Now.IsZero() {
+		return Operation{}, Errorf(CodeInternal, "operation needs a request id, an intent, a change, and a time")
 	}
 	id, err := newOperationID(env.Rand)
 	if err != nil {
@@ -144,8 +144,14 @@ func NewOperation(env Env, req RequestID, in Intent, ch Change) (Operation, erro
 
 func (o Operation) State() OperationState { return o.state }
 
-// Failure is non-nil iff State is OperationFailed.
-func (o Operation) Failure() *Failure { return o.failure }
+// Failure is non-nil iff State is OperationFailed. It returns a copy.
+func (o Operation) Failure() *Failure {
+	if o.failure == nil {
+		return nil
+	}
+	f := *o.failure
+	return &f
+}
 
 // SettledAt is non-zero iff State is terminal.
 func (o Operation) SettledAt() time.Time { return o.settledAt }
