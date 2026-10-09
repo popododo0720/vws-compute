@@ -229,6 +229,8 @@ func (s *Store) put(spec compute.Spec) error {
 		if !ok {
 			row = &instanceRow{}
 			s.instances[spec.ID.String()] = row
+		} else if spec.Generation > row.spec.Generation {
+			row.status.Retry = compute.Retry{}
 		}
 		row.spec = cloneInstanceSpec(spec)
 	case compute.ImageSpec:
@@ -236,6 +238,8 @@ func (s *Store) put(spec compute.Spec) error {
 		if !ok {
 			row = &imageRow{}
 			s.images[spec.ID.String()] = row
+		} else if spec.Generation > row.spec.Generation {
+			row.status.Retry = compute.Retry{}
 		}
 		row.spec = spec
 	case compute.KeyPairSpec:
@@ -319,14 +323,24 @@ func (s *Store) CommitImageStatus(_ context.Context, id compute.ImageID, st comp
 func (s *Store) Unconverged(_ context.Context, now time.Time) ([]compute.Ref, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.laggingLocked(func(retry compute.Retry) bool { return retry.Due(now) }), nil
+}
+
+func (s *Store) Lagging(context.Context) ([]compute.Ref, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.laggingLocked(func(compute.Retry) bool { return true }), nil
+}
+
+func (s *Store) laggingLocked(include func(compute.Retry) bool) []compute.Ref {
 	var inst, img []string
 	for id, row := range s.instances {
-		if row.spec.Generation > row.status.Observed.Generation && row.status.Retry.Due(now) {
+		if row.spec.Generation > row.status.Observed.Generation && include(row.status.Retry) {
 			inst = append(inst, id)
 		}
 	}
 	for id, row := range s.images {
-		if row.spec.Generation > row.status.Observed.Generation && row.status.Retry.Due(now) {
+		if row.spec.Generation > row.status.Observed.Generation && include(row.status.Retry) {
 			img = append(img, id)
 		}
 	}
@@ -339,7 +353,7 @@ func (s *Store) Unconverged(_ context.Context, now time.Time) ([]compute.Ref, er
 	for _, id := range img {
 		refs = append(refs, compute.Ref{Kind: compute.KindImage, ID: id})
 	}
-	return refs, nil
+	return refs
 }
 
 func (r *instanceRow) read() compute.Instance {

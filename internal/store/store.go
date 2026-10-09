@@ -152,9 +152,12 @@ type StatusStore interface {
 
 	// Unconverged lists, instances first and each kind by ID, every instance
 	// and image whose spec generation is ahead of its observed generation
-	// and whose retry time is not after now. After a restart this is the
-	// reconciler's entire recovery state.
+	// and whose retry time is not after now.
 	Unconverged(ctx context.Context, now time.Time) ([]compute.Ref, error)
+	// Lagging is Unconverged without the retry-time filter. The reconciler
+	// uses it to hold a destroy back while a capture that is still backing
+	// off still needs the source machine.
+	Lagging(ctx context.Context) ([]compute.Ref, error)
 }
 
 // CheckObservation is the rule every Commit*Status applies before it writes:

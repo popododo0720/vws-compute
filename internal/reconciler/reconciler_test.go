@@ -227,11 +227,12 @@ func TestConcurrentRebootsCoalesceIntoOne(t *testing.T) {
 		id := h.running()
 		first := h.submit("reboot-1", ok(compute.NewRebootInstance(id.String())))
 		second := h.submit("reboot-2", ok(compute.NewRebootInstance(id.String())))
-		if second.TargetGeneration != first.TargetGeneration {
-			h.t.Fatalf("second reboot targets generation %d, want joined %d", second.TargetGeneration, first.TargetGeneration)
+		if second.TargetGeneration != first.TargetGeneration+1 {
+			h.t.Fatalf("second reboot targets generation %d, want %d", second.TargetGeneration, first.TargetGeneration+1)
 		}
 		h.sweep()
-		h.wantStates(compute.OperationSucceeded, first, second)
+		h.wantStates(compute.OperationSuperseded, first)
+		h.wantStates(compute.OperationSucceeded, second)
 		if got := h.agent.Reboots(id.String()); got != 1 {
 			h.t.Fatalf("reboots = %d, want 1", got)
 		}
@@ -359,6 +360,95 @@ func TestImageCaptureAndDeregister(t *testing.T) {
 			h.t.Fatalf("lifecycle = %d, want deregistered", lc)
 		}
 	})
+}
+
+func TestCaptureBeforeTerminate(t *testing.T) {
+	eachStore(t, func(h *harness) {
+		id := h.running()
+		capture := h.submit("capture", ok(compute.NewCreateImage(id.String(), "snapshot-1")))
+		term := h.submit("term", ok(compute.NewTerminateInstance(id.String())))
+		h.sweep()
+		h.wantStates(compute.OperationSucceeded, capture, term)
+		snap := ok(compute.ParseImageID(capture.Target.ID))
+		if !h.agent.HasImage(snap.String()) {
+			h.t.Fatal("capture was lost because the instance was destroyed first")
+		}
+		if _, exists := h.agent.Machine(id.String()); exists {
+			h.t.Fatal("machine still exists after terminate")
+		}
+	})
+}
+
+func TestLaunchBeforeDeregister(t *testing.T) {
+	eachStore(t, func(h *harness) {
+		img := h.image()
+		run := h.submit("run", ok(compute.NewRunInstance(img.String(), "vws.small", "")))
+		dereg := h.submit("dereg", ok(compute.NewDeregisterImage(img.String())))
+		h.sweep()
+		h.wantStates(compute.OperationSucceeded, run, dereg)
+		id := run.Target.ID
+		if _, exists := h.agent.Machine(id); !exists {
+			h.t.Fatal("instance was not created before its image was deregistered")
+		}
+		if h.agent.HasImage(img.String()) {
+			h.t.Fatal("image artifact still present after deregister")
+		}
+	})
+}
+
+func TestNewGenerationDoesNotInheritBackoff(t *testing.T) {
+	eachStore(t, func(h *harness) {
+		id := h.running()
+		h.agent.Fail(id.String(), errors.New("agent unreachable"))
+		stop := h.submit("stop", ok(compute.NewStopInstance(id.String())))
+		h.sweep()
+		h.wantStates(compute.OperationPending, stop)
+
+		term := h.submit("term", ok(compute.NewTerminateInstance(id.String())))
+		h.sweep()
+		h.wantStates(compute.OperationSuperseded, stop)
+		h.wantStates(compute.OperationSucceeded, term)
+		if _, exists := h.agent.Machine(id.String()); exists {
+			h.t.Fatal("terminate waited out the previous backoff")
+		}
+	})
+}
+
+func TestRestartRebuildsTheAgent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.db")
+	clk := &clock{t: t0}
+	h := newHarness(t, openSQLite(t, path), fakeagent.New(), clk)
+	id := h.running()
+	img := h.instance(id).Spec.Image
+	if err := h.repo.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	repo := openSQLite(t, path)
+	defer repo.Close()
+	agent := fakeagent.New()
+	if err := reconciler.New(repo, agent, reconciler.WithClock(clk.Now)).Restore(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !agent.HasImage(img.String()) {
+		t.Fatal("restore did not put the image artifact back")
+	}
+	m, exists := agent.Machine(id.String())
+	if !exists || m.Power != hypervisor.PowerOn {
+		t.Fatalf("machine after restore = %+v exists=%v, want powered on", m, exists)
+	}
+
+	ctl := controller.New(repo, controller.WithClock(clk.Now))
+	run, err := ctl.Submit(context.Background(), ok(compute.ParseRequestID("run-2")), ok(compute.NewRunInstance(img.String(), "vws.small", "")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := reconciler.New(repo, agent, reconciler.WithClock(clk.Now)).Sweep(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := ok(repo.Operation(context.Background(), run.Operation.ID)).State(); got != compute.OperationSucceeded {
+		t.Fatalf("run after restore = %s, want Succeeded", got)
+	}
 }
 
 func TestRestartResumesFromTheRepositoryAlone(t *testing.T) {

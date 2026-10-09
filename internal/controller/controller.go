@@ -54,6 +54,9 @@ type Receipt struct {
 	// operation was inserted. A replay of the same request returns nil: the
 	// key was never stored.
 	PrivateKey *compute.PrivateKey
+	// KeyPair is set on that same inserting call, so the handler can return
+	// the key without a second read. A failed read must not drop PrivateKey.
+	KeyPair *compute.KeyPair
 }
 
 // Submit admits in under request id req.
@@ -101,7 +104,11 @@ func (c *Controller) Submit(ctx context.Context, req compute.RequestID, in compu
 		if !got.State().Terminal() {
 			c.kick()
 		}
-		return Receipt{Operation: got, PrivateKey: ch.Secret}, nil
+		rc := Receipt{Operation: got, PrivateKey: ch.Secret}
+		if spec, ok := ch.Spec.(compute.KeyPairSpec); ok && ch.Secret != nil {
+			rc.KeyPair = &compute.KeyPair{Spec: spec}
+		}
+		return rc, nil
 	}
 	return Receipt{}, compute.Errorf(compute.CodeAborted,
 		"request %s lost %d races with concurrent changes; retry with the same request id", req, MaxReplans+1)

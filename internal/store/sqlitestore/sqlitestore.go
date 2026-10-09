@@ -41,6 +41,18 @@ func Open(ctx context.Context, path string) (*Store, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("sqlitestore: open %s: %w", path, err)
 	}
+	// CREATE TABLE IF NOT EXISTS does not write when the schema is already
+	// there, so it leaves only a shared lock. BEGIN EXCLUSIVE takes the write
+	// lock, and locking_mode=EXCLUSIVE keeps it until Close. A second Open
+	// then fails instead of serving beside the first.
+	if _, err := db.ExecContext(ctx, `BEGIN EXCLUSIVE`); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("sqlitestore: lock %s: %w", path, err)
+	}
+	if _, err := db.ExecContext(ctx, `COMMIT`); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("sqlitestore: lock %s: %w", path, err)
+	}
 	return &Store{db: db}, nil
 }
 
@@ -291,7 +303,8 @@ func putSpec(ctx context.Context, tx *sql.Tx, spec compute.Spec, cur int64) erro
 				s.Type.Name(), keyName, keyPublic, int64(s.Power), int64(s.RebootEpoch))
 		} else {
 			res, err = tx.ExecContext(ctx, `UPDATE instances SET generation = ?, changed_at = ?, image_id = ?,
-				instance_type = ?, key_name = ?, key_public = ?, power = ?, reboot_epoch = ?
+				instance_type = ?, key_name = ?, key_public = ?, power = ?, reboot_epoch = ?,
+				attempts = 0, retry_at = 0, last_error = ''
 				WHERE id = ? AND generation = ?`,
 				s.Generation, nanos(s.ChangedAt), s.Image.String(), s.Type.Name(), keyName, keyPublic,
 				int64(s.Power), int64(s.RebootEpoch), s.ID.String(), cur)
@@ -313,7 +326,9 @@ func putSpec(ctx context.Context, tx *sql.Tx, spec compute.Spec, cur int64) erro
 				srcURL, srcInstance, boolInt(s.Deregistered))
 		} else {
 			res, err = tx.ExecContext(ctx, `UPDATE images SET generation = ?, changed_at = ?, name = ?,
-				source_url = ?, source_instance_id = ?, deregistered = ? WHERE id = ? AND generation = ?`,
+				source_url = ?, source_instance_id = ?, deregistered = ?,
+				attempts = 0, retry_at = 0, last_error = ''
+				WHERE id = ? AND generation = ?`,
 				s.Generation, nanos(s.ChangedAt), s.Name.String(), srcURL, srcInstance, boolInt(s.Deregistered),
 				s.ID.String(), cur)
 		}
@@ -431,6 +446,14 @@ func (s *Store) CommitImageStatus(ctx context.Context, id compute.ImageID, st co
 }
 
 func (s *Store) Unconverged(ctx context.Context, now time.Time) ([]compute.Ref, error) {
+	return s.lagging(ctx, `generation > observed_generation AND retry_at <= ?`, nanos(now))
+}
+
+func (s *Store) Lagging(ctx context.Context) ([]compute.Ref, error) {
+	return s.lagging(ctx, `generation > observed_generation`)
+}
+
+func (s *Store) lagging(ctx context.Context, where string, args ...any) ([]compute.Ref, error) {
 	scanID := func(sc scanner) (string, error) {
 		var id string
 		return id, sc.Scan(&id)
@@ -440,8 +463,7 @@ func (s *Store) Unconverged(ctx context.Context, now time.Time) ([]compute.Ref, 
 		table string
 		kind  compute.Kind
 	}{{"instances", compute.KindInstance}, {"images", compute.KindImage}} {
-		ids, err := collect(ctx, s.db, scanID, `SELECT id FROM `+t.table+`
-			WHERE generation > observed_generation AND retry_at <= ? ORDER BY id`, nanos(now))
+		ids, err := collect(ctx, s.db, scanID, `SELECT id FROM `+t.table+` WHERE `+where+` ORDER BY id`, args...)
 		if err != nil {
 			return nil, err
 		}

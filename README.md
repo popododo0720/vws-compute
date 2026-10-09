@@ -12,7 +12,7 @@ The API is defined in `proto/vws/compute/v1/compute.proto`. Contributor rules ar
 go run ./cmd/vws-compute -listen 127.0.0.1:50051
 ```
 
-`-db` selects storage. Empty, the default, keeps all state in memory. A path keeps desired state, observed status, and operations in that SQLite file, and one process holds the file at a time. The binary drives an in-memory fake agent, so its machines and image artifacts do not survive a restart.
+`-db` selects storage. Empty, the default, keeps all state in memory. A path keeps desired state, observed status, and operations in that SQLite file, and one process holds the file at a time. The binary drives an in-memory fake agent. On startup it re-applies the stored specs, so a restart rebuilds that agent's machines and image artifacts from the repository.
 
 ## Test
 

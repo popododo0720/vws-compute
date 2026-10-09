@@ -88,7 +88,7 @@ message RebootInstanceRequest {
 
 message RebootInstanceResponse {
   // SUCCEEDED once the machine has rebooted at least once after this request
-  // was accepted. Concurrent reboot requests coalesce into one reboot.
+  // was accepted. A newer reboot accepted before that supersedes this one.
   Operation operation = 1;
 }
 

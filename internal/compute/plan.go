@@ -114,9 +114,10 @@ func (in setPower) plan(v View, env Env) (Change, error) {
 	return Change{Spec: next, Write: true}, nil
 }
 
-// plan requires desired power Running. A reboot that is still unapplied
-// (spec epoch ahead of the applied epoch) absorbs this one; otherwise the
-// epoch and generation advance.
+// plan requires desired power Running. Every accepted reboot advances the
+// epoch and the generation. The agent still reboots once per sweep, however
+// far the epoch is behind, so two reboots accepted before it runs become one
+// reboot and the earlier operation is superseded.
 func (in rebootInstance) plan(v View, env Env) (Change, error) {
 	inst, err := v.Instance(in.instance)
 	if err != nil {
@@ -128,9 +129,6 @@ func (in rebootInstance) plan(v View, env Env) (Change, error) {
 		return Change{}, Errorf(CodeFailedPrecondition, "instance %s is terminated", in.instance)
 	case PowerStopped:
 		return Change{}, Errorf(CodeFailedPrecondition, "instance %s is stopped", in.instance)
-	}
-	if !inst.Status.Observed.Parked(cur.Generation) && cur.RebootEpoch > inst.Status.RebootEpoch {
-		return Change{Spec: cur}, nil
 	}
 	next := cur
 	next.RebootEpoch++

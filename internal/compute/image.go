@@ -58,14 +58,16 @@ const (
 	ImageDeregistered
 )
 
-// Lifecycle derives the caller-visible state.
+// Lifecycle derives the caller-visible state. A parked generation is Failed
+// even when the desired spec is already deregistered, so a capture or a
+// delete that gave up is not reported as done.
 func (i Image) Lifecycle() ImageLifecycle {
 	switch {
-	case i.Spec.Deregistered:
-		return ImageDeregistered
 	case i.Status.Observed.Parked(i.Spec.Generation):
 		return ImageFailed
-	case i.Status.Observed.Generation == i.Spec.Generation && i.Status.Present:
+	case i.Spec.Deregistered && i.Status.Observed.Generation == i.Spec.Generation:
+		return ImageDeregistered
+	case !i.Spec.Deregistered && i.Status.Observed.Generation == i.Spec.Generation && i.Status.Present:
 		return ImageAvailable
 	}
 	return ImagePending

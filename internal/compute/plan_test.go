@@ -247,9 +247,9 @@ func TestPlanTransitions(t *testing.T) {
 				t.Fatalf("epoch = %d, want 1", e)
 			}
 		}},
-		{"reboot joins unapplied reboot", newView().with(rebootPending), ok(compute.NewRebootInstance(instanceID)), false, 2, compute.OperationPending, func(t *testing.T, s compute.Spec) {
-			if e := s.(compute.InstanceSpec).RebootEpoch; e != 1 {
-				t.Fatalf("epoch = %d, want 1", e)
+		{"reboot during an unapplied reboot bumps again", newView().with(rebootPending), ok(compute.NewRebootInstance(instanceID)), true, 3, compute.OperationPending, func(t *testing.T, s compute.Spec) {
+			if e := s.(compute.InstanceSpec).RebootEpoch; e != 2 {
+				t.Fatalf("epoch = %d, want 2", e)
 			}
 		}},
 		{"deregister available bumps", newView().with(availableImage()), ok(compute.NewDeregisterImage(imageID)), true, 2, compute.OperationPending, nil},

@@ -368,6 +368,9 @@ func unconverged(f fixture) {
 	}
 	want(t0, instanceID(1).Ref(), imageID(1).Ref())
 	want(t0.Add(10*time.Second), instanceID(1).Ref(), instanceID(4).Ref(), imageID(1).Ref())
+	if got := ok(f.s.Lagging(ctx)); !reflect.DeepEqual(got, []compute.Ref{instanceID(1).Ref(), instanceID(4).Ref(), imageID(1).Ref()}) {
+		f.t.Fatalf("Lagging = %v, want the backed-off instance included", got)
+	}
 
 	f.observeInstance(1, compute.InstanceStatus{Observed: compute.Observed{Generation: 1}, UpdatedAt: t1})
 	f.observeInstance(4, compute.InstanceStatus{Observed: compute.Observed{Generation: 1}, UpdatedAt: t1})

@@ -72,7 +72,13 @@ func (r *Reconciler) Kick() {
 }
 
 // Run sweeps until ctx ends. Call it from exactly one goroutine.
+// The first thing it does is re-apply every converged spec, so an agent
+// that lost its memory (the in-memory fake, after a restart) catches up
+// to the repository before new work is accepted.
 func (r *Reconciler) Run(ctx context.Context) error {
+	if err := r.Restore(ctx); err != nil && ctx.Err() == nil {
+		r.log.Warn("restore agent", "err", err)
+	}
 	tick := time.NewTicker(r.interval)
 	defer tick.Stop()
 	for {
@@ -90,19 +96,228 @@ func (r *Reconciler) Run(ctx context.Context) error {
 
 // Sweep converges every resource that is unconverged and due, one at a time.
 // A failure on one resource does not stop the others.
+//
+// Order is load-bearing. A capture runs before the source instance is
+// destroyed, and a launch runs before its image is deregistered. One global
+// kind order cannot do both.
 func (r *Reconciler) Sweep(ctx context.Context) error {
-	refs, err := r.store.Unconverged(ctx, r.now())
+	due, err := r.store.Unconverged(ctx, r.now())
+	if err != nil {
+		return err
+	}
+	lagging, err := r.store.Lagging(ctx)
+	if err != nil {
+		return err
+	}
+	held, err := r.load(ctx, lagging)
 	if err != nil {
 		return err
 	}
 	var errs []error
-	for _, ref := range refs {
+	step := func(ref compute.Ref) error {
 		if err := r.converge(ctx, ref); err != nil {
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
 			errs = append(errs, fmt.Errorf("%s: %w", ref, err))
+			return nil
 		}
+		held.drop(ref)
+		return nil
+	}
+	for _, ref := range due {
+		if !held.creating(ref) {
+			continue
+		}
+		if err := step(ref); err != nil {
+			return err
+		}
+	}
+	for _, ref := range due {
+		if !held.launching(ref) {
+			continue
+		}
+		if err := step(ref); err != nil {
+			return err
+		}
+	}
+	for _, ref := range due {
+		if !held.terminating(ref) || held.captureNeeds(ref.ID) {
+			continue
+		}
+		if err := step(ref); err != nil {
+			return err
+		}
+	}
+	for _, ref := range due {
+		if !held.removing(ref) || held.launchNeeds(ref.ID) {
+			continue
+		}
+		if err := step(ref); err != nil {
+			return err
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// held is the lagging resources a sweep must not destroy out from under.
+type held struct {
+	inst map[string]compute.Instance
+	img  map[string]compute.Image
+}
+
+func (r *Reconciler) load(ctx context.Context, refs []compute.Ref) (held, error) {
+	h := held{inst: map[string]compute.Instance{}, img: map[string]compute.Image{}}
+	for _, ref := range refs {
+		switch ref.Kind {
+		case compute.KindInstance:
+			id, err := compute.ParseInstanceID(ref.ID)
+			if err != nil {
+				return held{}, err
+			}
+			inst, err := r.store.Instance(ctx, id)
+			if err != nil {
+				return held{}, err
+			}
+			h.inst[ref.ID] = inst
+		case compute.KindImage:
+			id, err := compute.ParseImageID(ref.ID)
+			if err != nil {
+				return held{}, err
+			}
+			img, err := r.store.Image(ctx, id)
+			if err != nil {
+				return held{}, err
+			}
+			h.img[ref.ID] = img
+		default:
+			return held{}, compute.Errorf(compute.CodeInternal, "cannot converge %s", ref)
+		}
+	}
+	return h, nil
+}
+
+func (h held) drop(ref compute.Ref) {
+	delete(h.inst, ref.ID)
+	delete(h.img, ref.ID)
+}
+
+func (h held) creating(ref compute.Ref) bool {
+	img, ok := h.img[ref.ID]
+	return ok && !img.Spec.Deregistered
+}
+
+func (h held) launching(ref compute.Ref) bool {
+	inst, ok := h.inst[ref.ID]
+	return ok && inst.Spec.Power != compute.PowerTerminated
+}
+
+func (h held) terminating(ref compute.Ref) bool {
+	inst, ok := h.inst[ref.ID]
+	return ok && inst.Spec.Power == compute.PowerTerminated
+}
+
+func (h held) removing(ref compute.Ref) bool {
+	img, ok := h.img[ref.ID]
+	return ok && img.Spec.Deregistered
+}
+
+// captureNeeds reports whether a lagging capture still reads id's disk.
+// An instance that was never observed has no disk to capture, so it does
+// not hold its own terminate.
+func (h held) captureNeeds(id string) bool {
+	inst, ok := h.inst[id]
+	if !ok || inst.Status.Observed.Generation == 0 {
+		return false
+	}
+	for _, img := range h.img {
+		if img.Spec.Deregistered {
+			continue
+		}
+		src, ok := img.Spec.Source.(compute.FromInstance)
+		if ok && src.Instance.String() == id {
+			return true
+		}
+	}
+	return false
+}
+
+// launchNeeds reports whether a not-yet-created instance still needs image id.
+func (h held) launchNeeds(id string) bool {
+	for _, inst := range h.inst {
+		if inst.Spec.Power == compute.PowerTerminated || inst.Spec.Image.String() != id {
+			continue
+		}
+		if inst.Status.Observed.Generation == 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// Restore re-applies converged specs to the agent. It does not write the
+// store: the repository already says these resources match, and the agent
+// contract makes a second apply a no-op when the agent still has them.
+func (r *Reconciler) Restore(ctx context.Context) error {
+	var errs []error
+	if err := r.eachImage(ctx, func(img compute.Image) error {
+		if !img.Available() {
+			return nil
+		}
+		_, err := r.agent.ConvergeImage(ctx, imageSpec(img.Spec))
+		return err
+	}); err != nil {
+		errs = append(errs, err)
+	}
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	if err := r.eachInstance(ctx, func(inst compute.Instance) error {
+		if inst.Spec.Power == compute.PowerTerminated || inst.Lifecycle() == compute.InstanceError {
+			return nil
+		}
+		if inst.Status.Observed.Generation != inst.Spec.Generation {
+			return nil
+		}
+		return r.agent.ConvergeMachine(ctx, machineSpec(inst.Spec))
+	}); err != nil {
+		errs = append(errs, err)
+	}
+	return errors.Join(errs...)
+}
+
+func (r *Reconciler) eachInstance(ctx context.Context, fn func(compute.Instance) error) error {
+	return eachPage(ctx, func(after string) (store.Page[compute.Instance], error) {
+		return r.store.Instances(ctx, store.InstanceQuery{PageSize: store.MaxPageSize, After: after})
+	}, fn)
+}
+
+func (r *Reconciler) eachImage(ctx context.Context, fn func(compute.Image) error) error {
+	return eachPage(ctx, func(after string) (store.Page[compute.Image], error) {
+		return r.store.Images(ctx, store.ImageQuery{PageSize: store.MaxPageSize, After: after})
+	}, fn)
+}
+
+func eachPage[T any](ctx context.Context, page func(after string) (store.Page[T], error), fn func(T) error) error {
+	var errs []error
+	var after string
+	for {
+		p, err := page(after)
+		if err != nil {
+			return err
+		}
+		for _, item := range p.Items {
+			if err := fn(item); err != nil {
+				if ctx.Err() != nil {
+					return ctx.Err()
+				}
+				errs = append(errs, err)
+			}
+		}
+		if p.Next == "" {
+			break
+		}
+		after = p.Next
 	}
 	return errors.Join(errs...)
 }

@@ -30,6 +30,10 @@ Rules for anyone changing this repository, human or agent. A rule with an enforc
 | Transition rules live only in `compute.Plan`. Each intent carries its own `plan` method. | The compiler, because `Intent` is sealed by unexported methods |
 | Private keys are never stored. | `store.DesiredChange` has no field for one, `TestSchemaHasNoPrivateKeyColumn`, and `TestOnlyCreateKeyPairResponseCarriesAPrivateKey` |
 | Every repository behaves the same. | `storetest.Run`, called from both store test packages |
+| A capture finishes before its source instance is destroyed, and a launch finishes before its image is deregistered. | `TestCaptureBeforeTerminate` and `TestLaunchBeforeDeregister` |
+| A new desired generation does not wait out the previous retry. | `TestNewGenerationDoesNotInheritBackoff` |
+| A second process cannot open a SQLite file this process holds, including one that already has a schema. | `TestSecondOpenFails` |
+| Startup re-applies converged specs to the agent. | `TestRestartRebuildsTheAgent` |
 | A new RPC fails to build until it is served. | `server` embeds `UnsafeComputeServiceServer` |
 | Every mutating RPC takes `request_id` and returns an `Operation`. | `TestMutatingRPCsTakeRequestIDAndReturnAnOperation` |
 | The proto's first line is the move TODO. | `TestProtoStartsWithMoveTODO` |

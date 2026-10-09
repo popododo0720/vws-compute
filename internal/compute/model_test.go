@@ -84,7 +84,9 @@ func TestImageLifecycle(t *testing.T) {
 		{"pending", compute.ImageSpec{Generation: 1}, compute.ImageStatus{}, compute.ImagePending, false},
 		{"available", compute.ImageSpec{Generation: 1}, compute.ImageStatus{Observed: compute.Observed{Generation: 1}, Present: true}, compute.ImageAvailable, true},
 		{"failed", compute.ImageSpec{Generation: 1}, compute.ImageStatus{Observed: compute.Observed{Generation: 1, Failure: fail}}, compute.ImageFailed, false},
-		{"deregistering", compute.ImageSpec{Generation: 2, Deregistered: true}, compute.ImageStatus{Observed: compute.Observed{Generation: 1}, Present: true}, compute.ImageDeregistered, false},
+		{"deregistering", compute.ImageSpec{Generation: 2, Deregistered: true}, compute.ImageStatus{Observed: compute.Observed{Generation: 1}, Present: true}, compute.ImagePending, false},
+		{"deregistered", compute.ImageSpec{Generation: 2, Deregistered: true}, compute.ImageStatus{Observed: compute.Observed{Generation: 2}}, compute.ImageDeregistered, false},
+		{"failed deregister", compute.ImageSpec{Generation: 2, Deregistered: true}, compute.ImageStatus{Observed: compute.Observed{Generation: 2, Failure: fail}}, compute.ImageFailed, false},
 	}
 	for _, c := range cases {
 		img := compute.Image{Spec: c.spec, Status: c.status}

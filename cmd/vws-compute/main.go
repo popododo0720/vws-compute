@@ -1,8 +1,8 @@
 // Command vws-compute serves vws.compute.v1.ComputeService over gRPC.
 //
 // It runs the reconciler against the in-memory fake hypervisor agent. With
-// -db set, desired state, observed status, and operations persist in SQLite
-// across restarts. The fake agent's machines and image artifacts do not.
+// -db set, desired state, observed status, and operations persist in SQLite.
+// Startup re-applies those specs, so the fake agent is rebuilt after a restart.
 package main
 
 import (

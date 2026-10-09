@@ -162,6 +162,14 @@ func (s *server) CreateKeyPair(ctx context.Context, r *pb.CreateKeyPairRequest) 
 	if err != nil {
 		return nil, err
 	}
+	resp := &pb.CreateKeyPairResponse{Operation: operationPB(rc.Operation)}
+	if rc.PrivateKey != nil {
+		resp.PrivateKeyOpenssh = string(rc.PrivateKey.OpenSSH())
+	}
+	if rc.KeyPair != nil {
+		resp.KeyPair = keyPairPB(*rc.KeyPair)
+		return resp, nil
+	}
 	id, err := compute.ParseKeyPairID(rc.Operation.Target.ID)
 	if err != nil {
 		return nil, toStatus(err)
@@ -170,10 +178,7 @@ func (s *server) CreateKeyPair(ctx context.Context, r *pb.CreateKeyPairRequest) 
 	if err != nil {
 		return nil, toStatus(err)
 	}
-	resp := &pb.CreateKeyPairResponse{Operation: operationPB(rc.Operation), KeyPair: keyPairPB(kp)}
-	if rc.PrivateKey != nil {
-		resp.PrivateKeyOpenssh = string(rc.PrivateKey.OpenSSH())
-	}
+	resp.KeyPair = keyPairPB(kp)
 	return resp, nil
 }
 

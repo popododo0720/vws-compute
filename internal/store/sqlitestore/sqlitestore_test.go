@@ -96,8 +96,14 @@ func TestReopenPreservesState(t *testing.T) {
 
 func TestSecondOpenFails(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.db")
-	s := open(t, path)
-	defer s.Close()
+	first := open(t, path)
+	if err := first.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// Reopen the existing file. Creating the schema no longer writes, so the
+	// exclusive lock has to be taken explicitly.
+	held := open(t, path)
+	defer held.Close()
 	if second, err := Open(context.Background(), path); err == nil {
 		_ = second.Close()
 		t.Fatal("a second Open on a held database succeeded")
