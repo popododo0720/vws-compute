@@ -84,11 +84,14 @@ func (k PublicKey) AuthorizedKey() string {
 // store method accepts one.
 type PrivateKey struct{ openSSH []byte }
 
-// OpenSSH returns the PEM-encoded OpenSSH private key.
-func (k PrivateKey) OpenSSH() []byte { return k.openSSH }
+// OpenSSH returns a copy of the PEM-encoded OpenSSH private key.
+func (k PrivateKey) OpenSSH() []byte { return append([]byte(nil), k.openSSH...) }
 
 // String redacts, so a stray %v in a log line cannot leak the key.
 func (PrivateKey) String() string { return "PrivateKey(REDACTED)" }
+
+// GoString redacts, so %#v cannot leak the key.
+func (PrivateKey) GoString() string { return "compute.PrivateKey{}" }
 
 // generateEd25519 draws a new ed25519 key pair from r.
 func generateEd25519(r io.Reader) (PublicKey, PrivateKey, error) {

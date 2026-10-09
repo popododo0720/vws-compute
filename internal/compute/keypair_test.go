@@ -1,6 +1,7 @@
 package compute_test
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
 	"fmt"
@@ -82,6 +83,14 @@ func TestCreateKeyPairSecretMatchesStoredPublicKey(t *testing.T) {
 	}
 	if got := fmt.Sprint(*ch.Secret); got != "PrivateKey(REDACTED)" {
 		t.Fatalf("fmt.Sprint(private key) = %q", got)
+	}
+	if got := fmt.Sprintf("%#v", *ch.Secret); got != "compute.PrivateKey{}" {
+		t.Fatalf("%%#v = %q", got)
+	}
+	leaked := ch.Secret.OpenSSH()
+	leaked[0] ^= 0xff
+	if bytes.Equal(ch.Secret.OpenSSH(), leaked) {
+		t.Fatal("OpenSSH returned its backing array")
 	}
 }
 
