@@ -279,6 +279,65 @@ func TestSubmitReplansAgainstStateThatMovedUnderThePlan(t *testing.T) {
 	}
 }
 
+// parkOnNoOp parks the target generation before the first no-op commit, as
+// when the reconciler gives up between Plan and CommitDesired.
+type parkOnNoOp struct {
+	*memstore.Store
+	done bool
+}
+
+func (p *parkOnNoOp) CommitDesired(ctx context.Context, ch store.DesiredChange) (compute.Operation, error) {
+	if !p.done && !ch.Write {
+		p.done = true
+		spec, ok := ch.Spec.(compute.InstanceSpec)
+		if !ok {
+			return compute.Operation{}, compute.Errorf(compute.CodeInternal, "no-op spec %T", ch.Spec)
+		}
+		err := p.CommitInstanceStatus(ctx, spec.ID, compute.InstanceStatus{
+			Observed: compute.Observed{
+				Generation: spec.Generation,
+				Failure:    &compute.Failure{Code: compute.CodeFailedPrecondition, Message: "agent refused"},
+			},
+			UpdatedAt: t0,
+		})
+		if err != nil {
+			return compute.Operation{}, err
+		}
+	}
+	return p.Store.CommitDesired(ctx, ch)
+}
+
+func TestStopReplansWhenTheGenerationParksBeforeCommit(t *testing.T) {
+	ctx := context.Background()
+	repo := memstore.New()
+	c := newController(repo)
+	img := availableImage(t, repo, c)
+	run := submit(t, c, "run", ok(compute.NewRunInstance(img.String(), "vws.small", "")))
+	id := ok(compute.ParseInstanceID(run.Operation.Target.ID))
+	if err := repo.CommitInstanceStatus(ctx, id, compute.InstanceStatus{
+		Observed: compute.Observed{Generation: 1}, Machine: compute.MachineOn, UpdatedAt: t0,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	stop := ok(compute.NewStopInstance(id.String()))
+	first := submit(t, c, "stop-1", stop)
+	if first.Operation.State() != compute.OperationPending || first.Operation.TargetGeneration != 2 {
+		t.Fatalf("first stop = %s gen %d, want Pending gen 2", first.Operation.State(), first.Operation.TargetGeneration)
+	}
+
+	second := submit(t, newController(&parkOnNoOp{Store: repo}), "stop-2", stop)
+	if second.Operation.State() != compute.OperationPending || second.Operation.TargetGeneration != 3 {
+		t.Fatalf("second stop = %s gen %d, want Pending gen 3", second.Operation.State(), second.Operation.TargetGeneration)
+	}
+	inst := ok(repo.Instance(ctx, id))
+	if inst.Spec.Generation != 3 || inst.Spec.Power != compute.PowerStopped {
+		t.Fatalf("instance = gen %d power %d, want gen 3 stopped", inst.Spec.Generation, inst.Spec.Power)
+	}
+	if got := ok(repo.Operation(ctx, first.Operation.ID)).State(); got != compute.OperationFailed {
+		t.Fatalf("parked stop settled %s, want Failed", got)
+	}
+}
+
 func TestSubmitValidatesArguments(t *testing.T) {
 	c := newController(memstore.New())
 	_, err := c.Submit(context.Background(), compute.RequestID{}, ok(compute.NewCreateKeyPair("k")))

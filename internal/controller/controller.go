@@ -129,22 +129,27 @@ func (c *Controller) replay(ctx context.Context, req compute.RequestID, in compu
 }
 
 // recordingView is the compute.View a plan reads through. It records the
-// generation of every resource it returns so CommitDesired can reject the
-// plan if any of them moved.
+// spec generation, observed generation, and parked bit of every resource it
+// returns so CommitDesired can reject the plan if any of them moved.
 type recordingView struct {
 	ctx  context.Context
 	r    store.Reader
 	read []store.Version
 }
 
-func (v *recordingView) record(ref compute.Ref, gen int64) {
-	v.read = append(v.read, store.Version{Ref: ref, Generation: gen})
+func (v *recordingView) record(ref compute.Ref, specGen int64, obs compute.Observed) {
+	v.read = append(v.read, store.Version{
+		Ref:        ref,
+		Generation: specGen,
+		Observed:   obs.Generation,
+		Parked:     obs.Parked(specGen),
+	})
 }
 
 func (v *recordingView) Instance(id compute.InstanceID) (compute.Instance, error) {
 	inst, err := v.r.Instance(v.ctx, id)
 	if err == nil {
-		v.record(inst.Spec.Ref(), inst.Spec.Generation)
+		v.record(inst.Spec.Ref(), inst.Spec.Generation, inst.Status.Observed)
 	}
 	return inst, err
 }
@@ -152,7 +157,7 @@ func (v *recordingView) Instance(id compute.InstanceID) (compute.Instance, error
 func (v *recordingView) Image(id compute.ImageID) (compute.Image, error) {
 	img, err := v.r.Image(v.ctx, id)
 	if err == nil {
-		v.record(img.Spec.Ref(), img.Spec.Generation)
+		v.record(img.Spec.Ref(), img.Spec.Generation, img.Status.Observed)
 	}
 	return img, err
 }
@@ -160,7 +165,7 @@ func (v *recordingView) Image(id compute.ImageID) (compute.Image, error) {
 func (v *recordingView) KeyPairByName(name compute.KeyName) (compute.KeyPair, error) {
 	kp, err := v.r.KeyPairByName(v.ctx, name)
 	if err == nil {
-		v.record(kp.Spec.Ref(), kp.Spec.Generation)
+		v.record(kp.Spec.Ref(), kp.Spec.Generation, kp.Observed())
 	}
 	return kp, err
 }

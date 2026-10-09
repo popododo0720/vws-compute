@@ -187,7 +187,8 @@ func (s *Store) CommitDesired(_ context.Context, c store.DesiredChange) (compute
 		return existing, nil
 	}
 	for _, v := range c.Expect {
-		if gen, _, _ := s.progress(v.Ref); gen != v.Generation {
+		gen, obs, _ := s.progress(v.Ref)
+		if !v.Matches(gen, obs) {
 			return compute.Operation{}, store.ErrConflict
 		}
 	}

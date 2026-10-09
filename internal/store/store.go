@@ -26,11 +26,21 @@ var ErrConflict = errors.New("store: conflict")
 // drops the result.
 var ErrStale = errors.New("store: stale observation")
 
-// Version is a resource generation that a plan depended on. Generation 0
-// means "did not exist".
+// Version is the progress a plan read. Generation 0 means the resource did
+// not exist. Observed is the observed generation it saw, and Parked reports
+// whether that generation had already failed. CommitDesired rejects the plan
+// when any of the three has moved, so a status change conflicts even when
+// the spec generation is unchanged.
 type Version struct {
 	Ref        compute.Ref
 	Generation int64
+	Observed   int64
+	Parked     bool
+}
+
+// Matches reports whether v is still specGen and obs.
+func (v Version) Matches(specGen int64, obs compute.Observed) bool {
+	return v.Generation == specGen && v.Observed == obs.Generation && v.Parked == obs.Parked(specGen)
 }
 
 // Page is one page of a listing, ordered by ID (key pairs by name). Next is
@@ -119,9 +129,9 @@ type DesiredStore interface {
 	//  1. If an operation with c.Op.Request exists: return it unchanged if
 	//     its Fingerprint equals c.Op.Fingerprint, or fail with
 	//     compute.CodeRequestMismatch. Nothing is written.
-	//  2. Otherwise, if any Expect version differs from storage, or a second
-	//     live key pair would hold a name: fail with ErrConflict. Nothing is
-	//     written.
+	//  2. Otherwise, if any Expect version's generation, observed generation,
+	//     or parked bit differs from storage, or a second live key pair
+	//     would hold a name: fail with ErrConflict. Nothing is written.
 	//  3. Otherwise: if c.Write, persist c.Spec, whose generation must be
 	//     stored+1 (1 for a new resource, which also creates its empty
 	//     status), and Settle every Pending operation on the target against

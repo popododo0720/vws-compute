@@ -32,6 +32,7 @@ Rules for anyone changing this repository, human or agent. A rule with an enforc
 | Every repository behaves the same. | `storetest.Run`, called from both store test packages |
 | A capture finishes before its source instance is destroyed, and a launch finishes before its image is deregistered. | `TestCaptureBeforeTerminate` and `TestLaunchBeforeDeregister` |
 | A new desired generation does not wait out the previous retry. | `TestNewGenerationDoesNotInheritBackoff` |
+| A commit rejects a plan whose observed generation or parked bit moved. | `storetest` conflict case and `TestStopReplansWhenTheGenerationParksBeforeCommit` |
 | A second process cannot open a SQLite file this process holds, including one that already has a schema. | `TestSecondOpenFails` |
 | Startup re-applies converged specs to the agent. | `TestRestartRebuildsTheAgent` |
 | A new RPC fails to build until it is served. | `server` embeds `UnsafeComputeServiceServer` |

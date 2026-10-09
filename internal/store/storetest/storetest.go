@@ -228,11 +228,29 @@ func conflict(f fixture) {
 		f.t.Fatalf("no-op on an unstored generation: err = %v, want ErrConflict", err)
 	}
 
-	inst := ok(f.s.Instance(ctx, instanceID(1)))
-	if inst.Spec.Generation != 1 || inst.Spec.Power != compute.PowerRunning {
-		f.t.Fatalf("instance after conflicts = gen %d power %d, want gen 1 running", inst.Spec.Generation, inst.Spec.Power)
+	f.observeInstance(1, compute.InstanceStatus{Observed: compute.Observed{Generation: 1}, Machine: compute.MachineOn, UpdatedAt: t0})
+	_, err = f.commit("req-e", stopIntent(1), instanceSpec(1, 2, compute.PowerStopped), true, store.Version{Ref: ref, Generation: 1})
+	if !errors.Is(err, store.ErrConflict) {
+		f.t.Fatalf("stale observation: err = %v, want ErrConflict", err)
 	}
-	for _, req := range []string{"req-b", "req-c", "req-d"} {
+	f.observeInstance(1, compute.InstanceStatus{
+		Observed:  compute.Observed{Generation: 1, Failure: &compute.Failure{Code: compute.CodeInternal, Message: "parked"}},
+		UpdatedAt: t0,
+	})
+	_, err = f.commit("req-f", stopIntent(1), instanceSpec(1, 2, compute.PowerStopped), true, store.Version{Ref: ref, Generation: 1, Observed: 1})
+	if !errors.Is(err, store.ErrConflict) {
+		f.t.Fatalf("stale parked bit: err = %v, want ErrConflict", err)
+	}
+	matched := store.Version{Ref: ref, Generation: 1, Observed: 1, Parked: true}
+	if op := f.mustCommit("req-g", stopIntent(1), instanceSpec(1, 2, compute.PowerStopped), true, matched); op.State() != compute.OperationPending {
+		f.t.Fatalf("stop on a matching parked version born %s, want Pending", op.State())
+	}
+
+	inst := ok(f.s.Instance(ctx, instanceID(1)))
+	if inst.Spec.Generation != 2 || inst.Spec.Power != compute.PowerStopped {
+		f.t.Fatalf("instance after conflicts = gen %d power %d, want gen 2 stopped", inst.Spec.Generation, inst.Spec.Power)
+	}
+	for _, req := range []string{"req-b", "req-c", "req-d", "req-e", "req-f"} {
 		_, err := f.s.OperationByRequest(ctx, ok(compute.ParseRequestID(req)))
 		wantCode(f.t, err, compute.CodeNotFound)
 	}

@@ -197,11 +197,11 @@ func (s *Store) CommitDesired(ctx context.Context, c store.DesiredChange) (compu
 			return err
 		}
 		for _, v := range c.Expect {
-			gen, _, err := progress(ctx, tx, v.Ref)
+			gen, obs, err := progress(ctx, tx, v.Ref)
 			if err != nil {
 				return err
 			}
-			if gen != v.Generation {
+			if !v.Matches(gen, obs) {
 				return store.ErrConflict
 			}
 		}
