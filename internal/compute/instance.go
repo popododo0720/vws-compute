@@ -15,8 +15,8 @@ const (
 // InstanceSpec is the desired state of one instance at one generation.
 type InstanceSpec struct {
 	ID InstanceID
-	// Generation is 1 at RunInstance and advances by exactly 1 on every
-	// committed desired change.
+	// Generation is 1 at RunInstance and advances by exactly 1 when committed
+	// agent-desired state changes. Metadata writes do not advance it.
 	Generation int64
 	CreatedAt  time.Time
 	// ChangedAt is when Generation last advanced. The reconciler's
@@ -71,6 +71,7 @@ type InstanceStatus struct {
 type Instance struct {
 	Spec   InstanceSpec
 	Status InstanceStatus
+	Meta   Metadata
 }
 
 // InstanceLifecycle is the state callers see. It is derived from Spec and

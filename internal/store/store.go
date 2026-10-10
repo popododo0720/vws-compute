@@ -112,10 +112,12 @@ type Reader interface {
 type DesiredChange struct {
 	// Op is the Pending operation from compute.NewOperation.
 	Op compute.Operation
-	// Spec and Write come from compute.Change. There is deliberately no field
-	// for the change's private key.
+	// Spec, Write, and Meta come from compute.Change. There is deliberately
+	// no field for the change's private key. A nil Meta leaves stored
+	// metadata untouched.
 	Spec  compute.Spec
 	Write bool
+	Meta  *compute.Metadata
 	// Expect is every version the plan read.
 	Expect []Version
 }
@@ -132,13 +134,16 @@ type DesiredStore interface {
 	//  2. Otherwise, if any Expect version's generation, observed generation,
 	//     or parked bit differs from storage, or a second live key pair
 	//     would hold a name: fail with ErrConflict. Nothing is written.
-	//  3. Otherwise: if c.Write, persist c.Spec, whose generation must be
-	//     stored+1 (1 for a new resource, which also creates its empty
-	//     status), and Settle every Pending operation on the target against
-	//     the new spec generation. If !c.Write, require the stored
-	//     generation to equal c.Spec.Gen(). Then insert
+	//  3. Otherwise, before any write: if c.Write, require c.Spec.Gen() to be
+	//     stored+1 (1 for a new resource). If !c.Write, require the stored
+	//     generation to equal c.Spec.Gen(). If c.Meta is non-nil, require
+	//     CheckMetadata. Then, if c.Write, persist c.Spec (a new resource
+	//     also gets empty status) and Settle every Pending operation on the
+	//     target against the new spec generation. If c.Meta is non-nil,
+	//     persist it without touching the spec, the status, or the retry
+	//     state, and without settling other operations. Then insert
 	//     compute.Settle(c.Op, specGen, observed, c.Op.CreatedAt) and return
-	//     it.
+	//     it. A MetadataOnly operation comes back Succeeded.
 	//
 	// Step 3's Settle is what lets a no-op on a converged resource, and every
 	// key pair operation, come back already Succeeded, and what supersedes
@@ -168,6 +173,23 @@ type StatusStore interface {
 	// uses it to hold a destroy back while a capture that is still backing
 	// off still needs the source machine.
 	Lagging(ctx context.Context) ([]compute.Ref, error)
+}
+
+// CheckMetadata is the rule CommitDesired applies before it writes metadata.
+// A resource created by this commit starts at Revision 0. An existing one
+// advances by exactly 1. Anything else on an existing resource is
+// ErrConflict. Revision 0 with a non-zero ChangedAt, or the reverse, is
+// compute.CodeInternal.
+func CheckMetadata(next compute.Metadata, created bool, stored int64) error {
+	switch {
+	case (next.Revision == 0) != next.ChangedAt.IsZero():
+		return compute.Errorf(compute.CodeInternal, "metadata revision and change time disagree")
+	case created && next.Revision != 0:
+		return compute.Errorf(compute.CodeInternal, "new resource metadata revision is %d", next.Revision)
+	case !created && next.Revision != stored+1:
+		return ErrConflict
+	}
+	return nil
 }
 
 // CheckObservation is the rule every Commit*Status applies before it writes:

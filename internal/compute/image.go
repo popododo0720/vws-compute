@@ -46,6 +46,7 @@ type ImageStatus struct {
 type Image struct {
 	Spec   ImageSpec
 	Status ImageStatus
+	Meta   Metadata
 }
 
 // ImageLifecycle is the caller-visible state, derived on every read.

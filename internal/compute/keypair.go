@@ -131,7 +131,10 @@ func (s KeyPairSpec) Gen() int64 { return s.Generation }
 func (KeyPairSpec) isSpec()      {}
 
 // KeyPair is the read model. It has no stored status.
-type KeyPair struct{ Spec KeyPairSpec }
+type KeyPair struct {
+	Spec KeyPairSpec
+	Meta Metadata
+}
 
 // Observed is derived, not stored. A key pair has no agent-side state, so
 // every generation is converged the moment it is committed, and key pair

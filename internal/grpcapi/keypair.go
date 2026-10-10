@@ -200,7 +200,7 @@ func (s *server) importKeyPair(ctx context.Context, project, name string, kp *co
 		}
 		return doneOperation(project, name, commonv1.OperationVerb_OPERATION_VERB_CREATE, requestID, nil)
 	}
-	in, err := compute.NewImportKeyPair(name, kp.GetSpec().GetPublicKey())
+	in, err := compute.NewImportKeyPair(name, kp.GetSpec().GetPublicKey(), compute.Labels{})
 	rc, err := s.submit(ctx, requestID, in, err)
 	if err != nil {
 		return nil, err

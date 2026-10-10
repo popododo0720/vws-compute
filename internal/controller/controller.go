@@ -91,7 +91,7 @@ func (c *Controller) Submit(ctx context.Context, req compute.RequestID, in compu
 		if err != nil {
 			return Receipt{}, err
 		}
-		got, err := c.store.CommitDesired(ctx, store.DesiredChange{Op: op, Spec: ch.Spec, Write: ch.Write, Expect: v.read})
+		got, err := c.store.CommitDesired(ctx, store.DesiredChange{Op: op, Spec: ch.Spec, Write: ch.Write, Meta: ch.Meta, Expect: v.read})
 		if errors.Is(err, store.ErrConflict) {
 			continue
 		}
@@ -106,7 +106,11 @@ func (c *Controller) Submit(ctx context.Context, req compute.RequestID, in compu
 		}
 		rc := Receipt{Operation: got, PrivateKey: ch.Secret}
 		if spec, ok := ch.Spec.(compute.KeyPairSpec); ok && ch.Secret != nil {
-			rc.KeyPair = &compute.KeyPair{Spec: spec}
+			kp := &compute.KeyPair{Spec: spec}
+			if ch.Meta != nil {
+				kp.Meta = *ch.Meta
+			}
+			rc.KeyPair = kp
 		}
 		return rc, nil
 	}
