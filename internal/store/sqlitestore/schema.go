@@ -14,6 +14,7 @@ package sqlitestore
 var migrations = []string{
 	schemaV1,
 	metadataV2,
+	imageSourcesV3,
 }
 
 // schemaV1 is the schema from before user_version was set. Every statement
@@ -119,4 +120,55 @@ ALTER TABLE key_pairs ADD COLUMN description TEXT NOT NULL DEFAULT '';
 ALTER TABLE key_pairs ADD COLUMN meta_revision INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE key_pairs ADD COLUMN meta_changed_at INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE operations ADD COLUMN metadata_only INTEGER NOT NULL DEFAULT 0;
+`
+
+// imageSourcesV3 adds file, volume, and snapshot sources. SQLite cannot
+// replace the v1 CHECK that allowed only a URL or an instance, so the table
+// is rebuilt. No other table references images.
+const imageSourcesV3 = `
+CREATE TABLE images_v3 (
+  id                  TEXT PRIMARY KEY,
+  generation          INTEGER NOT NULL CHECK (generation >= 1),
+  created_at          INTEGER NOT NULL,
+  changed_at          INTEGER NOT NULL,
+  name                TEXT NOT NULL,
+  source_url          TEXT,
+  source_instance_id  TEXT,
+  source_path         TEXT,
+  source_volume       TEXT,
+  source_snapshot     TEXT,
+  deregistered        INTEGER NOT NULL,
+  observed_generation INTEGER NOT NULL DEFAULT 0,
+  failure_code        INTEGER,
+  failure_message     TEXT,
+  present             INTEGER NOT NULL DEFAULT 0,
+  size_bytes          INTEGER NOT NULL DEFAULT 0,
+  attempts            INTEGER NOT NULL DEFAULT 0,
+  retry_at            INTEGER NOT NULL DEFAULT 0,
+  last_error          TEXT NOT NULL DEFAULT '',
+  updated_at          INTEGER NOT NULL DEFAULT 0,
+  labels              TEXT NOT NULL DEFAULT '{}',
+  description         TEXT NOT NULL DEFAULT '',
+  meta_revision       INTEGER NOT NULL DEFAULT 0,
+  meta_changed_at     INTEGER NOT NULL DEFAULT 0,
+  CHECK ((source_url IS NOT NULL) + (source_instance_id IS NOT NULL) + (source_path IS NOT NULL)
+       + (source_volume IS NOT NULL) + (source_snapshot IS NOT NULL) = 1),
+  CHECK (observed_generation <= generation)
+) STRICT;
+
+INSERT INTO images_v3 (
+  id, generation, created_at, changed_at, name, source_url, source_instance_id,
+  source_path, source_volume, source_snapshot, deregistered, observed_generation,
+  failure_code, failure_message, present, size_bytes, attempts, retry_at, last_error,
+  updated_at, labels, description, meta_revision, meta_changed_at)
+SELECT
+  id, generation, created_at, changed_at, name, source_url, source_instance_id,
+  NULL, NULL, NULL, deregistered, observed_generation,
+  failure_code, failure_message, present, size_bytes, attempts, retry_at, last_error,
+  updated_at, labels, description, meta_revision, meta_changed_at
+FROM images;
+
+DROP TABLE images;
+ALTER TABLE images_v3 RENAME TO images;
+CREATE INDEX images_unconverged ON images (id) WHERE generation > observed_generation;
 `

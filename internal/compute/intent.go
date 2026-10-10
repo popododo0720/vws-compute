@@ -45,6 +45,20 @@ type registerImage struct {
 	url  ImageURL
 }
 
+type copyImage struct {
+	id          ImageID
+	source      CopySource
+	family      ImageName
+	description Description
+	labels      Labels
+}
+
+type registerFile struct {
+	id     ImageID
+	path   ImagePath
+	family ImageName
+}
+
 type createImage struct {
 	instance InstanceID
 	name     ImageName
@@ -141,8 +155,50 @@ func NewRebootInstance(instanceID string) (Intent, error) {
 	return rebootInstance{instance: id}, nil
 }
 
+// NewCopyImage registers a copy of a volume or snapshot under id, the
+// caller's image id. family may be empty. Plan fails with CodeAlreadyExists
+// when any image, live or deregistered, already holds id.
+func NewCopyImage(id string, source CopySource, family, description string, labels Labels) (Intent, error) {
+	img, err := ParseImageID(id)
+	if err != nil {
+		return nil, err
+	}
+	if source == nil {
+		return nil, Errorf(CodeInvalid, "image source is required")
+	}
+	var name ImageName
+	if family != "" {
+		if name, err = ParseImageName(family); err != nil {
+			return nil, err
+		}
+	}
+	desc, err := ParseDescription(description)
+	if err != nil {
+		return nil, err
+	}
+	return copyImage{id: img, source: source, family: name, description: desc, labels: labels}, nil
+}
+
+// NewRegisterFile registers the disk image file at path under id. path is a
+// path on the agent's host. Plan fails with CodeAlreadyExists when id is taken.
+func NewRegisterFile(id, path, family string) (Intent, error) {
+	img, err := ParseImageID(id)
+	if err != nil {
+		return nil, err
+	}
+	p, err := ParseImagePath(path)
+	if err != nil {
+		return nil, err
+	}
+	name, err := ParseImageName(family)
+	if err != nil {
+		return nil, err
+	}
+	return registerFile{id: img, path: p, family: name}, nil
+}
+
 // NewRegisterImage registers the disk image at sourceURL, which must be
-// https.
+// https. Plan mints the image id.
 func NewRegisterImage(name, sourceURL string) (Intent, error) {
 	n, err := ParseImageName(name)
 	if err != nil {
@@ -254,6 +310,8 @@ func (in setPower) Kind() OperationKind {
 
 func (rebootInstance) Kind() OperationKind         { return OpRebootInstance }
 func (registerImage) Kind() OperationKind          { return OpRegisterImage }
+func (copyImage) Kind() OperationKind              { return OpCopyImage }
+func (registerFile) Kind() OperationKind           { return OpRegisterFile }
 func (createImage) Kind() OperationKind            { return OpCreateImage }
 func (deregisterImage) Kind() OperationKind        { return OpDeregisterImage }
 func (createKeyPair) Kind() OperationKind          { return OpCreateKeyPair }
@@ -263,10 +321,14 @@ func (updateInstanceMetadata) Kind() OperationKind { return OpUpdateInstanceMeta
 func (updateImageMetadata) Kind() OperationKind    { return OpUpdateImageMetadata }
 func (updateKeyPairMetadata) Kind() OperationKind  { return OpUpdateKeyPairMetadata }
 
-func (runInstance) carriesMetadata() bool            { return false }
-func (in setPower) carriesMetadata() bool            { return !in.patch.IsZero() }
-func (rebootInstance) carriesMetadata() bool         { return false }
-func (registerImage) carriesMetadata() bool          { return false }
+func (runInstance) carriesMetadata() bool    { return false }
+func (in setPower) carriesMetadata() bool    { return !in.patch.IsZero() }
+func (rebootInstance) carriesMetadata() bool { return false }
+func (registerImage) carriesMetadata() bool  { return false }
+func (in copyImage) carriesMetadata() bool {
+	return in.description.String() != "" || in.labels.Len() > 0
+}
+func (registerFile) carriesMetadata() bool           { return false }
 func (createImage) carriesMetadata() bool            { return false }
 func (deregisterImage) carriesMetadata() bool        { return false }
 func (createKeyPair) carriesMetadata() bool          { return false }
@@ -318,6 +380,32 @@ func (in rebootInstance) encode(e *encoder) { e.field(in.instance.s) }
 func (in registerImage) encode(e *encoder) {
 	e.field(in.name.s)
 	e.field(in.url.s)
+}
+
+func (in copyImage) encode(e *encoder) {
+	e.field(in.id.s)
+	switch src := in.source.(type) {
+	case FromVolume:
+		e.field("volume")
+		e.field(src.Ref.String())
+	case FromSnapshot:
+		e.field("snapshot")
+		e.field(src.Ref.String())
+	default:
+		e.field("unknown")
+		e.field("")
+	}
+	e.field(in.family.s)
+	e.field(in.description.s)
+	if in.labels.Len() > 0 {
+		e.labelSet("labels=", in.labels)
+	}
+}
+
+func (in registerFile) encode(e *encoder) {
+	e.field(in.id.s)
+	e.field(in.path.s)
+	e.field(in.family.s)
 }
 
 func (in createImage) encode(e *encoder) {

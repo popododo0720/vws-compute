@@ -103,6 +103,8 @@ func TestParseValues(t *testing.T) {
 		"operation id": errOf(compute.ParseOperationID("op-0123456789abcdef0123")),
 		"key name":     errOf(compute.ParseKeyName("deploy key #1")),
 		"image url":    errOf(compute.ParseImageURL("https://images.example/a.qcow2")),
+		"image id":     errOf(compute.ParseImageID("debian-12")),
+		"image path":   errOf(compute.ParseImagePath("/var/lib/vws/images/debian-12.qcow2")),
 	}
 	for name, err := range valid {
 		if err != nil {
@@ -114,7 +116,10 @@ func TestParseValues(t *testing.T) {
 		"long request id":      errOf(compute.ParseRequestID(string(make([]byte, 65)))),
 		"request id with dot":  errOf(compute.ParseRequestID("a.b")),
 		"uppercase hex id":     errOf(compute.ParseInstanceID("i-0123456789ABCDEF0")),
-		"short id":             errOf(compute.ParseImageID("img-0123")),
+		"image id digit":       errOf(compute.ParseImageID("9debian")),
+		"image id hyphen":      errOf(compute.ParseImageID("debian-")),
+		"relative image path":  errOf(compute.ParseImagePath("images/debian-12.qcow2")),
+		"unclean image path":   errOf(compute.ParseImagePath("/var/lib/../vws/debian-12.qcow2")),
 		"control in key name":  errOf(compute.ParseKeyName("a\nb")),
 		"url with credentials": errOf(compute.ParseImageURL("https://u:p@images.example/a")),
 	}

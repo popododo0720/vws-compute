@@ -39,6 +39,8 @@ func Run(t *testing.T, open func(t *testing.T) store.Repository) {
 		{"GenerationWriteDoesNotClobberMetadata", generationLeavesMetadata},
 		{"MetadataOnlyLeavesSiblingsPending", metadataLeavesSiblings},
 		{"StaleMetadataRevisionConflicts", staleMetadata},
+		{"CreateOverExistingImageConflicts", createOverExistingImage},
+		{"ImageSourcesRoundTrip", imageSourcesRoundTrip},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) { c.fn(fixture{t: t, s: open(t)}) })
@@ -644,5 +646,44 @@ func staleMetadata(f fixture) {
 	for _, req := range []string{"st-skip", "st-repeat", "st-bad", "st-create"} {
 		_, err := f.s.OperationByRequest(ctx, ok(compute.ParseRequestID(req)))
 		wantCode(f.t, err, compute.CodeNotFound)
+	}
+}
+
+func createOverExistingImage(f fixture) {
+	ctx := context.Background()
+	f.mustCommit("img-a", ok(compute.NewRegisterImage("debian-13", "https://images.example/d.qcow2")), imageSpec(1, 1), true)
+	again := imageSpec(1, 1)
+	again.Source = compute.FromFile{Path: ok(compute.ParseImagePath("/var/lib/vws/images/debian-13.qcow2"))}
+	_, err := f.commit("img-b", ok(compute.NewRegisterFile(imageID(1).String(), "/var/lib/vws/images/debian-13.qcow2", "debian-13")), again, true)
+	if !errors.Is(err, store.ErrConflict) {
+		f.t.Fatalf("second generation-1 image: err = %v, want ErrConflict", err)
+	}
+	_, err = f.s.OperationByRequest(ctx, ok(compute.ParseRequestID("img-b")))
+	wantCode(f.t, err, compute.CodeNotFound)
+	got := ok(f.s.Image(ctx, imageID(1)))
+	if _, ok := got.Spec.Source.(compute.FromURL); !ok {
+		f.t.Fatalf("source after conflict = %#v, want FromURL", got.Spec.Source)
+	}
+}
+
+func imageSourcesRoundTrip(f fixture) {
+	ctx := context.Background()
+	fileSpec := imageSpec(4, 1)
+	fileSpec.Source = compute.FromFile{Path: ok(compute.ParseImagePath("/var/lib/vws/images/debian-12.qcow2"))}
+	vol := ok(compute.ParseVolumeRef("projects/demo/zones/demo/volumes/root"))
+	snap := ok(compute.ParseSnapshotRef("projects/demo/regions/demo/snapshots/snap"))
+	volSpec := imageSpec(5, 1)
+	volSpec.Name = compute.ImageName{}
+	volSpec.Source = compute.FromVolume{Ref: vol}
+	snapSpec := imageSpec(6, 1)
+	snapSpec.Source = compute.FromSnapshot{Ref: snap}
+	f.mustCommit("src-file", ok(compute.NewRegisterFile(imageID(4).String(), "/var/lib/vws/images/debian-12.qcow2", "debian-13")), fileSpec, true)
+	f.mustCommit("src-vol", ok(compute.NewCopyImage(imageID(5).String(), compute.FromVolume{Ref: vol}, "", "", compute.Labels{})), volSpec, true)
+	f.mustCommit("src-snap", ok(compute.NewCopyImage(imageID(6).String(), compute.FromSnapshot{Ref: snap}, "debian-13", "", compute.Labels{})), snapSpec, true)
+	for _, spec := range []compute.ImageSpec{fileSpec, volSpec, snapSpec} {
+		got := ok(f.s.Image(ctx, spec.ID))
+		if !reflect.DeepEqual(got.Spec, spec) {
+			f.t.Fatalf("source round trip:\n got %+v\nwant %+v", got.Spec, spec)
+		}
 	}
 }

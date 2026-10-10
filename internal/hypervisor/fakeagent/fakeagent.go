@@ -193,14 +193,19 @@ func (a *Agent) ConvergeImage(ctx context.Context, spec hypervisor.ImageSpec) (i
 	if size, ok := a.images[spec.Name]; ok {
 		return size, nil
 	}
-	switch {
-	case spec.SourceURL != "" && spec.SourceMachine == "":
-	case spec.SourceMachine != "" && spec.SourceURL == "":
+	n := 0
+	for _, s := range []string{spec.SourceURL, spec.SourcePath, spec.SourceMachine, spec.SourceVolume, spec.SourceSnapshot} {
+		if s != "" {
+			n++
+		}
+	}
+	if n != 1 {
+		return 0, hypervisor.Permanent(errors.New("image " + spec.Name + ": need exactly one source"))
+	}
+	if spec.SourceMachine != "" {
 		if _, ok := a.machines[spec.SourceMachine]; !ok {
 			return 0, fmt.Errorf("image %s: source machine %s does not exist yet", spec.Name, spec.SourceMachine)
 		}
-	default:
-		return 0, hypervisor.Permanent(errors.New("image " + spec.Name + ": need exactly one source"))
 	}
 	a.images[spec.Name] = ImageSize
 	return ImageSize, nil

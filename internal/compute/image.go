@@ -2,9 +2,16 @@ package compute
 
 import "time"
 
-// ImageSource says where an image's bytes come from. FromURL and
-// FromInstance are the only implementations.
+// ImageSource says where an image's bytes come from. FromURL, FromInstance,
+// FromFile, FromVolume, and FromSnapshot are the only implementations.
 type ImageSource interface{ isImageSource() }
+
+// CopySource is the subset CreateImage may store: a volume or a snapshot
+// resource name. A file path does not implement it.
+type CopySource interface {
+	ImageSource
+	isCopySource()
+}
 
 // FromURL registers an existing disk image the agent fetches over https.
 type FromURL struct{ URL ImageURL }
@@ -12,8 +19,25 @@ type FromURL struct{ URL ImageURL }
 // FromInstance captures the root disk of an instance.
 type FromInstance struct{ Instance InstanceID }
 
+// FromFile registers a disk image file on the agent's host. The seed loader
+// is the only writer. CreateImage cannot name a file.
+type FromFile struct{ Path ImagePath }
+
+// FromVolume records a copy of a volume resource. This process does not host
+// the volume; it stores the name and the agent records the copy.
+type FromVolume struct{ Ref VolumeRef }
+
+// FromSnapshot records a copy of a snapshot resource.
+type FromSnapshot struct{ Ref SnapshotRef }
+
 func (FromURL) isImageSource()      {}
 func (FromInstance) isImageSource() {}
+func (FromFile) isImageSource()     {}
+func (FromVolume) isImageSource()   {}
+func (FromSnapshot) isImageSource() {}
+
+func (FromVolume) isCopySource()   {}
+func (FromSnapshot) isCopySource() {}
 
 // ImageSpec is the desired state of one image at one generation.
 type ImageSpec struct {

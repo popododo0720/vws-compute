@@ -47,10 +47,14 @@ type ImageSpec struct {
 	Name string
 	// Present false means the artifact must not exist.
 	Present bool
-	// Exactly one of SourceURL and SourceMachine is set. SourceMachine is
-	// the instance ID whose root disk is captured.
-	SourceURL     string
-	SourceMachine string
+	// Exactly one source is set. SourceMachine is the instance ID whose root
+	// disk is captured. SourcePath is a disk image file on the agent's host.
+	// SourceVolume and SourceSnapshot are resource names of a copy.
+	SourceURL      string
+	SourcePath     string
+	SourceMachine  string
+	SourceVolume   string
+	SourceSnapshot string
 }
 
 // Agent converges machines and images. A nil error means the spec is fully
