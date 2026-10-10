@@ -20,7 +20,7 @@ func ParseRequestID(s string) (RequestID, error) {
 }
 
 func notRequestIDRune(c rune) bool {
-	return !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '_' || c == '-')
+	return (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') && (c < '0' || c > '9') && c != '_' && c != '-'
 }
 
 func (r RequestID) String() string { return r.s }
@@ -52,7 +52,7 @@ type ImageName struct{ s string }
 func ParseImageName(s string) (ImageName, error) {
 	const extra = "()[]./_' @-"
 	bad := func(c rune) bool {
-		return !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || strings.ContainsRune(extra, c))
+		return (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') && (c < '0' || c > '9') && !strings.ContainsRune(extra, c)
 	}
 	if len(s) < 3 || len(s) > 128 || strings.IndexFunc(s, bad) >= 0 {
 		return ImageName{}, Errorf(CodeInvalid, "invalid image name %q", s)

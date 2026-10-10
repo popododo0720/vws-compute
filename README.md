@@ -1,10 +1,10 @@
 # vws-compute
 
-vws-compute is the VWS compute service. It serves `vws.compute.v1.ComputeService` over gRPC. Callers run, start, stop, reboot, and terminate instances, register and capture disk images, and manage SSH key pairs.
+vws-compute is the VWS compute service. It serves `InstanceService`, `ImageService`, and `KeyPairService` from `vws.compute.v1`, plus `google.longrunning.Operations` for `GetOperation` and `WaitOperation`.
 
-Every mutating call records desired state and returns an operation at once. A reconciler converges the hypervisor agent toward that state in the background. Callers poll `GetOperation` or block in `WaitOperation`. Each mutating request carries a `request_id`, so a retry is safe. Sending the same request again returns the original operation and changes nothing.
+Every mutating call records desired state and returns a long-running operation at once. A reconciler converges the hypervisor agent toward that state in the background. Callers poll `GetOperation` or block in `WaitOperation`. Each mutating request may carry a UUID `request_id`, so a retry is safe. Sending the same request again returns the original operation and changes nothing.
 
-The API is defined in `proto/vws/compute/v1/compute.proto`. Contributor rules are in `AGENTS.md`.
+The wire contract is `github.com/popododo0720/vws-proto` (commit `a1c6084`), vendored at `third_party/vws-proto`. When vws-proto is public, remove the `replace` in `go.mod` and require a tagged version. This process stores key pairs under their resource name. It does not host volumes, snapshots, subnets, or security groups, so an instance or image spec that names one is rejected with `DEPENDENCY_MISSING`. One repository backs every project, and list responses name rows with the parent the caller sent. Contributor rules are in `AGENTS.md`.
 
 ## Run
 

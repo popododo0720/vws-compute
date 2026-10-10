@@ -1,0 +1,194 @@
+syntax = "proto3";
+
+package vws.network.v1;
+
+import "google/api/annotations.proto";
+import "google/api/field_behavior.proto";
+import "google/api/field_info.proto";
+import "google/api/resource.proto";
+import "google/longrunning/operations.proto";
+import "google/protobuf/field_mask.proto";
+import "google/protobuf/timestamp.proto";
+import "vws/common/v1/resource.proto";
+
+option go_package = "github.com/popododo0720/vws-proto/gen/go/vws/network/v1;networkv1";
+option java_multiple_files = true;
+option java_outer_classname = "VpcProto";
+option java_package = "dev.vws.network.v1";
+
+// VpcService stores desired state for a regional network.
+// Nodes reconcile spec. Mutations follow vws.common.v1.OperationMetadata.
+// Delete is rejected with DEPENDENCY_MISSING while a subnet or security group remains.
+service VpcService {
+  // AIP-131: the Get response is the resource.
+  // buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
+  rpc GetVpc(GetVpcRequest) returns (Vpc) {
+    option (google.api.http) = {get: "/v1/{name=projects/*/regions/*/vpcs/*}"};
+  }
+
+  rpc ListVpcs(ListVpcsRequest) returns (ListVpcsResponse) {
+    option (google.api.http) = {get: "/v1/{parent=projects/*/regions/*}/vpcs"};
+  }
+
+  // AIP-151: every mutation returns google.longrunning.Operation.
+  // buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
+  // buf:lint:ignore RPC_REQUEST_RESPONSE_UNIQUE
+  rpc CreateVpc(CreateVpcRequest) returns (google.longrunning.Operation) {
+    option (google.api.http) = {
+      post: "/v1/{parent=projects/*/regions/*}/vpcs"
+      body: "vpc"
+    };
+    option (google.longrunning.operation_info) = {
+      response_type: "vws.network.v1.Vpc"
+      metadata_type: "vws.common.v1.OperationMetadata"
+    };
+  }
+
+  // buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
+  // buf:lint:ignore RPC_REQUEST_RESPONSE_UNIQUE
+  rpc UpdateVpc(UpdateVpcRequest) returns (google.longrunning.Operation) {
+    option (google.api.http) = {
+      patch: "/v1/{vpc.name=projects/*/regions/*/vpcs/*}"
+      body: "vpc"
+    };
+    option (google.longrunning.operation_info) = {
+      response_type: "vws.network.v1.Vpc"
+      metadata_type: "vws.common.v1.OperationMetadata"
+    };
+  }
+
+  // buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
+  // buf:lint:ignore RPC_REQUEST_RESPONSE_UNIQUE
+  rpc DeleteVpc(DeleteVpcRequest) returns (google.longrunning.Operation) {
+    option (google.api.http) = {delete: "/v1/{name=projects/*/regions/*/vpcs/*}"};
+    option (google.longrunning.operation_info) = {
+      response_type: "vws.network.v1.Vpc"
+      metadata_type: "vws.common.v1.OperationMetadata"
+    };
+  }
+
+  // ReportVpcStatus is the node reconcile write.
+  rpc ReportVpcStatus(ReportVpcStatusRequest) returns (ReportVpcStatusResponse) {
+    option (google.api.http) = {
+      post: "/v1/{name=projects/*/regions/*/vpcs/*}:reportStatus"
+      body: "*"
+    };
+  }
+}
+
+// Vpc is a regional IPv4 network.
+// Fields 1-10 are the shared resource envelope.
+message Vpc {
+  option (google.api.resource) = {
+    type: "vws.network/Vpc"
+    pattern: "projects/{project}/regions/{region}/vpcs/{vpc}"
+    plural: "vpcs"
+    singular: "vpc"
+  };
+
+  string name = 1 [(google.api.field_behavior) = IDENTIFIER];
+  string uid = 2 [
+    (google.api.field_behavior) = OUTPUT_ONLY,
+    (google.api.field_info).format = UUID4
+  ];
+  int64 generation = 3 [(google.api.field_behavior) = OUTPUT_ONLY];
+  string etag = 4 [(google.api.field_behavior) = OUTPUT_ONLY];
+  map<string, string> labels = 5;
+  VpcSpec spec = 6 [(google.api.field_behavior) = REQUIRED];
+  VpcStatus status = 7 [(google.api.field_behavior) = OUTPUT_ONLY];
+  google.protobuf.Timestamp create_time = 8 [(google.api.field_behavior) = OUTPUT_ONLY];
+  google.protobuf.Timestamp update_time = 9 [(google.api.field_behavior) = OUTPUT_ONLY];
+  google.protobuf.Timestamp delete_time = 10 [(google.api.field_behavior) = OUTPUT_ONLY];
+}
+
+message VpcSpec {
+  // IPv4 CIDR. Prefix length is 0 to 32. Immutable.
+  string ipv4_cidr = 1 [
+    (google.api.field_behavior) = REQUIRED,
+    (google.api.field_behavior) = IMMUTABLE
+  ];
+  string description = 2;
+}
+
+message VpcStatus {
+  vws.common.v1.ObservedState observed = 1;
+}
+
+message GetVpcRequest {
+  string name = 1 [
+    (google.api.field_behavior) = REQUIRED,
+    (google.api.resource_reference).type = "vws.network/Vpc"
+  ];
+}
+
+message ListVpcsRequest {
+  string parent = 1 [
+    (google.api.field_behavior) = REQUIRED,
+    (google.api.resource_reference).child_type = "vws.network/Vpc"
+  ];
+  // Server default is 50. Values above 1000 are coerced to 1000.
+  int32 page_size = 2;
+  string page_token = 3;
+}
+
+message ListVpcsResponse {
+  repeated Vpc vpcs = 1;
+  string next_page_token = 2;
+}
+
+message CreateVpcRequest {
+  string parent = 1 [
+    (google.api.field_behavior) = REQUIRED,
+    (google.api.resource_reference).child_type = "vws.network/Vpc"
+  ];
+  // Final path segment. Must match vws.common.v1.ResourceId.
+  string vpc_id = 2 [(google.api.field_behavior) = REQUIRED];
+  Vpc vpc = 3 [(google.api.field_behavior) = REQUIRED];
+  string request_id = 4 [
+    (google.api.field_info).format = UUID4,
+    (google.api.field_behavior) = OPTIONAL
+  ];
+  bool validate_only = 5 [(google.api.field_behavior) = OPTIONAL];
+}
+
+message UpdateVpcRequest {
+  Vpc vpc = 1 [(google.api.field_behavior) = REQUIRED];
+  // Paths are relative to Vpc. ipv4_cidr is immutable.
+  // Omitted mask is treated as "spec,labels".
+  google.protobuf.FieldMask update_mask = 2;
+  string request_id = 3 [
+    (google.api.field_info).format = UUID4,
+    (google.api.field_behavior) = OPTIONAL
+  ];
+  bool validate_only = 4 [(google.api.field_behavior) = OPTIONAL];
+  bool allow_missing = 5 [(google.api.field_behavior) = OPTIONAL];
+}
+
+message DeleteVpcRequest {
+  string name = 1 [
+    (google.api.field_behavior) = REQUIRED,
+    (google.api.resource_reference).type = "vws.network/Vpc"
+  ];
+  string request_id = 2 [
+    (google.api.field_info).format = UUID4,
+    (google.api.field_behavior) = OPTIONAL
+  ];
+  bool allow_missing = 3 [(google.api.field_behavior) = OPTIONAL];
+  string etag = 4 [(google.api.field_behavior) = OPTIONAL];
+}
+
+message ReportVpcStatusRequest {
+  string name = 1 [
+    (google.api.field_behavior) = REQUIRED,
+    (google.api.resource_reference).type = "vws.network/Vpc"
+  ];
+  VpcStatus status = 2 [(google.api.field_behavior) = REQUIRED];
+  string request_id = 3 [
+    (google.api.field_info).format = UUID4,
+    (google.api.field_behavior) = OPTIONAL
+  ];
+}
+
+message ReportVpcStatusResponse {
+  Vpc vpc = 1;
+}

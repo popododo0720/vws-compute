@@ -1,0 +1,208 @@
+syntax = "proto3";
+
+package vws.storage.v1;
+
+import "google/api/annotations.proto";
+import "google/api/field_behavior.proto";
+import "google/api/field_info.proto";
+import "google/api/resource.proto";
+import "google/longrunning/operations.proto";
+import "google/protobuf/field_mask.proto";
+import "google/protobuf/timestamp.proto";
+import "vws/common/v1/resource.proto";
+
+option go_package = "github.com/popododo0720/vws-proto/gen/go/vws/storage/v1;storagev1";
+option java_multiple_files = true;
+option java_outer_classname = "ObjectProto";
+option java_package = "dev.vws.storage.v1";
+
+// ObjectService stores desired state for one object.
+// Nodes reconcile spec. Mutations follow vws.common.v1.OperationMetadata.
+// The payload is accepted on the RPC and stored before the operation name is returned.
+// Unary payload limit is 4194304 bytes. Get does not return the payload.
+service ObjectService {
+  // AIP-131: the Get response is the resource. The payload is not included.
+  // buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
+  rpc GetObject(GetObjectRequest) returns (Object) {
+    option (google.api.http) = {get: "/v1/{name=projects/*/buckets/*/objects/*}"};
+  }
+
+  rpc ListObjects(ListObjectsRequest) returns (ListObjectsResponse) {
+    option (google.api.http) = {get: "/v1/{parent=projects/*/buckets/*}/objects"};
+  }
+
+  // AIP-151: every mutation returns google.longrunning.Operation.
+  // buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
+  // buf:lint:ignore RPC_REQUEST_RESPONSE_UNIQUE
+  rpc CreateObject(CreateObjectRequest) returns (google.longrunning.Operation) {
+    option (google.api.http) = {
+      post: "/v1/{parent=projects/*/buckets/*}/objects"
+      body: "*"
+    };
+    option (google.longrunning.operation_info) = {
+      response_type: "vws.storage.v1.Object"
+      metadata_type: "vws.common.v1.OperationMetadata"
+    };
+  }
+
+  // buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
+  // buf:lint:ignore RPC_REQUEST_RESPONSE_UNIQUE
+  rpc UpdateObject(UpdateObjectRequest) returns (google.longrunning.Operation) {
+    option (google.api.http) = {
+      patch: "/v1/{object.name=projects/*/buckets/*/objects/*}"
+      body: "*"
+    };
+    option (google.longrunning.operation_info) = {
+      response_type: "vws.storage.v1.Object"
+      metadata_type: "vws.common.v1.OperationMetadata"
+    };
+  }
+
+  // buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
+  // buf:lint:ignore RPC_REQUEST_RESPONSE_UNIQUE
+  rpc DeleteObject(DeleteObjectRequest) returns (google.longrunning.Operation) {
+    option (google.api.http) = {delete: "/v1/{name=projects/*/buckets/*/objects/*}"};
+    option (google.longrunning.operation_info) = {
+      response_type: "vws.storage.v1.Object"
+      metadata_type: "vws.common.v1.OperationMetadata"
+    };
+  }
+
+  // ReportObjectStatus is the node reconcile write.
+  rpc ReportObjectStatus(ReportObjectStatusRequest) returns (ReportObjectStatusResponse) {
+    option (google.api.http) = {
+      post: "/v1/{name=projects/*/buckets/*/objects/*}:reportStatus"
+      body: "*"
+    };
+  }
+}
+
+// Object is one key in a bucket.
+// Fields 1-10 are the shared resource envelope.
+//
+// The {object} path segment is the key percent-encoded per RFC 3986.
+// Encode every byte that is not an unreserved character. Encode "/" as "%2F".
+// The decoded key is 1 to 1024 bytes, is not "." or "..", does not start or end
+// with "/", does not contain "//", and contains no ASCII control characters.
+// This is the only resource id that is not vws.common.v1.ResourceId.
+message Object {
+  option (google.api.resource) = {
+    type: "vws.storage/Object"
+    pattern: "projects/{project}/buckets/{bucket}/objects/{object}"
+    plural: "objects"
+    singular: "object"
+  };
+
+  string name = 1 [(google.api.field_behavior) = IDENTIFIER];
+  string uid = 2 [
+    (google.api.field_behavior) = OUTPUT_ONLY,
+    (google.api.field_info).format = UUID4
+  ];
+  int64 generation = 3 [(google.api.field_behavior) = OUTPUT_ONLY];
+  string etag = 4 [(google.api.field_behavior) = OUTPUT_ONLY];
+  map<string, string> labels = 5;
+  ObjectSpec spec = 6 [(google.api.field_behavior) = REQUIRED];
+  ObjectStatus status = 7 [(google.api.field_behavior) = OUTPUT_ONLY];
+  google.protobuf.Timestamp create_time = 8 [(google.api.field_behavior) = OUTPUT_ONLY];
+  google.protobuf.Timestamp update_time = 9 [(google.api.field_behavior) = OUTPUT_ONLY];
+  google.protobuf.Timestamp delete_time = 10 [(google.api.field_behavior) = OUTPUT_ONLY];
+}
+
+message ObjectSpec {
+  string content_type = 1;
+  string cache_control = 2;
+  map<string, string> metadata = 3;
+  // Lowercase hex SHA-256 of the payload. When contents is set and this is
+  // empty, the server fills it. When both are set they must match.
+  string sha256 = 4;
+}
+
+message ObjectStatus {
+  vws.common.v1.ObservedState observed = 1;
+  int64 size_bytes = 2;
+  // Set when bucket versioning is on. Empty otherwise.
+  string version = 3;
+}
+
+message GetObjectRequest {
+  string name = 1 [
+    (google.api.field_behavior) = REQUIRED,
+    (google.api.resource_reference).type = "vws.storage/Object"
+  ];
+}
+
+message ListObjectsRequest {
+  string parent = 1 [
+    (google.api.field_behavior) = REQUIRED,
+    (google.api.resource_reference).child_type = "vws.storage/Object"
+  ];
+  // Server default is 50. Values above 1000 are coerced to 1000.
+  int32 page_size = 2;
+  string page_token = 3;
+}
+
+message ListObjectsResponse {
+  repeated Object objects = 1;
+  string next_page_token = 2;
+}
+
+message CreateObjectRequest {
+  string parent = 1 [
+    (google.api.field_behavior) = REQUIRED,
+    (google.api.resource_reference).child_type = "vws.storage/Object"
+  ];
+  // Percent-encoded object key. See Object.
+  string object_id = 2 [(google.api.field_behavior) = REQUIRED];
+  Object object = 3 [(google.api.field_behavior) = REQUIRED];
+  // Payload. Required on create. Maximum 4194304 bytes.
+  bytes contents = 4 [(google.api.field_behavior) = REQUIRED];
+  string request_id = 5 [
+    (google.api.field_info).format = UUID4,
+    (google.api.field_behavior) = OPTIONAL
+  ];
+  bool validate_only = 6 [(google.api.field_behavior) = OPTIONAL];
+}
+
+message UpdateObjectRequest {
+  Object object = 1 [(google.api.field_behavior) = REQUIRED];
+  // Replacement payload. Omit to keep the stored bytes.
+  // Maximum 4194304 bytes when set.
+  bytes contents = 2;
+  // Paths are relative to Object. Omitted mask is treated as "spec,labels".
+  google.protobuf.FieldMask update_mask = 3;
+  string request_id = 4 [
+    (google.api.field_info).format = UUID4,
+    (google.api.field_behavior) = OPTIONAL
+  ];
+  bool validate_only = 5 [(google.api.field_behavior) = OPTIONAL];
+  bool allow_missing = 6 [(google.api.field_behavior) = OPTIONAL];
+}
+
+message DeleteObjectRequest {
+  string name = 1 [
+    (google.api.field_behavior) = REQUIRED,
+    (google.api.resource_reference).type = "vws.storage/Object"
+  ];
+  string request_id = 2 [
+    (google.api.field_info).format = UUID4,
+    (google.api.field_behavior) = OPTIONAL
+  ];
+  bool allow_missing = 3 [(google.api.field_behavior) = OPTIONAL];
+  string etag = 4 [(google.api.field_behavior) = OPTIONAL];
+}
+
+message ReportObjectStatusRequest {
+  string name = 1 [
+    (google.api.field_behavior) = REQUIRED,
+    (google.api.resource_reference).type = "vws.storage/Object"
+  ];
+  ObjectStatus status = 2 [(google.api.field_behavior) = REQUIRED];
+  string request_id = 3 [
+    (google.api.field_info).format = UUID4,
+    (google.api.field_behavior) = OPTIONAL
+  ];
+}
+
+message ReportObjectStatusResponse {
+  Object object = 1;
+}

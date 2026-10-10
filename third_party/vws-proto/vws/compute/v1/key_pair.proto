@@ -1,0 +1,195 @@
+syntax = "proto3";
+
+package vws.compute.v1;
+
+import "google/api/annotations.proto";
+import "google/api/field_behavior.proto";
+import "google/api/field_info.proto";
+import "google/api/resource.proto";
+import "google/longrunning/operations.proto";
+import "google/protobuf/field_mask.proto";
+import "google/protobuf/timestamp.proto";
+import "vws/common/v1/resource.proto";
+
+option go_package = "github.com/popododo0720/vws-proto/gen/go/vws/compute/v1;computev1";
+option java_multiple_files = true;
+option java_outer_classname = "KeyPairProto";
+option java_package = "dev.vws.compute.v1";
+
+// KeyPairService stores a public key. The private key never enters this API.
+// Nodes reconcile spec. Mutations follow vws.common.v1.OperationMetadata.
+// Delete is rejected with DEPENDENCY_MISSING while an Instance spec names this key pair.
+service KeyPairService {
+  // AIP-131: the Get response is the resource.
+  // buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
+  rpc GetKeyPair(GetKeyPairRequest) returns (KeyPair) {
+    option (google.api.http) = {get: "/v1/{name=projects/*/regions/*/keyPairs/*}"};
+  }
+
+  rpc ListKeyPairs(ListKeyPairsRequest) returns (ListKeyPairsResponse) {
+    option (google.api.http) = {get: "/v1/{parent=projects/*/regions/*}/keyPairs"};
+  }
+
+  // AIP-151: every mutation returns google.longrunning.Operation.
+  // buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
+  // buf:lint:ignore RPC_REQUEST_RESPONSE_UNIQUE
+  rpc CreateKeyPair(CreateKeyPairRequest) returns (google.longrunning.Operation) {
+    option (google.api.http) = {
+      post: "/v1/{parent=projects/*/regions/*}/keyPairs"
+      body: "key_pair"
+    };
+    option (google.longrunning.operation_info) = {
+      response_type: "vws.compute.v1.KeyPair"
+      metadata_type: "vws.common.v1.OperationMetadata"
+    };
+  }
+
+  // buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
+  // buf:lint:ignore RPC_REQUEST_RESPONSE_UNIQUE
+  rpc UpdateKeyPair(UpdateKeyPairRequest) returns (google.longrunning.Operation) {
+    option (google.api.http) = {
+      patch: "/v1/{key_pair.name=projects/*/regions/*/keyPairs/*}"
+      body: "key_pair"
+    };
+    option (google.longrunning.operation_info) = {
+      response_type: "vws.compute.v1.KeyPair"
+      metadata_type: "vws.common.v1.OperationMetadata"
+    };
+  }
+
+  // buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
+  // buf:lint:ignore RPC_REQUEST_RESPONSE_UNIQUE
+  rpc DeleteKeyPair(DeleteKeyPairRequest) returns (google.longrunning.Operation) {
+    option (google.api.http) = {delete: "/v1/{name=projects/*/regions/*/keyPairs/*}"};
+    option (google.longrunning.operation_info) = {
+      response_type: "vws.compute.v1.KeyPair"
+      metadata_type: "vws.common.v1.OperationMetadata"
+    };
+  }
+
+  // ReportKeyPairStatus is the node reconcile write.
+  rpc ReportKeyPairStatus(ReportKeyPairStatusRequest) returns (ReportKeyPairStatusResponse) {
+    option (google.api.http) = {
+      post: "/v1/{name=projects/*/regions/*/keyPairs/*}:reportStatus"
+      body: "*"
+    };
+  }
+}
+
+// KeyPair is a regional public key.
+// Fields 1-10 are the shared resource envelope.
+message KeyPair {
+  option (google.api.resource) = {
+    type: "vws.compute/KeyPair"
+    pattern: "projects/{project}/regions/{region}/keyPairs/{key_pair}"
+    plural: "keyPairs"
+    singular: "keyPair"
+  };
+
+  string name = 1 [(google.api.field_behavior) = IDENTIFIER];
+  string uid = 2 [
+    (google.api.field_behavior) = OUTPUT_ONLY,
+    (google.api.field_info).format = UUID4
+  ];
+  int64 generation = 3 [(google.api.field_behavior) = OUTPUT_ONLY];
+  string etag = 4 [(google.api.field_behavior) = OUTPUT_ONLY];
+  map<string, string> labels = 5;
+  KeyPairSpec spec = 6 [(google.api.field_behavior) = REQUIRED];
+  KeyPairStatus status = 7 [(google.api.field_behavior) = OUTPUT_ONLY];
+  google.protobuf.Timestamp create_time = 8 [(google.api.field_behavior) = OUTPUT_ONLY];
+  google.protobuf.Timestamp update_time = 9 [(google.api.field_behavior) = OUTPUT_ONLY];
+  google.protobuf.Timestamp delete_time = 10 [(google.api.field_behavior) = OUTPUT_ONLY];
+}
+
+message KeyPairSpec {
+  // OpenSSH public key line. Immutable. The server stores this text and nothing else.
+  string public_key = 1 [
+    (google.api.field_behavior) = REQUIRED,
+    (google.api.field_behavior) = IMMUTABLE
+  ];
+}
+
+message KeyPairStatus {
+  vws.common.v1.ObservedState observed = 1;
+  // Lowercase hex SHA-256 of the decoded public key blob.
+  string fingerprint_sha256 = 2;
+}
+
+message GetKeyPairRequest {
+  string name = 1 [
+    (google.api.field_behavior) = REQUIRED,
+    (google.api.resource_reference).type = "vws.compute/KeyPair"
+  ];
+}
+
+message ListKeyPairsRequest {
+  string parent = 1 [
+    (google.api.field_behavior) = REQUIRED,
+    (google.api.resource_reference).child_type = "vws.compute/KeyPair"
+  ];
+  // Server default is 50. Values above 1000 are coerced to 1000.
+  int32 page_size = 2;
+  string page_token = 3;
+}
+
+message ListKeyPairsResponse {
+  repeated KeyPair key_pairs = 1;
+  string next_page_token = 2;
+}
+
+message CreateKeyPairRequest {
+  string parent = 1 [
+    (google.api.field_behavior) = REQUIRED,
+    (google.api.resource_reference).child_type = "vws.compute/KeyPair"
+  ];
+  // Final path segment. Must match vws.common.v1.ResourceId.
+  string key_pair_id = 2 [(google.api.field_behavior) = REQUIRED];
+  KeyPair key_pair = 3 [(google.api.field_behavior) = REQUIRED];
+  string request_id = 4 [
+    (google.api.field_info).format = UUID4,
+    (google.api.field_behavior) = OPTIONAL
+  ];
+  bool validate_only = 5 [(google.api.field_behavior) = OPTIONAL];
+}
+
+message UpdateKeyPairRequest {
+  KeyPair key_pair = 1 [(google.api.field_behavior) = REQUIRED];
+  // Paths are relative to KeyPair. public_key is immutable.
+  // Omitted mask is treated as "spec,labels".
+  google.protobuf.FieldMask update_mask = 2;
+  string request_id = 3 [
+    (google.api.field_info).format = UUID4,
+    (google.api.field_behavior) = OPTIONAL
+  ];
+  bool validate_only = 4 [(google.api.field_behavior) = OPTIONAL];
+  bool allow_missing = 5 [(google.api.field_behavior) = OPTIONAL];
+}
+
+message DeleteKeyPairRequest {
+  string name = 1 [
+    (google.api.field_behavior) = REQUIRED,
+    (google.api.resource_reference).type = "vws.compute/KeyPair"
+  ];
+  string request_id = 2 [
+    (google.api.field_info).format = UUID4,
+    (google.api.field_behavior) = OPTIONAL
+  ];
+  bool allow_missing = 3 [(google.api.field_behavior) = OPTIONAL];
+  string etag = 4 [(google.api.field_behavior) = OPTIONAL];
+}
+
+message ReportKeyPairStatusRequest {
+  string name = 1 [
+    (google.api.field_behavior) = REQUIRED,
+    (google.api.resource_reference).type = "vws.compute/KeyPair"
+  ];
+  KeyPairStatus status = 2 [(google.api.field_behavior) = REQUIRED];
+  string request_id = 3 [
+    (google.api.field_info).format = UUID4,
+    (google.api.field_behavior) = OPTIONAL
+  ];
+}
+
+message ReportKeyPairStatusResponse {
+  KeyPair key_pair = 1;
+}

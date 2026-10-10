@@ -12,7 +12,7 @@ Rules for anyone changing this repository, human or agent. A rule with an enforc
 | `internal/controller` | `Submit`, the only mutation path. |
 | `internal/reconciler` | The loop that converges the agent toward desired state. |
 | `internal/hypervisor` | The agent contract. `fakeagent` implements it in memory. |
-| `internal/grpcapi` | The gRPC edge. Generated stubs live in `internal/grpcapi/internal/computepb`. |
+| `internal/grpcapi` | The gRPC edge. Wire stubs come from `github.com/popododo0720/vws-proto`. |
 | `cmd/vws-compute` | Wiring and flags. |
 
 ## Rules
@@ -28,7 +28,7 @@ Rules for anyone changing this repository, human or agent. A rule with an enforc
 | Production packages do not import `testing`. `storetest` is the one declared exception. | `TestArchitectureRules` |
 | An operation changes state only through `compute.Settle`, and terminal states are absorbing. | Unexported fields, `TestOperationStateIsUnexported`, and the `Settle` table in `internal/compute` |
 | Transition rules live only in `compute.Plan`. Each intent carries its own `plan` method. | The compiler, because `Intent` is sealed by unexported methods |
-| Private keys are never stored. | `store.DesiredChange` has no field for one, `TestSchemaHasNoPrivateKeyColumn`, and `TestOnlyCreateKeyPairResponseCarriesAPrivateKey` |
+| Private keys are never stored. | `store.DesiredChange` has no field for one, `TestSchemaHasNoPrivateKeyColumn`, and `TestComputeMessagesCarryNoPrivateKey` |
 | Every repository behaves the same. | `storetest.Run`, called from both store test packages |
 | A capture finishes before its source instance is destroyed, and a launch finishes before its image is deregistered. | `TestCaptureBeforeTerminate` and `TestLaunchBeforeDeregister` |
 | A new desired generation does not wait out the previous retry. | `TestNewGenerationDoesNotInheritBackoff` |
@@ -36,12 +36,12 @@ Rules for anyone changing this repository, human or agent. A rule with an enforc
 | Shutdown cancels an in-flight RPC instead of waiting out its timeout. | `TestStopServerCancelsHandlersAfterGrace` |
 | A second process cannot open a SQLite file this process holds, including one that already has a schema. | `TestSecondOpenFails` |
 | Startup re-applies converged specs to the agent. | `TestRestartRebuildsTheAgent` |
-| A new RPC fails to build until it is served. | `server` embeds `UnsafeComputeServiceServer` |
-| Every mutating RPC takes `request_id` and returns an `Operation`. | `TestMutatingRPCsTakeRequestIDAndReturnAnOperation` |
-| The proto's first line is the move TODO. | `TestProtoStartsWithMoveTODO` |
+| A new RPC on `InstanceService`, `ImageService`, or `KeyPairService` fails to build until it is served. | `server` embeds `UnsafeInstanceServiceServer`, `UnsafeImageServiceServer`, and `UnsafeKeyPairServiceServer` |
+| Create, Update, and Delete take `request_id` and return an `Operation`. Reads do not. A report takes `request_id` and returns the resource. | `TestServicesMatchTheResourceAPI` |
+| Wire protos come from `github.com/popododo0720/vws-proto`, vendored at `third_party/vws-proto` until that module is public. | `TestVendoredProtoModule` |
 | No rights or mark notices outside `LICENSE`. | `TestNoTrademarkNotices` |
 | No container or chart deploy manifests. | `TestNoDeployManifests` |
-| Code is gofmt and goimports clean and passes vet, staticcheck, errcheck, ineffassign, unused, and misspell. | `golangci-lint` v1.61.0 in CI |
+| Code is gofmt and goimports clean and passes vet, staticcheck, errcheck, ineffassign, unused, and misspell. `third_party` is excluded. | `golangci-lint` v2.14.0 in CI |
 | `go test ./...` passes. | CI |
 | Work on a feature branch. Never commit to `main`. | Judgment |
 | Each commit is one logical change and leaves `go test ./...` passing. | Judgment |
@@ -54,8 +54,4 @@ go test ./...
 golangci-lint run ./...
 ```
 
-Regenerating the stubs needs `protoc`, `protoc-gen-go` v1.36.1, `protoc-gen-go-grpc` v1.5.1, and `GOOGLEAPIS` set to a googleapis checkout:
-
-```sh
-go generate ./internal/grpcapi/internal/computepb
-```
+The generated stubs live in the vendored `github.com/popododo0720/vws-proto` module under `third_party/vws-proto/gen/go`. This repository does not regenerate them. When that module is public, drop the `replace` and require a tagged release.

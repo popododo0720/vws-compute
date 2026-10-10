@@ -68,7 +68,7 @@ var ownerRules = []struct {
 	why    string
 }{
 	{hasPrefix("database/sql", "modernc.org/sqlite"), []string{"internal/store/sqlitestore"}, "SQL stays in the SQLite store"},
-	{hasPrefix("google.golang.org/protobuf", "google.golang.org/genproto", module+"/internal/grpcapi/internal/computepb"),
+	{hasPrefix("google.golang.org/protobuf", "google.golang.org/genproto", "github.com/popododo0720/vws-proto", "cloud.google.com/go/longrunning"),
 		[]string{"internal/grpcapi"}, "wire types stay in grpcapi"},
 	{hasPrefix("google.golang.org/grpc"), []string{"internal/grpcapi", "cmd/vws-compute"}, "gRPC stays at the edge"},
 	{func(imp string) bool { return imp == "testing" }, testSupport, "production code does not import testing"},
