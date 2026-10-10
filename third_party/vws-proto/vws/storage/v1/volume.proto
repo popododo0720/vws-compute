@@ -1,0 +1,217 @@
+syntax = "proto3";
+
+package vws.storage.v1;
+
+import "google/api/annotations.proto";
+import "google/api/field_behavior.proto";
+import "google/api/field_info.proto";
+import "google/api/resource.proto";
+import "google/longrunning/operations.proto";
+import "google/protobuf/field_mask.proto";
+import "google/protobuf/timestamp.proto";
+import "vws/common/v1/resource.proto";
+
+option go_package = "github.com/popododo0720/vws-proto/gen/go/vws/storage/v1;storagev1";
+option java_multiple_files = true;
+option java_outer_classname = "VolumeProto";
+option java_package = "dev.vws.storage.v1";
+
+// VolumeService stores desired state for a zonal block volume.
+// Nodes reconcile spec. Mutations follow vws.common.v1.OperationMetadata.
+// Attachment is owned by Instance.spec, not by this spec.
+// Delete is rejected with DEPENDENCY_MISSING while an instance spec references
+// this volume, or a not-yet-ready image or snapshot is still copying it.
+service VolumeService {
+  // AIP-131: the Get response is the resource.
+  // buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
+  rpc GetVolume(GetVolumeRequest) returns (Volume) {
+    option (google.api.http) = {get: "/v1/{name=projects/*/zones/*/volumes/*}"};
+  }
+
+  rpc ListVolumes(ListVolumesRequest) returns (ListVolumesResponse) {
+    option (google.api.http) = {get: "/v1/{parent=projects/*/zones/*}/volumes"};
+  }
+
+  // AIP-151: every mutation returns google.longrunning.Operation.
+  // buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
+  // buf:lint:ignore RPC_REQUEST_RESPONSE_UNIQUE
+  rpc CreateVolume(CreateVolumeRequest) returns (google.longrunning.Operation) {
+    option (google.api.http) = {
+      post: "/v1/{parent=projects/*/zones/*}/volumes"
+      body: "volume"
+    };
+    option (google.longrunning.operation_info) = {
+      response_type: "vws.storage.v1.Volume"
+      metadata_type: "vws.common.v1.OperationMetadata"
+    };
+  }
+
+  // buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
+  // buf:lint:ignore RPC_REQUEST_RESPONSE_UNIQUE
+  rpc UpdateVolume(UpdateVolumeRequest) returns (google.longrunning.Operation) {
+    option (google.api.http) = {
+      patch: "/v1/{volume.name=projects/*/zones/*/volumes/*}"
+      body: "volume"
+    };
+    option (google.longrunning.operation_info) = {
+      response_type: "vws.storage.v1.Volume"
+      metadata_type: "vws.common.v1.OperationMetadata"
+    };
+  }
+
+  // buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
+  // buf:lint:ignore RPC_REQUEST_RESPONSE_UNIQUE
+  rpc DeleteVolume(DeleteVolumeRequest) returns (google.longrunning.Operation) {
+    option (google.api.http) = {delete: "/v1/{name=projects/*/zones/*/volumes/*}"};
+    option (google.longrunning.operation_info) = {
+      response_type: "vws.storage.v1.Volume"
+      metadata_type: "vws.common.v1.OperationMetadata"
+    };
+  }
+
+  // ReportVolumeStatus is the node reconcile write.
+  rpc ReportVolumeStatus(ReportVolumeStatusRequest) returns (ReportVolumeStatusResponse) {
+    option (google.api.http) = {
+      post: "/v1/{name=projects/*/zones/*/volumes/*}:reportStatus"
+      body: "*"
+    };
+  }
+}
+
+// Volume is a zonal block device.
+// Fields 1-10 are the shared resource envelope.
+message Volume {
+  option (google.api.resource) = {
+    type: "vws.storage/Volume"
+    pattern: "projects/{project}/zones/{zone}/volumes/{volume}"
+    plural: "volumes"
+    singular: "volume"
+  };
+
+  string name = 1 [(google.api.field_behavior) = IDENTIFIER];
+  string uid = 2 [
+    (google.api.field_behavior) = OUTPUT_ONLY,
+    (google.api.field_info).format = UUID4
+  ];
+  int64 generation = 3 [(google.api.field_behavior) = OUTPUT_ONLY];
+  string etag = 4 [(google.api.field_behavior) = OUTPUT_ONLY];
+  map<string, string> labels = 5;
+  VolumeSpec spec = 6 [(google.api.field_behavior) = REQUIRED];
+  VolumeStatus status = 7 [(google.api.field_behavior) = OUTPUT_ONLY];
+  google.protobuf.Timestamp create_time = 8 [(google.api.field_behavior) = OUTPUT_ONLY];
+  google.protobuf.Timestamp update_time = 9 [(google.api.field_behavior) = OUTPUT_ONLY];
+  google.protobuf.Timestamp delete_time = 10 [(google.api.field_behavior) = OUTPUT_ONLY];
+}
+
+// VolumeSpec is the desired disk.
+// size_gib must be at least 1 and may only grow.
+// type is STANDARD or SSD, and type and source are immutable.
+// An unset source is a blank volume.
+// size_gib must be at least the source image or snapshot size.
+message VolumeSpec {
+  int64 size_gib = 1 [(google.api.field_behavior) = REQUIRED];
+  VolumeType type = 2 [(google.api.field_behavior) = REQUIRED];
+  oneof source {
+    string image = 3 [
+      (google.api.field_behavior) = IMMUTABLE,
+      (google.api.resource_reference).type = "vws.compute/Image"
+    ];
+    string snapshot = 4 [
+      (google.api.field_behavior) = IMMUTABLE,
+      (google.api.resource_reference).type = "vws.storage/Snapshot"
+    ];
+  }
+}
+
+message VolumeStatus {
+  vws.common.v1.ObservedState observed = 1;
+  // Instance that currently attaches this volume. Empty when detached.
+  string instance = 2 [(google.api.resource_reference).type = "vws.compute/Instance"];
+  string device_name = 3;
+  int64 size_gib = 4;
+}
+
+enum VolumeType {
+  VOLUME_TYPE_UNSPECIFIED = 0;
+  VOLUME_TYPE_STANDARD = 1;
+  VOLUME_TYPE_SSD = 2;
+}
+
+message GetVolumeRequest {
+  string name = 1 [
+    (google.api.field_behavior) = REQUIRED,
+    (google.api.resource_reference).type = "vws.storage/Volume"
+  ];
+}
+
+message ListVolumesRequest {
+  string parent = 1 [
+    (google.api.field_behavior) = REQUIRED,
+    (google.api.resource_reference).child_type = "vws.storage/Volume"
+  ];
+  // Server default is 50. Values above 1000 are coerced to 1000.
+  int32 page_size = 2;
+  string page_token = 3;
+}
+
+message ListVolumesResponse {
+  repeated Volume volumes = 1;
+  string next_page_token = 2;
+}
+
+message CreateVolumeRequest {
+  string parent = 1 [
+    (google.api.field_behavior) = REQUIRED,
+    (google.api.resource_reference).child_type = "vws.storage/Volume"
+  ];
+  // Final path segment. Must match vws.common.v1.ResourceId.
+  string volume_id = 2 [(google.api.field_behavior) = REQUIRED];
+  Volume volume = 3 [(google.api.field_behavior) = REQUIRED];
+  string request_id = 4 [
+    (google.api.field_info).format = UUID4,
+    (google.api.field_behavior) = OPTIONAL
+  ];
+  bool validate_only = 5 [(google.api.field_behavior) = OPTIONAL];
+}
+
+message UpdateVolumeRequest {
+  Volume volume = 1 [(google.api.field_behavior) = REQUIRED];
+  // Paths are relative to Volume. status and output-only fields are rejected.
+  // Omitted mask is treated as "spec,labels".
+  google.protobuf.FieldMask update_mask = 2;
+  string request_id = 3 [
+    (google.api.field_info).format = UUID4,
+    (google.api.field_behavior) = OPTIONAL
+  ];
+  bool validate_only = 4 [(google.api.field_behavior) = OPTIONAL];
+  bool allow_missing = 5 [(google.api.field_behavior) = OPTIONAL];
+}
+
+message DeleteVolumeRequest {
+  string name = 1 [
+    (google.api.field_behavior) = REQUIRED,
+    (google.api.resource_reference).type = "vws.storage/Volume"
+  ];
+  string request_id = 2 [
+    (google.api.field_info).format = UUID4,
+    (google.api.field_behavior) = OPTIONAL
+  ];
+  bool allow_missing = 3 [(google.api.field_behavior) = OPTIONAL];
+  string etag = 4 [(google.api.field_behavior) = OPTIONAL];
+}
+
+message ReportVolumeStatusRequest {
+  string name = 1 [
+    (google.api.field_behavior) = REQUIRED,
+    (google.api.resource_reference).type = "vws.storage/Volume"
+  ];
+  VolumeStatus status = 2 [(google.api.field_behavior) = REQUIRED];
+  string request_id = 3 [
+    (google.api.field_info).format = UUID4,
+    (google.api.field_behavior) = OPTIONAL
+  ];
+}
+
+message ReportVolumeStatusResponse {
+  Volume volume = 1;
+}

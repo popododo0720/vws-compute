@@ -1,0 +1,199 @@
+syntax = "proto3";
+
+package vws.storage.v1;
+
+import "google/api/annotations.proto";
+import "google/api/field_behavior.proto";
+import "google/api/field_info.proto";
+import "google/api/resource.proto";
+import "google/longrunning/operations.proto";
+import "google/protobuf/field_mask.proto";
+import "google/protobuf/timestamp.proto";
+import "vws/common/v1/resource.proto";
+
+option go_package = "github.com/popododo0720/vws-proto/gen/go/vws/storage/v1;storagev1";
+option java_multiple_files = true;
+option java_outer_classname = "SnapshotProto";
+option java_package = "dev.vws.storage.v1";
+
+// SnapshotService stores desired state for a regional volume copy.
+// Nodes reconcile spec. Mutations follow vws.common.v1.OperationMetadata.
+// A ready snapshot does not change when the source volume changes later.
+// A copy interrupted by a restart is retried until the snapshot is complete.
+// Delete is rejected with DEPENDENCY_MISSING while a Volume spec sources this snapshot.
+service SnapshotService {
+  // AIP-131: the Get response is the resource.
+  // buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
+  rpc GetSnapshot(GetSnapshotRequest) returns (Snapshot) {
+    option (google.api.http) = {get: "/v1/{name=projects/*/regions/*/snapshots/*}"};
+  }
+
+  rpc ListSnapshots(ListSnapshotsRequest) returns (ListSnapshotsResponse) {
+    option (google.api.http) = {get: "/v1/{parent=projects/*/regions/*}/snapshots"};
+  }
+
+  // AIP-151: every mutation returns google.longrunning.Operation.
+  // buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
+  // buf:lint:ignore RPC_REQUEST_RESPONSE_UNIQUE
+  rpc CreateSnapshot(CreateSnapshotRequest) returns (google.longrunning.Operation) {
+    option (google.api.http) = {
+      post: "/v1/{parent=projects/*/regions/*}/snapshots"
+      body: "snapshot"
+    };
+    option (google.longrunning.operation_info) = {
+      response_type: "vws.storage.v1.Snapshot"
+      metadata_type: "vws.common.v1.OperationMetadata"
+    };
+  }
+
+  // buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
+  // buf:lint:ignore RPC_REQUEST_RESPONSE_UNIQUE
+  rpc UpdateSnapshot(UpdateSnapshotRequest) returns (google.longrunning.Operation) {
+    option (google.api.http) = {
+      patch: "/v1/{snapshot.name=projects/*/regions/*/snapshots/*}"
+      body: "snapshot"
+    };
+    option (google.longrunning.operation_info) = {
+      response_type: "vws.storage.v1.Snapshot"
+      metadata_type: "vws.common.v1.OperationMetadata"
+    };
+  }
+
+  // buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
+  // buf:lint:ignore RPC_REQUEST_RESPONSE_UNIQUE
+  rpc DeleteSnapshot(DeleteSnapshotRequest) returns (google.longrunning.Operation) {
+    option (google.api.http) = {delete: "/v1/{name=projects/*/regions/*/snapshots/*}"};
+    option (google.longrunning.operation_info) = {
+      response_type: "vws.storage.v1.Snapshot"
+      metadata_type: "vws.common.v1.OperationMetadata"
+    };
+  }
+
+  // ReportSnapshotStatus is the node reconcile write.
+  rpc ReportSnapshotStatus(ReportSnapshotStatusRequest) returns (ReportSnapshotStatusResponse) {
+    option (google.api.http) = {
+      post: "/v1/{name=projects/*/regions/*/snapshots/*}:reportStatus"
+      body: "*"
+    };
+  }
+}
+
+// Snapshot is a regional copy of one volume.
+// Fields 1-10 are the shared resource envelope.
+message Snapshot {
+  option (google.api.resource) = {
+    type: "vws.storage/Snapshot"
+    pattern: "projects/{project}/regions/{region}/snapshots/{snapshot}"
+    plural: "snapshots"
+    singular: "snapshot"
+  };
+
+  string name = 1 [(google.api.field_behavior) = IDENTIFIER];
+  string uid = 2 [
+    (google.api.field_behavior) = OUTPUT_ONLY,
+    (google.api.field_info).format = UUID4
+  ];
+  int64 generation = 3 [(google.api.field_behavior) = OUTPUT_ONLY];
+  string etag = 4 [(google.api.field_behavior) = OUTPUT_ONLY];
+  map<string, string> labels = 5;
+  SnapshotSpec spec = 6 [(google.api.field_behavior) = REQUIRED];
+  SnapshotStatus status = 7 [(google.api.field_behavior) = OUTPUT_ONLY];
+  google.protobuf.Timestamp create_time = 8 [(google.api.field_behavior) = OUTPUT_ONLY];
+  google.protobuf.Timestamp update_time = 9 [(google.api.field_behavior) = OUTPUT_ONLY];
+  google.protobuf.Timestamp delete_time = 10 [(google.api.field_behavior) = OUTPUT_ONLY];
+}
+
+message SnapshotSpec {
+  string volume = 1 [
+    (google.api.field_behavior) = REQUIRED,
+    (google.api.field_behavior) = IMMUTABLE,
+    (google.api.resource_reference).type = "vws.storage/Volume"
+  ];
+  string description = 2;
+}
+
+message SnapshotStatus {
+  vws.common.v1.ObservedState observed = 1;
+  int64 size_gib = 2;
+  // 0 to 100 while the copy is running.
+  int32 progress_percent = 3;
+}
+
+message GetSnapshotRequest {
+  string name = 1 [
+    (google.api.field_behavior) = REQUIRED,
+    (google.api.resource_reference).type = "vws.storage/Snapshot"
+  ];
+}
+
+message ListSnapshotsRequest {
+  string parent = 1 [
+    (google.api.field_behavior) = REQUIRED,
+    (google.api.resource_reference).child_type = "vws.storage/Snapshot"
+  ];
+  // Server default is 50. Values above 1000 are coerced to 1000.
+  int32 page_size = 2;
+  string page_token = 3;
+}
+
+message ListSnapshotsResponse {
+  repeated Snapshot snapshots = 1;
+  string next_page_token = 2;
+}
+
+message CreateSnapshotRequest {
+  string parent = 1 [
+    (google.api.field_behavior) = REQUIRED,
+    (google.api.resource_reference).child_type = "vws.storage/Snapshot"
+  ];
+  // Final path segment. Must match vws.common.v1.ResourceId.
+  string snapshot_id = 2 [(google.api.field_behavior) = REQUIRED];
+  Snapshot snapshot = 3 [(google.api.field_behavior) = REQUIRED];
+  string request_id = 4 [
+    (google.api.field_info).format = UUID4,
+    (google.api.field_behavior) = OPTIONAL
+  ];
+  bool validate_only = 5 [(google.api.field_behavior) = OPTIONAL];
+}
+
+message UpdateSnapshotRequest {
+  Snapshot snapshot = 1 [(google.api.field_behavior) = REQUIRED];
+  // Paths are relative to Snapshot. volume is immutable.
+  // Omitted mask is treated as "spec,labels".
+  google.protobuf.FieldMask update_mask = 2;
+  string request_id = 3 [
+    (google.api.field_info).format = UUID4,
+    (google.api.field_behavior) = OPTIONAL
+  ];
+  bool validate_only = 4 [(google.api.field_behavior) = OPTIONAL];
+  bool allow_missing = 5 [(google.api.field_behavior) = OPTIONAL];
+}
+
+message DeleteSnapshotRequest {
+  string name = 1 [
+    (google.api.field_behavior) = REQUIRED,
+    (google.api.resource_reference).type = "vws.storage/Snapshot"
+  ];
+  string request_id = 2 [
+    (google.api.field_info).format = UUID4,
+    (google.api.field_behavior) = OPTIONAL
+  ];
+  bool allow_missing = 3 [(google.api.field_behavior) = OPTIONAL];
+  string etag = 4 [(google.api.field_behavior) = OPTIONAL];
+}
+
+message ReportSnapshotStatusRequest {
+  string name = 1 [
+    (google.api.field_behavior) = REQUIRED,
+    (google.api.resource_reference).type = "vws.storage/Snapshot"
+  ];
+  SnapshotStatus status = 2 [(google.api.field_behavior) = REQUIRED];
+  string request_id = 3 [
+    (google.api.field_info).format = UUID4,
+    (google.api.field_behavior) = OPTIONAL
+  ];
+}
+
+message ReportSnapshotStatusResponse {
+  Snapshot snapshot = 1;
+}

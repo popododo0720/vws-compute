@@ -1,7 +1,6 @@
 package archtest
 
 import (
-	"bufio"
 	"bytes"
 	"fmt"
 	"io/fs"
@@ -11,22 +10,25 @@ import (
 	"testing"
 )
 
-const protoPath = "proto/vws/compute/v1/compute.proto"
-
-const protoTODO = "// TODO(vws-proto): move this file to github.com/popododo0720/vws-proto once that module has content."
-
-func TestProtoStartsWithMoveTODO(t *testing.T) {
-	f, err := os.Open(filepath.Join(repoRoot(t), protoPath))
+func TestVendoredProtoModule(t *testing.T) {
+	root := repoRoot(t)
+	if _, err := os.Stat(filepath.Join(root, "proto")); !os.IsNotExist(err) {
+		t.Fatalf("local proto tree = %v, want absent", err)
+	}
+	mod, err := os.ReadFile(filepath.Join(root, "go.mod"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer f.Close()
-	sc := bufio.NewScanner(f)
-	if !sc.Scan() {
-		t.Fatalf("%s is empty", protoPath)
+	const replace = "replace github.com/popododo0720/vws-proto => ./third_party/vws-proto"
+	if !bytes.Contains(mod, []byte(replace)) {
+		t.Fatalf("go.mod missing %s", replace)
 	}
-	if got := sc.Text(); got != protoTODO {
-		t.Fatalf("%s line 1 = %q, want %q", protoPath, got, protoTODO)
+	vendored, err := os.ReadFile(filepath.Join(root, "third_party", "vws-proto", "go.mod"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(vendored, []byte("module github.com/popododo0720/vws-proto\n")) {
+		t.Fatal("vendored go.mod is not github.com/popododo0720/vws-proto")
 	}
 }
 
@@ -116,7 +118,7 @@ func walkFiles(root string, visit func(rel string, data []byte)) error {
 			return err
 		}
 		if d.IsDir() {
-			if d.Name() == ".git" {
+			if d.Name() == ".git" || d.Name() == "third_party" {
 				return filepath.SkipDir
 			}
 			return nil

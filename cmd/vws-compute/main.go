@@ -1,4 +1,4 @@
-// Command vws-compute serves vws.compute.v1.ComputeService over gRPC.
+// Command vws-compute serves the vws.compute.v1 resource services over gRPC.
 //
 // It runs the reconciler against the in-memory fake hypervisor agent. With
 // -db set, desired state, observed status, and operations persist in SQLite.
@@ -62,7 +62,7 @@ func run(ctx context.Context, listen, db string) error {
 	go func() { reconciled <- rec.Run(ctx) }()
 	served := make(chan error, 1)
 	go func() { served <- srv.Serve(lis) }()
-	slog.Info("serving vws.compute.v1.ComputeService", "addr", lis.Addr().String(), "db", db)
+	slog.Info("serving vws.compute.v1", "addr", lis.Addr().String(), "db", db)
 
 	select {
 	case <-ctx.Done():

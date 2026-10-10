@@ -1,0 +1,228 @@
+syntax = "proto3";
+
+package vws.network.v1;
+
+import "google/api/annotations.proto";
+import "google/api/field_behavior.proto";
+import "google/api/field_info.proto";
+import "google/api/resource.proto";
+import "google/longrunning/operations.proto";
+import "google/protobuf/field_mask.proto";
+import "google/protobuf/timestamp.proto";
+import "vws/common/v1/resource.proto";
+
+option go_package = "github.com/popododo0720/vws-proto/gen/go/vws/network/v1;networkv1";
+option java_multiple_files = true;
+option java_outer_classname = "SecurityGroupProto";
+option java_package = "dev.vws.network.v1";
+
+// SecurityGroupService stores the desired rules of one group.
+// The rule list is the whole desired state. Nodes reconcile spec.
+// Mutations follow vws.common.v1.OperationMetadata.
+// An empty rule list allows no traffic. The server does not add a default rule.
+// Delete is rejected with DEPENDENCY_MISSING while an instance or another
+// group's rule still references this group.
+service SecurityGroupService {
+  // AIP-131: the Get response is the resource.
+  // buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
+  rpc GetSecurityGroup(GetSecurityGroupRequest) returns (SecurityGroup) {
+    option (google.api.http) = {get: "/v1/{name=projects/*/regions/*/vpcs/*/securityGroups/*}"};
+  }
+
+  rpc ListSecurityGroups(ListSecurityGroupsRequest) returns (ListSecurityGroupsResponse) {
+    option (google.api.http) = {get: "/v1/{parent=projects/*/regions/*/vpcs/*}/securityGroups"};
+  }
+
+  // AIP-151: every mutation returns google.longrunning.Operation.
+  // buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
+  // buf:lint:ignore RPC_REQUEST_RESPONSE_UNIQUE
+  rpc CreateSecurityGroup(CreateSecurityGroupRequest) returns (google.longrunning.Operation) {
+    option (google.api.http) = {
+      post: "/v1/{parent=projects/*/regions/*/vpcs/*}/securityGroups"
+      body: "security_group"
+    };
+    option (google.longrunning.operation_info) = {
+      response_type: "vws.network.v1.SecurityGroup"
+      metadata_type: "vws.common.v1.OperationMetadata"
+    };
+  }
+
+  // buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
+  // buf:lint:ignore RPC_REQUEST_RESPONSE_UNIQUE
+  rpc UpdateSecurityGroup(UpdateSecurityGroupRequest) returns (google.longrunning.Operation) {
+    option (google.api.http) = {
+      patch: "/v1/{security_group.name=projects/*/regions/*/vpcs/*/securityGroups/*}"
+      body: "security_group"
+    };
+    option (google.longrunning.operation_info) = {
+      response_type: "vws.network.v1.SecurityGroup"
+      metadata_type: "vws.common.v1.OperationMetadata"
+    };
+  }
+
+  // buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
+  // buf:lint:ignore RPC_REQUEST_RESPONSE_UNIQUE
+  rpc DeleteSecurityGroup(DeleteSecurityGroupRequest) returns (google.longrunning.Operation) {
+    option (google.api.http) = {delete: "/v1/{name=projects/*/regions/*/vpcs/*/securityGroups/*}"};
+    option (google.longrunning.operation_info) = {
+      response_type: "vws.network.v1.SecurityGroup"
+      metadata_type: "vws.common.v1.OperationMetadata"
+    };
+  }
+
+  // ReportSecurityGroupStatus is the node reconcile write.
+  rpc ReportSecurityGroupStatus(ReportSecurityGroupStatusRequest) returns (ReportSecurityGroupStatusResponse) {
+    option (google.api.http) = {
+      post: "/v1/{name=projects/*/regions/*/vpcs/*/securityGroups/*}:reportStatus"
+      body: "*"
+    };
+  }
+}
+
+// SecurityGroup is a VPC-scoped set of rules.
+// Fields 1-10 are the shared resource envelope.
+message SecurityGroup {
+  option (google.api.resource) = {
+    type: "vws.network/SecurityGroup"
+    pattern: "projects/{project}/regions/{region}/vpcs/{vpc}/securityGroups/{security_group}"
+    plural: "securityGroups"
+    singular: "securityGroup"
+  };
+
+  string name = 1 [(google.api.field_behavior) = IDENTIFIER];
+  string uid = 2 [
+    (google.api.field_behavior) = OUTPUT_ONLY,
+    (google.api.field_info).format = UUID4
+  ];
+  int64 generation = 3 [(google.api.field_behavior) = OUTPUT_ONLY];
+  string etag = 4 [(google.api.field_behavior) = OUTPUT_ONLY];
+  map<string, string> labels = 5;
+  SecurityGroupSpec spec = 6 [(google.api.field_behavior) = REQUIRED];
+  SecurityGroupStatus status = 7 [(google.api.field_behavior) = OUTPUT_ONLY];
+  google.protobuf.Timestamp create_time = 8 [(google.api.field_behavior) = OUTPUT_ONLY];
+  google.protobuf.Timestamp update_time = 9 [(google.api.field_behavior) = OUTPUT_ONLY];
+  google.protobuf.Timestamp delete_time = 10 [(google.api.field_behavior) = OUTPUT_ONLY];
+}
+
+message SecurityGroupSpec {
+  string description = 1;
+  // Identified by rule id, not by position. Duplicate ids are rejected.
+  repeated SecurityGroupRule rules = 2;
+}
+
+// SecurityGroupRule is one allow rule. There is no deny rule.
+// direction and protocol must not be UNSPECIFIED.
+// Exactly one of cidr or security_group is set.
+// TCP and UDP: from_port and to_port are inclusive, 0 to 65535, and from_port <= to_port.
+// ICMP and ALL: from_port and to_port are 0.
+// security_group must be in the same VPC. Self-reference is allowed.
+message SecurityGroupRule {
+  // Stable id. Must match vws.common.v1.ResourceId.
+  string id = 1 [(google.api.field_behavior) = REQUIRED];
+  Direction direction = 2 [(google.api.field_behavior) = REQUIRED];
+  Protocol protocol = 3 [(google.api.field_behavior) = REQUIRED];
+  int32 from_port = 4;
+  int32 to_port = 5;
+  oneof target {
+    string cidr = 6;
+    string security_group = 7 [(google.api.resource_reference).type = "vws.network/SecurityGroup"];
+  }
+  string description = 8;
+}
+
+message SecurityGroupStatus {
+  vws.common.v1.ObservedState observed = 1;
+}
+
+enum Direction {
+  DIRECTION_UNSPECIFIED = 0;
+  DIRECTION_INGRESS = 1;
+  DIRECTION_EGRESS = 2;
+}
+
+enum Protocol {
+  PROTOCOL_UNSPECIFIED = 0;
+  PROTOCOL_TCP = 1;
+  PROTOCOL_UDP = 2;
+  PROTOCOL_ICMP = 3;
+  PROTOCOL_ALL = 4;
+}
+
+message GetSecurityGroupRequest {
+  string name = 1 [
+    (google.api.field_behavior) = REQUIRED,
+    (google.api.resource_reference).type = "vws.network/SecurityGroup"
+  ];
+}
+
+message ListSecurityGroupsRequest {
+  string parent = 1 [
+    (google.api.field_behavior) = REQUIRED,
+    (google.api.resource_reference).child_type = "vws.network/SecurityGroup"
+  ];
+  // Server default is 50. Values above 1000 are coerced to 1000.
+  int32 page_size = 2;
+  string page_token = 3;
+}
+
+message ListSecurityGroupsResponse {
+  repeated SecurityGroup security_groups = 1;
+  string next_page_token = 2;
+}
+
+message CreateSecurityGroupRequest {
+  string parent = 1 [
+    (google.api.field_behavior) = REQUIRED,
+    (google.api.resource_reference).child_type = "vws.network/SecurityGroup"
+  ];
+  // Final path segment. Must match vws.common.v1.ResourceId.
+  string security_group_id = 2 [(google.api.field_behavior) = REQUIRED];
+  SecurityGroup security_group = 3 [(google.api.field_behavior) = REQUIRED];
+  string request_id = 4 [
+    (google.api.field_info).format = UUID4,
+    (google.api.field_behavior) = OPTIONAL
+  ];
+  bool validate_only = 5 [(google.api.field_behavior) = OPTIONAL];
+}
+
+message UpdateSecurityGroupRequest {
+  SecurityGroup security_group = 1 [(google.api.field_behavior) = REQUIRED];
+  // Paths are relative to SecurityGroup.
+  // Omitted mask is treated as "spec,labels".
+  google.protobuf.FieldMask update_mask = 2;
+  string request_id = 3 [
+    (google.api.field_info).format = UUID4,
+    (google.api.field_behavior) = OPTIONAL
+  ];
+  bool validate_only = 4 [(google.api.field_behavior) = OPTIONAL];
+  bool allow_missing = 5 [(google.api.field_behavior) = OPTIONAL];
+}
+
+message DeleteSecurityGroupRequest {
+  string name = 1 [
+    (google.api.field_behavior) = REQUIRED,
+    (google.api.resource_reference).type = "vws.network/SecurityGroup"
+  ];
+  string request_id = 2 [
+    (google.api.field_info).format = UUID4,
+    (google.api.field_behavior) = OPTIONAL
+  ];
+  bool allow_missing = 3 [(google.api.field_behavior) = OPTIONAL];
+  string etag = 4 [(google.api.field_behavior) = OPTIONAL];
+}
+
+message ReportSecurityGroupStatusRequest {
+  string name = 1 [
+    (google.api.field_behavior) = REQUIRED,
+    (google.api.resource_reference).type = "vws.network/SecurityGroup"
+  ];
+  SecurityGroupStatus status = 2 [(google.api.field_behavior) = REQUIRED];
+  string request_id = 3 [
+    (google.api.field_info).format = UUID4,
+    (google.api.field_behavior) = OPTIONAL
+  ];
+}
+
+message ReportSecurityGroupStatusResponse {
+  SecurityGroup security_group = 1;
+}

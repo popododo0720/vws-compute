@@ -1,0 +1,211 @@
+syntax = "proto3";
+
+package vws.network.v1;
+
+import "google/api/annotations.proto";
+import "google/api/field_behavior.proto";
+import "google/api/field_info.proto";
+import "google/api/resource.proto";
+import "google/longrunning/operations.proto";
+import "google/protobuf/field_mask.proto";
+import "google/protobuf/timestamp.proto";
+import "vws/common/v1/resource.proto";
+
+option go_package = "github.com/popododo0720/vws-proto/gen/go/vws/network/v1;networkv1";
+option java_multiple_files = true;
+option java_outer_classname = "AddressProto";
+option java_package = "dev.vws.network.v1";
+
+// AddressService stores desired state for a static public address.
+// Association lives here, not on the instance. An absent association reserves
+// the address and leaves it idle. Nodes reconcile spec.
+// Mutations follow vws.common.v1.OperationMetadata.
+// The instance must be in a zone of this address region, and device_name must
+// match one of that instance's network interfaces.
+service AddressService {
+  // AIP-131: the Get response is the resource.
+  // buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
+  rpc GetAddress(GetAddressRequest) returns (Address) {
+    option (google.api.http) = {get: "/v1/{name=projects/*/regions/*/addresses/*}"};
+  }
+
+  rpc ListAddresses(ListAddressesRequest) returns (ListAddressesResponse) {
+    option (google.api.http) = {get: "/v1/{parent=projects/*/regions/*}/addresses"};
+  }
+
+  // AIP-151: every mutation returns google.longrunning.Operation.
+  // buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
+  // buf:lint:ignore RPC_REQUEST_RESPONSE_UNIQUE
+  rpc CreateAddress(CreateAddressRequest) returns (google.longrunning.Operation) {
+    option (google.api.http) = {
+      post: "/v1/{parent=projects/*/regions/*}/addresses"
+      body: "address"
+    };
+    option (google.longrunning.operation_info) = {
+      response_type: "vws.network.v1.Address"
+      metadata_type: "vws.common.v1.OperationMetadata"
+    };
+  }
+
+  // buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
+  // buf:lint:ignore RPC_REQUEST_RESPONSE_UNIQUE
+  rpc UpdateAddress(UpdateAddressRequest) returns (google.longrunning.Operation) {
+    option (google.api.http) = {
+      patch: "/v1/{address.name=projects/*/regions/*/addresses/*}"
+      body: "address"
+    };
+    option (google.longrunning.operation_info) = {
+      response_type: "vws.network.v1.Address"
+      metadata_type: "vws.common.v1.OperationMetadata"
+    };
+  }
+
+  // buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
+  // buf:lint:ignore RPC_REQUEST_RESPONSE_UNIQUE
+  rpc DeleteAddress(DeleteAddressRequest) returns (google.longrunning.Operation) {
+    option (google.api.http) = {delete: "/v1/{name=projects/*/regions/*/addresses/*}"};
+    option (google.longrunning.operation_info) = {
+      response_type: "vws.network.v1.Address"
+      metadata_type: "vws.common.v1.OperationMetadata"
+    };
+  }
+
+  // ReportAddressStatus is the node reconcile write.
+  rpc ReportAddressStatus(ReportAddressStatusRequest) returns (ReportAddressStatusResponse) {
+    option (google.api.http) = {
+      post: "/v1/{name=projects/*/regions/*/addresses/*}:reportStatus"
+      body: "*"
+    };
+  }
+}
+
+// Address is a regional static public address.
+// Fields 1-10 are the shared resource envelope.
+message Address {
+  option (google.api.resource) = {
+    type: "vws.network/Address"
+    pattern: "projects/{project}/regions/{region}/addresses/{address}"
+    plural: "addresses"
+    singular: "address"
+  };
+
+  string name = 1 [(google.api.field_behavior) = IDENTIFIER];
+  string uid = 2 [
+    (google.api.field_behavior) = OUTPUT_ONLY,
+    (google.api.field_info).format = UUID4
+  ];
+  int64 generation = 3 [(google.api.field_behavior) = OUTPUT_ONLY];
+  string etag = 4 [(google.api.field_behavior) = OUTPUT_ONLY];
+  map<string, string> labels = 5;
+  AddressSpec spec = 6 [(google.api.field_behavior) = REQUIRED];
+  AddressStatus status = 7 [(google.api.field_behavior) = OUTPUT_ONLY];
+  google.protobuf.Timestamp create_time = 8 [(google.api.field_behavior) = OUTPUT_ONLY];
+  google.protobuf.Timestamp update_time = 9 [(google.api.field_behavior) = OUTPUT_ONLY];
+  google.protobuf.Timestamp delete_time = 10 [(google.api.field_behavior) = OUTPUT_ONLY];
+}
+
+message AddressSpec {
+  // Only IPV4 is valid.
+  IpVersion ip_version = 1 [(google.api.field_behavior) = REQUIRED];
+  // Unset means the address is reserved and not attached.
+  AddressAssociation association = 2;
+}
+
+message AddressAssociation {
+  string instance = 1 [
+    (google.api.field_behavior) = REQUIRED,
+    (google.api.resource_reference).type = "vws.compute/Instance"
+  ];
+  string device_name = 2 [(google.api.field_behavior) = REQUIRED];
+}
+
+message AddressStatus {
+  vws.common.v1.ObservedState observed = 1;
+  string ipv4 = 2;
+  string instance = 3 [(google.api.resource_reference).type = "vws.compute/Instance"];
+  string device_name = 4;
+}
+
+enum IpVersion {
+  IP_VERSION_UNSPECIFIED = 0;
+  IP_VERSION_IPV4 = 1;
+}
+
+message GetAddressRequest {
+  string name = 1 [
+    (google.api.field_behavior) = REQUIRED,
+    (google.api.resource_reference).type = "vws.network/Address"
+  ];
+}
+
+message ListAddressesRequest {
+  string parent = 1 [
+    (google.api.field_behavior) = REQUIRED,
+    (google.api.resource_reference).child_type = "vws.network/Address"
+  ];
+  // Server default is 50. Values above 1000 are coerced to 1000.
+  int32 page_size = 2;
+  string page_token = 3;
+}
+
+message ListAddressesResponse {
+  repeated Address addresses = 1;
+  string next_page_token = 2;
+}
+
+message CreateAddressRequest {
+  string parent = 1 [
+    (google.api.field_behavior) = REQUIRED,
+    (google.api.resource_reference).child_type = "vws.network/Address"
+  ];
+  // Final path segment. Must match vws.common.v1.ResourceId.
+  string address_id = 2 [(google.api.field_behavior) = REQUIRED];
+  Address address = 3 [(google.api.field_behavior) = REQUIRED];
+  string request_id = 4 [
+    (google.api.field_info).format = UUID4,
+    (google.api.field_behavior) = OPTIONAL
+  ];
+  bool validate_only = 5 [(google.api.field_behavior) = OPTIONAL];
+}
+
+message UpdateAddressRequest {
+  Address address = 1 [(google.api.field_behavior) = REQUIRED];
+  // Paths are relative to Address. ip_version is immutable.
+  // Omitted mask is treated as "spec,labels".
+  google.protobuf.FieldMask update_mask = 2;
+  string request_id = 3 [
+    (google.api.field_info).format = UUID4,
+    (google.api.field_behavior) = OPTIONAL
+  ];
+  bool validate_only = 4 [(google.api.field_behavior) = OPTIONAL];
+  bool allow_missing = 5 [(google.api.field_behavior) = OPTIONAL];
+}
+
+message DeleteAddressRequest {
+  string name = 1 [
+    (google.api.field_behavior) = REQUIRED,
+    (google.api.resource_reference).type = "vws.network/Address"
+  ];
+  string request_id = 2 [
+    (google.api.field_info).format = UUID4,
+    (google.api.field_behavior) = OPTIONAL
+  ];
+  bool allow_missing = 3 [(google.api.field_behavior) = OPTIONAL];
+  string etag = 4 [(google.api.field_behavior) = OPTIONAL];
+}
+
+message ReportAddressStatusRequest {
+  string name = 1 [
+    (google.api.field_behavior) = REQUIRED,
+    (google.api.resource_reference).type = "vws.network/Address"
+  ];
+  AddressStatus status = 2 [(google.api.field_behavior) = REQUIRED];
+  string request_id = 3 [
+    (google.api.field_info).format = UUID4,
+    (google.api.field_behavior) = OPTIONAL
+  ];
+}
+
+message ReportAddressStatusResponse {
+  Address address = 1;
+}

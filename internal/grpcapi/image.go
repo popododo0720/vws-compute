@@ -1,0 +1,228 @@
+package grpcapi
+
+import (
+	"context"
+
+	longrunningpb "cloud.google.com/go/longrunning/autogen/longrunningpb"
+
+	commonv1 "github.com/popododo0720/vws-proto/gen/go/vws/common/v1"
+	computev1 "github.com/popododo0720/vws-proto/gen/go/vws/compute/v1"
+
+	"github.com/popododo0720/vws-compute/internal/compute"
+	"github.com/popododo0720/vws-compute/internal/store"
+)
+
+func (s *server) GetImage(ctx context.Context, r *computev1.GetImageRequest) (*computev1.Image, error) {
+	img, name, err := s.liveImage(ctx, r.GetName())
+	if err != nil {
+		return nil, err
+	}
+	return imagePB(img, name), nil
+}
+
+func (s *server) ListImages(ctx context.Context, r *computev1.ListImagesRequest) (*computev1.ListImagesResponse, error) {
+	project, region, err := parseRegionalParent(r.GetParent())
+	if err != nil {
+		return nil, err
+	}
+	var matched []compute.Image
+	after := ""
+	for {
+		page, err := s.read.Images(ctx, store.ImageQuery{PageSize: store.MaxPageSize, After: after})
+		if err != nil {
+			return nil, toStatus(err)
+		}
+		for _, img := range page.Items {
+			if img.Lifecycle() == compute.ImageDeregistered {
+				continue
+			}
+			matched = append(matched, img)
+		}
+		if page.Next == "" {
+			break
+		}
+		after = page.Next
+	}
+	page, next, err := cutPage(matched, r.GetPageSize(), r.GetPageToken(), func(i compute.Image) string {
+		return imageResourceName(project, region, i.Spec.ID.String())
+	})
+	if err != nil {
+		return nil, err
+	}
+	out := make([]*computev1.Image, 0, len(page))
+	for _, img := range page {
+		out = append(out, imagePB(img, imageResourceName(project, region, img.Spec.ID.String())))
+	}
+	return &computev1.ListImagesResponse{Images: out, NextPageToken: next}, nil
+}
+
+func (s *server) CreateImage(ctx context.Context, r *computev1.CreateImageRequest) (*longrunningpb.Operation, error) {
+	if err := checkRequestID(r.GetRequestId()); err != nil {
+		return nil, err
+	}
+	project, region, err := parseRegionalParent(r.GetParent())
+	if err != nil {
+		return nil, err
+	}
+	if err := validateResourceID(r.GetImageId()); err != nil {
+		return nil, err
+	}
+	name := imageResourceName(project, region, r.GetImageId())
+	if err := validateCreateImage(name, r.GetImage()); err != nil {
+		return nil, err
+	}
+	source := r.GetImage().GetSpec().GetVolume()
+	if source == "" {
+		source = r.GetImage().GetSpec().GetSnapshot()
+	}
+	return nil, dependencyMissing("image source " + source + " is not registered in this process")
+}
+
+func (s *server) UpdateImage(ctx context.Context, r *computev1.UpdateImageRequest) (*longrunningpb.Operation, error) {
+	if err := checkRequestID(r.GetRequestId()); err != nil {
+		return nil, err
+	}
+	body := r.GetImage()
+	if body == nil {
+		return nil, invalidSpec("image is required")
+	}
+	project, _, _, err := parseImageName(body.GetName())
+	if err != nil {
+		return nil, err
+	}
+	paths := effectiveMask(r.GetUpdateMask().GetPaths())
+	if err := checkMask(paths); err != nil {
+		return nil, err
+	}
+	if err := rejectLabels(body.GetLabels()); err != nil {
+		return nil, err
+	}
+	existing, name, err := s.liveImage(ctx, body.GetName())
+	if err != nil {
+		if r.GetAllowMissing() && statusNotFound(err) {
+			return nil, dependencyMissing("image " + body.GetName() + " is absent and this process has no volume or snapshot to copy")
+		}
+		return nil, err
+	}
+	if err := checkEtag(body.GetEtag(), etagOf(existing.Spec.Generation)); err != nil {
+		return nil, err
+	}
+	if maskIncludes(paths, "spec") {
+		spec := body.GetSpec()
+		if spec == nil {
+			return nil, invalidSpec("image.spec is required")
+		}
+		if spec.GetVolume() != "" || spec.GetSnapshot() != "" {
+			return nil, invalidSpec("image.spec.source is immutable")
+		}
+		if spec.GetDescription() != "" {
+			return nil, invalidSpec("image.spec.description is not stored")
+		}
+		if spec.GetFamily() != "" && spec.GetFamily() != existing.Spec.Name.String() {
+			return nil, invalidSpec("image.spec.family is not stored")
+		}
+	}
+	if r.GetValidateOnly() {
+		return doneOperation(project, name, commonv1.OperationVerb_OPERATION_VERB_UPDATE, r.GetRequestId(), nil)
+	}
+	if op, ok, err := s.replay(ctx, project, r.GetRequestId(), existing.Spec.ID.String()); err != nil || ok {
+		return op, err
+	}
+	return doneOperation(project, name, commonv1.OperationVerb_OPERATION_VERB_UPDATE, r.GetRequestId(), imagePB(existing, name))
+}
+
+func (s *server) DeleteImage(ctx context.Context, r *computev1.DeleteImageRequest) (*longrunningpb.Operation, error) {
+	if err := checkRequestID(r.GetRequestId()); err != nil {
+		return nil, err
+	}
+	project, _, id, err := parseImageName(r.GetName())
+	if err != nil {
+		return nil, err
+	}
+	existing, _, err := s.liveImage(ctx, r.GetName())
+	if err != nil {
+		if r.GetAllowMissing() && statusNotFound(err) {
+			return doneOperation(project, r.GetName(), commonv1.OperationVerb_OPERATION_VERB_DELETE, r.GetRequestId(), nil)
+		}
+		return nil, err
+	}
+	if err := checkEtag(r.GetEtag(), etagOf(existing.Spec.Generation)); err != nil {
+		return nil, err
+	}
+	in, err := compute.NewDeregisterImage(id)
+	rc, err := s.submit(ctx, r.GetRequestId(), in, err)
+	if err != nil {
+		return nil, err
+	}
+	return s.operationPB(ctx, project, rc.Operation)
+}
+
+func (s *server) ReportImageStatus(ctx context.Context, r *computev1.ReportImageStatusRequest) (*computev1.ReportImageStatusResponse, error) {
+	if err := checkRequestID(r.GetRequestId()); err != nil {
+		return nil, err
+	}
+	if r.GetStatus() == nil || r.GetStatus().GetObserved() == nil {
+		return nil, invalidSpec("status.observed is required")
+	}
+	img, name, err := s.liveImage(ctx, r.GetName())
+	if err != nil {
+		return nil, err
+	}
+	if r.GetStatus().GetObserved().GetGeneration() > img.Spec.Generation {
+		return nil, aborted("GENERATION_CONFLICT", "observed generation is ahead of the stored generation")
+	}
+	return &computev1.ReportImageStatusResponse{Image: imagePB(img, name)}, nil
+}
+
+func (s *server) liveImage(ctx context.Context, name string) (compute.Image, string, error) {
+	_, _, id, err := parseImageName(name)
+	if err != nil {
+		return compute.Image{}, "", err
+	}
+	iid, err := compute.ParseImageID(id)
+	if err != nil {
+		return compute.Image{}, name, notFound("image " + name + " not found")
+	}
+	img, err := s.read.Image(ctx, iid)
+	if err != nil {
+		return compute.Image{}, name, toStatus(err)
+	}
+	if img.Lifecycle() == compute.ImageDeregistered {
+		return compute.Image{}, name, notFound("image " + name + " not found")
+	}
+	return img, name, nil
+}
+
+func validateCreateImage(name string, img *computev1.Image) error {
+	if img == nil || img.GetSpec() == nil {
+		return invalidSpec("image.spec is required")
+	}
+	if img.GetName() != "" && img.GetName() != name {
+		return invalidID("image.name does not match parent and image_id")
+	}
+	if img.GetUid() != "" || img.GetGeneration() != 0 || img.GetEtag() != "" || img.GetStatus() != nil ||
+		img.GetCreateTime() != nil || img.GetUpdateTime() != nil || img.GetDeleteTime() != nil {
+		return invalidSpec("output-only fields must be unset")
+	}
+	if err := rejectLabels(img.GetLabels()); err != nil {
+		return err
+	}
+	spec := img.GetSpec()
+	sources := 0
+	if spec.GetVolume() != "" {
+		sources++
+		if _, _, _, err := parseVolumeName(spec.GetVolume()); err != nil {
+			return err
+		}
+	}
+	if spec.GetSnapshot() != "" {
+		sources++
+		if _, _, _, err := parseSnapshotName(spec.GetSnapshot()); err != nil {
+			return err
+		}
+	}
+	if sources != 1 {
+		return invalidSpec("image.spec requires exactly one of volume or snapshot")
+	}
+	return nil
+}
