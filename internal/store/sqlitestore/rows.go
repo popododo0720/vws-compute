@@ -2,6 +2,7 @@ package sqlitestore
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"time"
 
@@ -10,9 +11,11 @@ import (
 
 type scanner interface{ Scan(dest ...any) error }
 
+const metaColumns = `labels, description, meta_revision, meta_changed_at`
+
 const instanceColumns = `id, generation, created_at, changed_at, image_id, instance_type, key_name, key_public,
   power, reboot_epoch, observed_generation, failure_code, failure_message, machine, applied_epoch,
-  attempts, retry_at, last_error, updated_at`
+  attempts, retry_at, last_error, updated_at, ` + metaColumns
 
 // instanceRow mirrors one row of the instances table.
 type instanceRow struct {
@@ -25,13 +28,14 @@ type instanceRow struct {
 	failureMessage                                      sql.NullString
 	machine, appliedEpoch, attempts, retryAt, updatedAt int64
 	lastError                                           string
+	meta                                                metaRow
 }
 
 func scanInstance(sc scanner) (compute.Instance, error) {
 	var r instanceRow
-	err := sc.Scan(&r.id, &r.generation, &r.createdAt, &r.changedAt, &r.imageID, &r.typeName, &r.keyName, &r.keyPublic,
+	err := sc.Scan(append([]any{&r.id, &r.generation, &r.createdAt, &r.changedAt, &r.imageID, &r.typeName, &r.keyName, &r.keyPublic,
 		&r.power, &r.rebootEpoch, &r.observedGeneration, &r.failureCode, &r.failureMessage, &r.machine, &r.appliedEpoch,
-		&r.attempts, &r.retryAt, &r.lastError, &r.updatedAt)
+		&r.attempts, &r.retryAt, &r.lastError, &r.updatedAt}, r.meta.dest()...)...)
 	if err != nil {
 		return compute.Instance{}, err
 	}
@@ -54,7 +58,8 @@ func (r instanceRow) instance() (compute.Instance, error) {
 		pub, errPub := compute.ParsePublicKey(r.keyPublic.String)
 		key, err7 = &compute.AuthorizedKey{Name: name, PublicKey: pub}, errors.Join(errName, errPub)
 	}
-	if err := errors.Join(err1, err2, err3, err4, err5, err6, err7); err != nil {
+	meta, err8 := r.meta.metadata()
+	if err := errors.Join(err1, err2, err3, err4, err5, err6, err7, err8); err != nil {
 		return compute.Instance{}, corrupt("instance", r.id, err)
 	}
 	return compute.Instance{
@@ -76,11 +81,12 @@ func (r instanceRow) instance() (compute.Instance, error) {
 			Retry:       compute.Retry{Attempts: int(r.attempts), At: fromNanos(r.retryAt), LastError: r.lastError},
 			UpdatedAt:   fromNanos(r.updatedAt),
 		},
+		Meta: meta,
 	}, nil
 }
 
 const imageColumns = `id, generation, created_at, changed_at, name, source_url, source_instance_id, deregistered,
-  observed_generation, failure_code, failure_message, present, size_bytes, attempts, retry_at, last_error, updated_at`
+  observed_generation, failure_code, failure_message, present, size_bytes, attempts, retry_at, last_error, updated_at, ` + metaColumns
 
 // imageRow mirrors one row of the images table.
 type imageRow struct {
@@ -92,12 +98,14 @@ type imageRow struct {
 	failureMessage                                   sql.NullString
 	present, sizeBytes, attempts, retryAt, updatedAt int64
 	lastError                                        string
+	meta                                             metaRow
 }
 
 func scanImage(sc scanner) (compute.Image, error) {
 	var r imageRow
-	err := sc.Scan(&r.id, &r.generation, &r.createdAt, &r.changedAt, &r.name, &r.sourceURL, &r.sourceInstanceID, &r.deregistered,
-		&r.observedGeneration, &r.failureCode, &r.failureMessage, &r.present, &r.sizeBytes, &r.attempts, &r.retryAt, &r.lastError, &r.updatedAt)
+	err := sc.Scan(append([]any{&r.id, &r.generation, &r.createdAt, &r.changedAt, &r.name, &r.sourceURL, &r.sourceInstanceID, &r.deregistered,
+		&r.observedGeneration, &r.failureCode, &r.failureMessage, &r.present, &r.sizeBytes, &r.attempts, &r.retryAt, &r.lastError, &r.updatedAt},
+		r.meta.dest()...)...)
 	if err != nil {
 		return compute.Image{}, err
 	}
@@ -122,7 +130,8 @@ func (r imageRow) image() (compute.Image, error) {
 	default:
 		err4 = errors.New("no image source")
 	}
-	if err := errors.Join(err1, err2, err3, err4); err != nil {
+	meta, err5 := r.meta.metadata()
+	if err := errors.Join(err1, err2, err3, err4, err5); err != nil {
 		return compute.Image{}, corrupt("image", r.id, err)
 	}
 	return compute.Image{
@@ -142,20 +151,22 @@ func (r imageRow) image() (compute.Image, error) {
 			Retry:     compute.Retry{Attempts: int(r.attempts), At: fromNanos(r.retryAt), LastError: r.lastError},
 			UpdatedAt: fromNanos(r.updatedAt),
 		},
+		Meta: meta,
 	}, nil
 }
 
-const keyPairColumns = `id, generation, created_at, changed_at, name, public_key, deleted`
+const keyPairColumns = `id, generation, created_at, changed_at, name, public_key, deleted, ` + metaColumns
 
 // keyPairRow mirrors one row of the key_pairs table.
 type keyPairRow struct {
 	id, name, publicKey                       string
 	generation, createdAt, changedAt, deleted int64
+	meta                                      metaRow
 }
 
 func scanKeyPair(sc scanner) (compute.KeyPair, error) {
 	var r keyPairRow
-	if err := sc.Scan(&r.id, &r.generation, &r.createdAt, &r.changedAt, &r.name, &r.publicKey, &r.deleted); err != nil {
+	if err := sc.Scan(append([]any{&r.id, &r.generation, &r.createdAt, &r.changedAt, &r.name, &r.publicKey, &r.deleted}, r.meta.dest()...)...); err != nil {
 		return compute.KeyPair{}, err
 	}
 	return r.keyPair()
@@ -165,22 +176,26 @@ func (r keyPairRow) keyPair() (compute.KeyPair, error) {
 	id, err1 := compute.ParseKeyPairID(r.id)
 	name, err2 := compute.ParseKeyName(r.name)
 	pub, err3 := compute.ParsePublicKey(r.publicKey)
-	if err := errors.Join(err1, err2, err3); err != nil {
+	meta, err4 := r.meta.metadata()
+	if err := errors.Join(err1, err2, err3, err4); err != nil {
 		return compute.KeyPair{}, corrupt("key pair", r.id, err)
 	}
-	return compute.KeyPair{Spec: compute.KeyPairSpec{
-		ID:         id,
-		Generation: r.generation,
-		CreatedAt:  fromNanos(r.createdAt),
-		ChangedAt:  fromNanos(r.changedAt),
-		Name:       name,
-		PublicKey:  pub,
-		Deleted:    r.deleted != 0,
-	}}, nil
+	return compute.KeyPair{
+		Spec: compute.KeyPairSpec{
+			ID:         id,
+			Generation: r.generation,
+			CreatedAt:  fromNanos(r.createdAt),
+			ChangedAt:  fromNanos(r.changedAt),
+			Name:       name,
+			PublicKey:  pub,
+			Deleted:    r.deleted != 0,
+		},
+		Meta: meta,
+	}, nil
 }
 
 const operationColumns = `id, request_id, fingerprint, kind, target_kind, target_id, target_generation, state,
-  failure_code, failure_message, created_at, settled_at`
+  failure_code, failure_message, created_at, settled_at, metadata_only`
 
 // operationRow mirrors one row of the operations table.
 type operationRow struct {
@@ -189,13 +204,13 @@ type operationRow struct {
 	targetKind, targetGeneration, state int64
 	failureCode                         sql.NullInt64
 	failureMessage                      sql.NullString
-	createdAt, settledAt                int64
+	createdAt, settledAt, metadataOnly  int64
 }
 
 func scanOperation(sc scanner) (compute.Operation, error) {
 	var r operationRow
 	err := sc.Scan(&r.id, &r.requestID, &r.fingerprint, &r.kind, &r.targetKind, &r.targetID, &r.targetGeneration, &r.state,
-		&r.failureCode, &r.failureMessage, &r.createdAt, &r.settledAt)
+		&r.failureCode, &r.failureMessage, &r.createdAt, &r.settledAt, &r.metadataOnly)
 	if err != nil {
 		return compute.Operation{}, err
 	}
@@ -223,6 +238,7 @@ func (r operationRow) operation() (compute.Operation, error) {
 		Target:           compute.Ref{Kind: compute.Kind(r.targetKind), ID: r.targetID},
 		TargetGeneration: r.targetGeneration,
 		CreatedAt:        fromNanos(r.createdAt),
+		MetadataOnly:     r.metadataOnly != 0,
 	}
 	copy(base.Fingerprint[:], r.fingerprint)
 	return compute.RestoreOperation(base, compute.OperationState(r.state), failure, fromNanos(r.settledAt))
@@ -270,6 +286,53 @@ func fromNanos(n int64) time.Time {
 		return time.Time{}
 	}
 	return time.Unix(0, n).UTC()
+}
+
+type metaRow struct {
+	labels, description string
+	revision, changedAt int64
+}
+
+func (r *metaRow) dest() []any {
+	return []any{&r.labels, &r.description, &r.revision, &r.changedAt}
+}
+
+func (r metaRow) metadata() (compute.Metadata, error) {
+	labels, err1 := parseLabelsJSON(r.labels)
+	desc, err2 := compute.ParseDescription(r.description)
+	err3 := inRange("meta revision", r.revision, 0, 1<<62)
+	var err4 error
+	if (r.revision == 0) != (r.changedAt == 0) {
+		err4 = errors.New("metadata revision and change time disagree")
+	}
+	if err := errors.Join(err1, err2, err3, err4); err != nil {
+		return compute.Metadata{}, err
+	}
+	return compute.Metadata{
+		Labels:      labels,
+		Description: desc,
+		Revision:    r.revision,
+		ChangedAt:   fromNanos(r.changedAt),
+	}, nil
+}
+
+func labelsJSON(l compute.Labels) (string, error) {
+	if l.Len() == 0 {
+		return "{}", nil
+	}
+	b, err := json.Marshal(l.Map())
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
+}
+
+func parseLabelsJSON(s string) (compute.Labels, error) {
+	var m map[string]string
+	if err := json.Unmarshal([]byte(s), &m); err != nil {
+		return compute.Labels{}, err
+	}
+	return compute.ParseLabels(m)
 }
 
 func boolInt(b bool) int64 {

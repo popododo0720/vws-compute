@@ -35,6 +35,10 @@ func Run(t *testing.T, open func(t *testing.T) store.Repository) {
 		{"ValuesRoundTrip", roundTrip},
 		{"ReturnedValuesShareNoMemory", aliasing},
 		{"ListingsPageAndFilter", paging},
+		{"MetadataRoundTrips", metadataRoundTrip},
+		{"GenerationWriteDoesNotClobberMetadata", generationLeavesMetadata},
+		{"MetadataOnlyLeavesSiblingsPending", metadataLeavesSiblings},
+		{"StaleMetadataRevisionConflicts", staleMetadata},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) { c.fn(fixture{t: t, s: open(t)}) })
@@ -279,7 +283,7 @@ func bornSettled(f fixture) {
 
 func keyPairs(f fixture) {
 	ctx := context.Background()
-	create := ok(compute.NewImportKeyPair("deploy", rsa2048))
+	create := ok(compute.NewImportKeyPair("deploy", rsa2048, compute.Labels{}))
 	del := ok(compute.NewDeleteKeyPair("deploy"))
 
 	first := f.mustCommit("k-1", create, keySpec(1, "deploy", 1, false), true)
@@ -372,7 +376,7 @@ func unconverged(f fixture) {
 	f.observeInstance(3, compute.InstanceStatus{Observed: compute.Observed{Generation: 1, Failure: &compute.Failure{Code: compute.CodeInternal, Message: "parked"}}, UpdatedAt: t1})
 	f.observeInstance(4, compute.InstanceStatus{Retry: compute.Retry{Attempts: 1, At: t0.Add(10 * time.Second), LastError: "busy"}, UpdatedAt: t0})
 	f.mustCommit("u-img", ok(compute.NewRegisterImage("debian-13", "https://images.example/d.qcow2")), imageSpec(1, 1), true)
-	f.mustCommit("u-key", ok(compute.NewImportKeyPair("k", rsa2048)), keySpec(1, "k", 1, false), true)
+	f.mustCommit("u-key", ok(compute.NewImportKeyPair("k", rsa2048, compute.Labels{})), keySpec(1, "k", 1, false), true)
 
 	want := func(at time.Time, refs ...compute.Ref) {
 		f.t.Helper()
@@ -428,7 +432,7 @@ func roundTrip(f fixture) {
 	}
 
 	kp := keySpec(3, "deploy", 1, false)
-	f.mustCommit("rt-3", ok(compute.NewImportKeyPair("deploy", rsa2048)), kp, true)
+	f.mustCommit("rt-3", ok(compute.NewImportKeyPair("deploy", rsa2048, compute.Labels{})), kp, true)
 	if got := ok(f.s.KeyPair(ctx, keyPairID(3))); !reflect.DeepEqual(got.Spec, kp) {
 		f.t.Fatalf("key pair round trip:\n got %+v\nwant %+v", got.Spec, kp)
 	}
@@ -468,7 +472,7 @@ func paging(f fixture) {
 	for n := 1; n <= 3; n++ {
 		f.mustCommit(fmt.Sprintf("p-%d", n), runIntent("vws.small"), instanceSpec(n, 1, compute.PowerRunning), true)
 		f.mustCommit(fmt.Sprintf("pi-%d", n), ok(compute.NewRegisterImage("debian-13", "https://images.example/d.qcow2")), imageSpec(n, 1), true)
-		f.mustCommit(fmt.Sprintf("pk-%d", n), ok(compute.NewImportKeyPair(fmt.Sprintf("key-%d", n), rsa2048)), keySpec(n, fmt.Sprintf("key-%d", n), 1, false), true)
+		f.mustCommit(fmt.Sprintf("pk-%d", n), ok(compute.NewImportKeyPair(fmt.Sprintf("key-%d", n), rsa2048, compute.Labels{})), keySpec(n, fmt.Sprintf("key-%d", n), 1, false), true)
 	}
 	p1 := ok(f.s.Instances(ctx, store.InstanceQuery{PageSize: 2}))
 	p2 := ok(f.s.Instances(ctx, store.InstanceQuery{PageSize: 2, After: p1.Next}))
@@ -486,5 +490,159 @@ func paging(f fixture) {
 	keys := ok(f.s.KeyPairs(ctx, store.KeyPairQuery{PageSize: 2, After: "key-1"}))
 	if len(keys.Items) != 2 || keys.Items[0].Spec.Name.String() != "key-2" || keys.Next != "" {
 		f.t.Fatalf("key pair page after key-1 = %d items next %q", len(keys.Items), keys.Next)
+	}
+}
+
+func sampleLabels() compute.Labels {
+	return ok(compute.ParseLabels(map[string]string{"env": "dev", "vws-fingerprint": "fp-1"}))
+}
+
+func (f fixture) commitChange(req string, in compute.Intent, ch compute.Change, expect ...store.Version) (compute.Operation, error) {
+	f.t.Helper()
+	op, err := compute.NewOperation(compute.Env{Now: t0, Rand: rand.Reader}, ok(compute.ParseRequestID(req)), in, ch)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	return f.s.CommitDesired(context.Background(), store.DesiredChange{
+		Op: op, Spec: ch.Spec, Write: ch.Write, Meta: ch.Meta, Expect: expect,
+	})
+}
+
+func (f fixture) mustChange(req string, in compute.Intent, ch compute.Change, expect ...store.Version) compute.Operation {
+	f.t.Helper()
+	op, err := f.commitChange(req, in, ch, expect...)
+	if err != nil {
+		f.t.Fatalf("commit %s: %v", req, err)
+	}
+	return op
+}
+
+func metadataRoundTrip(f fixture) {
+	ctx := context.Background()
+	labels := sampleLabels()
+	desc := ok(compute.ParseDescription("debian\nstable\tbuild"))
+
+	inst := instanceSpec(1, 1, compute.PowerRunning)
+	born := &compute.Metadata{Labels: labels}
+	f.mustChange("md-i", runIntent("vws.small"), compute.Change{Spec: inst, Write: true, Meta: born})
+	got := ok(f.s.Instance(ctx, instanceID(1)))
+	if !reflect.DeepEqual(got.Meta, *born) || !got.Spec.ChangedAt.Equal(inst.ChangedAt) {
+		f.t.Fatalf("instance metadata = %+v changed %v, want %+v", got.Meta, got.Spec.ChangedAt, *born)
+	}
+	mut := got.Meta.Labels.Map()
+	mut["env"] = "mutated"
+	mut["extra"] = "nope"
+	again := ok(f.s.Instance(ctx, instanceID(1)))
+	if !again.Meta.Labels.Equal(labels) {
+		f.t.Fatalf("mutating Map() changed stored labels to %v", again.Meta.Labels.Map())
+	}
+
+	plain := instanceSpec(2, 1, compute.PowerRunning)
+	f.mustCommit("md-i0", runIntent("vws.small"), plain, true)
+	if meta := ok(f.s.Instance(ctx, instanceID(2))).Meta; !reflect.DeepEqual(meta, compute.Metadata{}) || meta.Labels.Map() != nil {
+		f.t.Fatalf("unset labels = %+v map %v, want the zero set", meta, meta.Labels.Map())
+	}
+
+	img := imageSpec(1, 1)
+	imgMeta := &compute.Metadata{Labels: labels, Description: desc}
+	f.mustChange("md-img", ok(compute.NewRegisterImage("debian-13", "https://images.example/d.qcow2")), compute.Change{Spec: img, Write: true, Meta: imgMeta})
+	if got, want := ok(f.s.Image(ctx, imageID(1))).Meta, *imgMeta; !reflect.DeepEqual(got, want) {
+		f.t.Fatalf("image metadata = %+v, want %+v", got, want)
+	}
+
+	kp := keySpec(1, "deploy", 1, false)
+	kpMeta := &compute.Metadata{Labels: labels}
+	f.mustChange("md-k", ok(compute.NewImportKeyPair("deploy", rsa2048, labels)), compute.Change{Spec: kp, Write: true, Meta: kpMeta})
+	gotKey := ok(f.s.KeyPair(ctx, keyPairID(1)))
+	if !reflect.DeepEqual(gotKey.Meta, *kpMeta) || gotKey.Meta.Description.String() != "" {
+		f.t.Fatalf("key pair metadata = %+v, want labels only", gotKey.Meta)
+	}
+}
+
+func generationLeavesMetadata(f fixture) {
+	ctx := context.Background()
+	labels := sampleLabels()
+	meta := &compute.Metadata{Labels: labels}
+	inst := instanceSpec(1, 1, compute.PowerRunning)
+	f.mustChange("gen-1", runIntent("vws.small"), compute.Change{Spec: inst, Write: true, Meta: meta})
+
+	stopped := instanceSpec(1, 2, compute.PowerStopped)
+	f.mustCommit("gen-2", stopIntent(1), stopped, true)
+	got := ok(f.s.Instance(ctx, instanceID(1)))
+	if !got.Meta.Labels.Equal(labels) || got.Meta.Revision != 0 || !got.Meta.ChangedAt.IsZero() {
+		f.t.Fatalf("generation write clobbered metadata: %+v", got.Meta)
+	}
+	if got.Spec.Generation != 2 || !got.Spec.ChangedAt.Equal(stopped.ChangedAt) {
+		f.t.Fatalf("spec after stop = gen %d changed %v", got.Spec.Generation, got.Spec.ChangedAt)
+	}
+	refs := ok(f.s.Unconverged(ctx, t0))
+	if !reflect.DeepEqual(refs, []compute.Ref{instanceID(1).Ref()}) {
+		f.t.Fatalf("Unconverged = %v, want the stopped instance", refs)
+	}
+}
+
+func metadataLeavesSiblings(f fixture) {
+	ctx := context.Background()
+	f.mustCommit("sib-1", runIntent("vws.small"), instanceSpec(1, 1, compute.PowerRunning), true)
+	stop := f.mustCommit("sib-2", stopIntent(1), instanceSpec(1, 2, compute.PowerStopped), true)
+	before := ok(f.s.Instance(ctx, instanceID(1)))
+
+	labels := sampleLabels()
+	patch := compute.MetadataPatch{}.ReplaceLabels(labels)
+	meta := &compute.Metadata{Labels: labels, Revision: 1, ChangedAt: t1}
+	op := f.mustChange("sib-3", ok(compute.NewUpdateInstanceMetadata(instanceID(1).String(), patch)), compute.Change{
+		Spec: before.Spec, Meta: meta,
+	})
+	if op.State() != compute.OperationSucceeded || !op.MetadataOnly {
+		f.t.Fatalf("label update born %s metadata=%v, want Succeeded MetadataOnly", op.State(), op.MetadataOnly)
+	}
+	f.wantState(stop, compute.OperationPending)
+	got := ok(f.s.Instance(ctx, instanceID(1)))
+	if got.Spec.Generation != before.Spec.Generation || !got.Spec.ChangedAt.Equal(before.Spec.ChangedAt) {
+		f.t.Fatalf("spec moved on a label write: gen %d changed %v", got.Spec.Generation, got.Spec.ChangedAt)
+	}
+	if !reflect.DeepEqual(got.Meta, *meta) {
+		f.t.Fatalf("metadata = %+v, want %+v", got.Meta, *meta)
+	}
+	refs := ok(f.s.Unconverged(ctx, t0))
+	if !reflect.DeepEqual(refs, []compute.Ref{instanceID(1).Ref()}) {
+		f.t.Fatalf("Unconverged = %v, want the instance still due", refs)
+	}
+}
+
+func staleMetadata(f fixture) {
+	ctx := context.Background()
+	labels := sampleLabels()
+	inst := instanceSpec(1, 1, compute.PowerRunning)
+	f.mustChange("st-1", runIntent("vws.small"), compute.Change{Spec: inst, Write: true, Meta: &compute.Metadata{Labels: labels}})
+
+	patch := compute.MetadataPatch{}.ReplaceLabels(sampleLabels())
+	in := ok(compute.NewUpdateInstanceMetadata(instanceID(1).String(), patch))
+	_, err := f.commitChange("st-skip", in, compute.Change{Spec: inst, Meta: &compute.Metadata{Labels: labels, Revision: 3, ChangedAt: t1}})
+	if !errors.Is(err, store.ErrConflict) {
+		f.t.Fatalf("skipped revision: err = %v, want ErrConflict", err)
+	}
+	_, err = f.commitChange("st-repeat", in, compute.Change{Spec: inst, Meta: &compute.Metadata{Labels: labels}})
+	if !errors.Is(err, store.ErrConflict) {
+		f.t.Fatalf("repeated revision: err = %v, want ErrConflict", err)
+	}
+	_, err = f.commitChange("st-bad", in, compute.Change{Spec: inst, Meta: &compute.Metadata{Revision: 0, ChangedAt: t1}})
+	wantCode(f.t, err, compute.CodeInternal)
+
+	other := instanceSpec(2, 1, compute.PowerRunning)
+	_, err = f.commitChange("st-create", runIntent("vws.small"), compute.Change{
+		Spec: other, Write: true, Meta: &compute.Metadata{Labels: labels, Revision: 1, ChangedAt: t1},
+	})
+	wantCode(f.t, err, compute.CodeInternal)
+
+	got := ok(f.s.Instance(ctx, instanceID(1)))
+	if !got.Meta.Labels.Equal(labels) || got.Meta.Revision != 0 {
+		f.t.Fatalf("rejected metadata writes changed the row: %+v", got.Meta)
+	}
+	_, err = f.s.Instance(ctx, instanceID(2))
+	wantCode(f.t, err, compute.CodeNotFound)
+	for _, req := range []string{"st-skip", "st-repeat", "st-bad", "st-create"} {
+		_, err := f.s.OperationByRequest(ctx, ok(compute.ParseRequestID(req)))
+		wantCode(f.t, err, compute.CodeNotFound)
 	}
 }

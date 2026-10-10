@@ -1,10 +1,25 @@
 package sqlitestore
 
-// schema is applied at every Open. Desired-state columns are written only by
-// CommitDesired and status columns only by Commit*Status. They share a row
-// per resource so that "what is unconverged?" is one partial-index lookup.
-// Key pairs have no status columns: compute.KeyPair.Observed is derived.
-const schema = `
+// migrations[i] moves a database from PRAGMA user_version i to i+1. Open
+// applies the missing suffix inside the BEGIN EXCLUSIVE that locks the file,
+// so a half-applied migration is never visible and a second process never
+// finds the file unlocked. Entries are append-only: editing one that has
+// shipped leaves databases already past it on the old shape.
+//
+// Desired-state columns are written only by CommitDesired and status columns
+// only by Commit*Status. They share a row per resource so that "what is
+// unconverged?" is one partial-index lookup. Key pairs have no status
+// columns: compute.KeyPair.Observed is derived. Metadata columns are written
+// only when a change carries metadata, and a spec update does not name them.
+var migrations = []string{
+	schemaV1,
+	metadataV2,
+}
+
+// schemaV1 is the schema from before user_version was set. Every statement
+// is IF NOT EXISTS, so it creates a fresh file and adopts an unversioned
+// file without rewriting existing tables.
+const schemaV1 = `
 CREATE TABLE IF NOT EXISTS instances (
   id                  TEXT PRIMARY KEY,
   generation          INTEGER NOT NULL CHECK (generation >= 1),
@@ -85,4 +100,23 @@ CREATE TABLE IF NOT EXISTS operations (
 
 CREATE INDEX IF NOT EXISTS operations_pending_by_target ON operations (target_kind, target_id)
   WHERE state = 1;
+`
+
+// metadataV2 adds labels, description, and the metadata revision to every
+// resource table, and the MetadataOnly bit to operations. Defaults are the
+// empty metadata at revision 0. Labels are canonical JSON.
+const metadataV2 = `
+ALTER TABLE instances ADD COLUMN labels TEXT NOT NULL DEFAULT '{}';
+ALTER TABLE instances ADD COLUMN description TEXT NOT NULL DEFAULT '';
+ALTER TABLE instances ADD COLUMN meta_revision INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE instances ADD COLUMN meta_changed_at INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE images ADD COLUMN labels TEXT NOT NULL DEFAULT '{}';
+ALTER TABLE images ADD COLUMN description TEXT NOT NULL DEFAULT '';
+ALTER TABLE images ADD COLUMN meta_revision INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE images ADD COLUMN meta_changed_at INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE key_pairs ADD COLUMN labels TEXT NOT NULL DEFAULT '{}';
+ALTER TABLE key_pairs ADD COLUMN description TEXT NOT NULL DEFAULT '';
+ALTER TABLE key_pairs ADD COLUMN meta_revision INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE key_pairs ADD COLUMN meta_changed_at INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE operations ADD COLUMN metadata_only INTEGER NOT NULL DEFAULT 0;
 `

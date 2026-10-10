@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"strconv"
 	"strings"
+	"time"
 
 	longrunningpb "cloud.google.com/go/longrunning/autogen/longrunningpb"
 	statuspb "google.golang.org/genproto/googleapis/rpc/status"
@@ -21,7 +22,22 @@ import (
 	"github.com/popododo0720/vws-compute/internal/compute"
 )
 
-func etagOf(generation int64) string { return strconv.FormatInt(generation, 10) }
+// etagOf is the generation until metadata changes, then generation.revision.
+// A generation-only etag issued before the first metadata write still matches.
+func etagOf(generation, revision int64) string {
+	gen := strconv.FormatInt(generation, 10)
+	if revision == 0 {
+		return gen
+	}
+	return gen + "." + strconv.FormatInt(revision, 10)
+}
+
+func latest(a, b time.Time) time.Time {
+	if b.After(a) {
+		return b
+	}
+	return a
+}
 
 func checkEtag(got, want string) error {
 	if got == "" || got == want {
@@ -79,7 +95,7 @@ func powerPB(p compute.Power) computev1.InstancePower {
 
 func instancePB(i compute.Instance, name string) *computev1.Instance {
 	if name == "" {
-		name = instanceResourceName("default", "default", i.Spec.ID.String())
+		name = instanceResourceName(placeholderLocation, placeholderLocation, i.Spec.ID.String())
 	}
 	life := i.Lifecycle()
 	spec := &computev1.InstanceSpec{
@@ -97,7 +113,8 @@ func instancePB(i compute.Instance, name string) *computev1.Instance {
 		Name:       name,
 		Uid:        i.Spec.ID.String(),
 		Generation: i.Spec.Generation,
-		Etag:       etagOf(i.Spec.Generation),
+		Etag:       etagOf(i.Spec.Generation, i.Meta.Revision),
+		Labels:     i.Meta.Labels.Map(),
 		Spec:       spec,
 		Status: &computev1.InstanceStatus{
 			Observed: &commonv1.ObservedState{
@@ -108,7 +125,7 @@ func instancePB(i compute.Instance, name string) *computev1.Instance {
 			Power: powerPB(i.Spec.Power),
 		},
 		CreateTime: timestamppb.New(i.Spec.CreatedAt),
-		UpdateTime: timestamppb.New(i.Spec.ChangedAt),
+		UpdateTime: timestamppb.New(latest(i.Spec.ChangedAt, i.Meta.ChangedAt)),
 	}
 	if i.Spec.Power == compute.PowerTerminated {
 		out.DeleteTime = timestamppb.New(i.Spec.ChangedAt)
@@ -118,7 +135,7 @@ func instancePB(i compute.Instance, name string) *computev1.Instance {
 
 func imagePB(i compute.Image, name string) *computev1.Image {
 	if name == "" {
-		name = imageResourceName("default", "default", i.Spec.ID.String())
+		name = imageResourceName(placeholderLocation, placeholderLocation, i.Spec.ID.String())
 	}
 	life := i.Lifecycle()
 	var message string
@@ -133,8 +150,9 @@ func imagePB(i compute.Image, name string) *computev1.Image {
 		Name:       name,
 		Uid:        i.Spec.ID.String(),
 		Generation: i.Spec.Generation,
-		Etag:       etagOf(i.Spec.Generation),
-		Spec:       &computev1.ImageSpec{Family: i.Spec.Name.String()},
+		Etag:       etagOf(i.Spec.Generation, i.Meta.Revision),
+		Labels:     i.Meta.Labels.Map(),
+		Spec:       &computev1.ImageSpec{Family: i.Spec.Name.String(), Description: i.Meta.Description.String()},
 		Status: &computev1.ImageStatus{
 			Observed: &commonv1.ObservedState{
 				State:      imageReconciliation(life),
@@ -145,7 +163,7 @@ func imagePB(i compute.Image, name string) *computev1.Image {
 			ProgressPercent: progress,
 		},
 		CreateTime: timestamppb.New(i.Spec.CreatedAt),
-		UpdateTime: timestamppb.New(i.Spec.ChangedAt),
+		UpdateTime: timestamppb.New(latest(i.Spec.ChangedAt, i.Meta.ChangedAt)),
 	}
 	if i.Spec.Deregistered {
 		out.DeleteTime = timestamppb.New(i.Spec.ChangedAt)
@@ -163,7 +181,8 @@ func keyPairPB(k compute.KeyPair) (*computev1.KeyPair, error) {
 		Name:       k.Spec.Name.String(),
 		Uid:        k.Spec.ID.String(),
 		Generation: k.Spec.Generation,
-		Etag:       etagOf(k.Spec.Generation),
+		Etag:       etagOf(k.Spec.Generation, k.Meta.Revision),
+		Labels:     k.Meta.Labels.Map(),
 		Spec:       &computev1.KeyPairSpec{PublicKey: k.Spec.PublicKey.AuthorizedKey()},
 		Status: &computev1.KeyPairStatus{
 			Observed: &commonv1.ObservedState{
@@ -173,7 +192,7 @@ func keyPairPB(k compute.KeyPair) (*computev1.KeyPair, error) {
 			FingerprintSha256: fp,
 		},
 		CreateTime: timestamppb.New(k.Spec.CreatedAt),
-		UpdateTime: timestamppb.New(k.Spec.ChangedAt),
+		UpdateTime: timestamppb.New(latest(k.Spec.ChangedAt, k.Meta.ChangedAt)),
 	}
 	if k.Spec.Deleted {
 		out.DeleteTime = timestamppb.New(k.Spec.ChangedAt)
@@ -193,10 +212,7 @@ func operationVerb(k compute.OperationKind) commonv1.OperationVerb {
 	}
 }
 
-func (s *server) operationPB(ctx context.Context, project string, op compute.Operation) (*longrunningpb.Operation, error) {
-	if project == "" {
-		project = "default"
-	}
+func (s *server) operationPB(ctx context.Context, project, resourceName string, op compute.Operation) (*longrunningpb.Operation, error) {
 	md := &commonv1.OperationMetadata{
 		Verb:       operationVerb(op.Kind),
 		Generation: op.TargetGeneration,
@@ -206,7 +222,7 @@ func (s *server) operationPB(ctx context.Context, project string, op compute.Ope
 	if op.State().Terminal() {
 		md.EndTime = timestamppb.New(op.SettledAt())
 	}
-	resource, response, err := s.operationResource(ctx, project, op)
+	resource, response, err := s.operationResource(ctx, project, resourceName, op)
 	if err != nil {
 		return nil, err
 	}
@@ -247,35 +263,41 @@ func (s *server) operationPB(ctx context.Context, project string, op compute.Ope
 	return out, nil
 }
 
-func (s *server) operationResource(ctx context.Context, project string, op compute.Operation) (string, proto.Message, error) {
+func (s *server) operationResource(ctx context.Context, project, resourceName string, op compute.Operation) (string, proto.Message, error) {
 	switch op.Target.Kind {
 	case compute.KindInstance:
+		name := resourceName
+		if name == "" {
+			name = instanceResourceName(project, placeholderLocation, op.Target.ID)
+		}
 		id, err := compute.ParseInstanceID(op.Target.ID)
 		if err != nil {
-			return instanceResourceName(project, "default", op.Target.ID), nil, nil
+			return name, nil, nil
 		}
 		inst, err := s.read.Instance(ctx, id)
 		if err != nil {
 			if compute.CodeOf(err) == compute.CodeNotFound {
-				return instanceResourceName(project, "default", op.Target.ID), nil, nil
+				return name, nil, nil
 			}
 			return "", nil, toStatus(err)
 		}
-		name := instanceResourceName(project, "default", inst.Spec.ID.String())
 		return name, instancePB(inst, name), nil
 	case compute.KindImage:
+		name := resourceName
+		if name == "" {
+			name = imageResourceName(project, placeholderLocation, op.Target.ID)
+		}
 		id, err := compute.ParseImageID(op.Target.ID)
 		if err != nil {
-			return imageResourceName(project, "default", op.Target.ID), nil, nil
+			return name, nil, nil
 		}
 		img, err := s.read.Image(ctx, id)
 		if err != nil {
 			if compute.CodeOf(err) == compute.CodeNotFound {
-				return imageResourceName(project, "default", op.Target.ID), nil, nil
+				return name, nil, nil
 			}
 			return "", nil, toStatus(err)
 		}
-		name := imageResourceName(project, "default", img.Spec.ID.String())
 		return name, imagePB(img, name), nil
 	case compute.KindKeyPair:
 		id, err := compute.ParseKeyPairID(op.Target.ID)

@@ -23,8 +23,8 @@ func TestFingerprintOf(t *testing.T) {
 	if start == stop {
 		t.Fatal("kind does not change the fingerprint")
 	}
-	withComment := compute.FingerprintOf(ok(compute.NewImportKeyPair("k", ed25519Line)))
-	bare := compute.FingerprintOf(ok(compute.NewImportKeyPair("k", ed25519Bare)))
+	withComment := compute.FingerprintOf(ok(compute.NewImportKeyPair("k", ed25519Line, compute.Labels{})))
+	bare := compute.FingerprintOf(ok(compute.NewImportKeyPair("k", ed25519Bare, compute.Labels{})))
 	if withComment != bare {
 		t.Fatal("an authorized_keys comment changes the fingerprint")
 	}

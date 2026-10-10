@@ -12,7 +12,11 @@ var resourceIDPattern = regexp.MustCompile(`^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$`)
 // machineTypePattern is InstanceSpec.machine_type.
 var machineTypePattern = regexp.MustCompile(`^[a-z]([a-z0-9.-]{0,61}[a-z0-9])?$`)
 
-var labelKeyPattern = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,62}$`)
+// placeholderLocation is the zone or region GetOperation uses. That RPC
+// knows the project and not the resource's parent, and instances and images
+// are not stored under a location. Mutation responses echo the caller's name
+// instead.
+const placeholderLocation = "default"
 
 // uuid4Pattern is the request_id format declared on every mutation.
 var uuid4Pattern = regexp.MustCompile(`(?i)^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)

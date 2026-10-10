@@ -13,6 +13,11 @@ type Intent interface {
 	Kind() OperationKind
 	encode(e *encoder)
 	plan(v View, env Env) (Change, error)
+	// carriesMetadata reports whether the request names labels or a
+	// description. When such a request writes no spec generation, its
+	// operation is MetadataOnly and Settle succeeds it at commit, so an
+	// in-flight or parked spec generation cannot hold it Pending or fail it.
+	carriesMetadata() bool
 }
 
 type runInstance struct {
@@ -23,9 +28,14 @@ type runInstance struct {
 
 // setPower is StartInstance, StopInstance, and TerminateInstance. The wanted
 // power determines the kind.
+// setPower is StartInstance, StopInstance, and TerminateInstance, plus the
+// power half of UpdateInstance. A non-zero patch is applied in the same
+// commit as any power change. A zero patch encodes nothing, so Start, Stop,
+// and Terminate keep the fingerprints they had before metadata existed.
 type setPower struct {
 	instance InstanceID
 	want     Power
+	patch    MetadataPatch
 }
 
 type rebootInstance struct{ instance InstanceID }
@@ -45,8 +55,27 @@ type deregisterImage struct{ image ImageID }
 type createKeyPair struct{ name KeyName }
 
 type importKeyPair struct {
-	name KeyName
-	key  PublicKey
+	name   KeyName
+	key    PublicKey
+	labels Labels
+}
+
+// The metadata intents change metadata only and never write a spec generation.
+type updateInstanceMetadata struct {
+	instance InstanceID
+	patch    MetadataPatch
+}
+
+type updateImageMetadata struct {
+	image ImageID
+	patch MetadataPatch
+}
+
+// updateKeyPairMetadata names the key pair the way deleteKeyPair does: by
+// name, resolved to the live incarnation at plan time.
+type updateKeyPairMetadata struct {
+	name  KeyName
+	patch MetadataPatch
 }
 
 type deleteKeyPair struct{ name KeyName }
@@ -72,23 +101,36 @@ func NewRunInstance(imageID, instanceType, keyName string) (Intent, error) {
 }
 
 func NewStartInstance(instanceID string) (Intent, error) {
-	return newSetPower(instanceID, PowerRunning)
+	return newSetPower(instanceID, PowerRunning, MetadataPatch{})
 }
 
 func NewStopInstance(instanceID string) (Intent, error) {
-	return newSetPower(instanceID, PowerStopped)
+	return newSetPower(instanceID, PowerStopped, MetadataPatch{})
 }
 
 func NewTerminateInstance(instanceID string) (Intent, error) {
-	return newSetPower(instanceID, PowerTerminated)
+	return newSetPower(instanceID, PowerTerminated, MetadataPatch{})
 }
 
-func newSetPower(instanceID string, want Power) (Intent, error) {
+// NewSetPower moves an instance to power and applies patch. power must be
+// PowerRunning or PowerStopped. With a zero patch it is NewStartInstance or
+// NewStopInstance, with the same kind and the same fingerprint. Terminate
+// has its own constructor and does not carry a patch.
+func NewSetPower(instanceID string, power Power, patch MetadataPatch) (Intent, error) {
+	switch power {
+	case PowerRunning, PowerStopped:
+	default:
+		return nil, Errorf(CodeInvalid, "power must be running or stopped")
+	}
+	return newSetPower(instanceID, power, patch)
+}
+
+func newSetPower(instanceID string, want Power, patch MetadataPatch) (Intent, error) {
 	id, err := ParseInstanceID(instanceID)
 	if err != nil {
 		return nil, err
 	}
-	return setPower{instance: id, want: want}, nil
+	return setPower{instance: id, want: want, patch: patch}, nil
 }
 
 func NewRebootInstance(instanceID string) (Intent, error) {
@@ -143,8 +185,10 @@ func NewCreateKeyPair(name string) (Intent, error) {
 	return createKeyPair{name: n}, nil
 }
 
-// NewImportKeyPair takes one authorized_keys line.
-func NewImportKeyPair(name, publicKey string) (Intent, error) {
+// NewImportKeyPair takes one authorized_keys line and the key pair's initial
+// labels. Empty labels leave the fingerprint exactly what it was before
+// labels existed.
+func NewImportKeyPair(name, publicKey string, labels Labels) (Intent, error) {
 	n, err := ParseKeyName(name)
 	if err != nil {
 		return nil, err
@@ -153,7 +197,36 @@ func NewImportKeyPair(name, publicKey string) (Intent, error) {
 	if err != nil {
 		return nil, err
 	}
-	return importKeyPair{name: n, key: k}, nil
+	return importKeyPair{name: n, key: k, labels: labels}, nil
+}
+
+// NewUpdateInstanceMetadata replaces metadata on a live instance and does
+// not change its spec generation.
+func NewUpdateInstanceMetadata(instanceID string, patch MetadataPatch) (Intent, error) {
+	id, err := ParseInstanceID(instanceID)
+	if err != nil {
+		return nil, err
+	}
+	return updateInstanceMetadata{instance: id, patch: patch}, nil
+}
+
+// NewUpdateImageMetadata replaces metadata on an image that is not
+// deregistered and does not change its spec generation.
+func NewUpdateImageMetadata(imageID string, patch MetadataPatch) (Intent, error) {
+	id, err := ParseImageID(imageID)
+	if err != nil {
+		return nil, err
+	}
+	return updateImageMetadata{image: id, patch: patch}, nil
+}
+
+// NewUpdateKeyPairMetadata replaces metadata on the live key pair with name.
+func NewUpdateKeyPairMetadata(name string, patch MetadataPatch) (Intent, error) {
+	n, err := ParseKeyName(name)
+	if err != nil {
+		return nil, err
+	}
+	return updateKeyPairMetadata{name: n, patch: patch}, nil
 }
 
 func NewDeleteKeyPair(name string) (Intent, error) {
@@ -172,17 +245,36 @@ func (in setPower) Kind() OperationKind {
 		return OpStartInstance
 	case PowerStopped:
 		return OpStopInstance
+	case PowerTerminated:
+		return OpTerminateInstance
+	default:
+		return OpTerminateInstance
 	}
-	return OpTerminateInstance
 }
 
-func (rebootInstance) Kind() OperationKind  { return OpRebootInstance }
-func (registerImage) Kind() OperationKind   { return OpRegisterImage }
-func (createImage) Kind() OperationKind     { return OpCreateImage }
-func (deregisterImage) Kind() OperationKind { return OpDeregisterImage }
-func (createKeyPair) Kind() OperationKind   { return OpCreateKeyPair }
-func (importKeyPair) Kind() OperationKind   { return OpImportKeyPair }
-func (deleteKeyPair) Kind() OperationKind   { return OpDeleteKeyPair }
+func (rebootInstance) Kind() OperationKind         { return OpRebootInstance }
+func (registerImage) Kind() OperationKind          { return OpRegisterImage }
+func (createImage) Kind() OperationKind            { return OpCreateImage }
+func (deregisterImage) Kind() OperationKind        { return OpDeregisterImage }
+func (createKeyPair) Kind() OperationKind          { return OpCreateKeyPair }
+func (importKeyPair) Kind() OperationKind          { return OpImportKeyPair }
+func (deleteKeyPair) Kind() OperationKind          { return OpDeleteKeyPair }
+func (updateInstanceMetadata) Kind() OperationKind { return OpUpdateInstanceMetadata }
+func (updateImageMetadata) Kind() OperationKind    { return OpUpdateImageMetadata }
+func (updateKeyPairMetadata) Kind() OperationKind  { return OpUpdateKeyPairMetadata }
+
+func (runInstance) carriesMetadata() bool            { return false }
+func (in setPower) carriesMetadata() bool            { return !in.patch.IsZero() }
+func (rebootInstance) carriesMetadata() bool         { return false }
+func (registerImage) carriesMetadata() bool          { return false }
+func (createImage) carriesMetadata() bool            { return false }
+func (deregisterImage) carriesMetadata() bool        { return false }
+func (createKeyPair) carriesMetadata() bool          { return false }
+func (in importKeyPair) carriesMetadata() bool       { return in.labels.Len() > 0 }
+func (deleteKeyPair) carriesMetadata() bool          { return false }
+func (updateInstanceMetadata) carriesMetadata() bool { return true }
+func (updateImageMetadata) carriesMetadata() bool    { return true }
+func (updateKeyPairMetadata) carriesMetadata() bool  { return true }
 
 // Fingerprint identifies an intent's content. Two intents have equal
 // fingerprints iff they have the same Kind and equal fields.
@@ -217,7 +309,10 @@ func (in runInstance) encode(e *encoder) {
 	e.field(in.key.s)
 }
 
-func (in setPower) encode(e *encoder)       { e.field(in.instance.s) }
+func (in setPower) encode(e *encoder) {
+	e.field(in.instance.s)
+	in.patch.encode(e)
+}
 func (in rebootInstance) encode(e *encoder) { e.field(in.instance.s) }
 
 func (in registerImage) encode(e *encoder) {
@@ -236,6 +331,24 @@ func (in createKeyPair) encode(e *encoder)   { e.field(in.name.s) }
 func (in importKeyPair) encode(e *encoder) {
 	e.field(in.name.s)
 	e.field(in.key.wire)
+	if in.labels.Len() > 0 {
+		e.labelSet("labels=", in.labels)
+	}
 }
 
 func (in deleteKeyPair) encode(e *encoder) { e.field(in.name.s) }
+
+func (in updateInstanceMetadata) encode(e *encoder) {
+	e.field(in.instance.s)
+	in.patch.encode(e)
+}
+
+func (in updateImageMetadata) encode(e *encoder) {
+	e.field(in.image.s)
+	in.patch.encode(e)
+}
+
+func (in updateKeyPairMetadata) encode(e *encoder) {
+	e.field(in.name.s)
+	in.patch.encode(e)
+}

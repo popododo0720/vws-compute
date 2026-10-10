@@ -21,20 +21,26 @@ const (
 	OpCreateKeyPair
 	OpImportKeyPair
 	OpDeleteKeyPair
+	OpUpdateInstanceMetadata
+	OpUpdateImageMetadata
+	OpUpdateKeyPairMetadata
 )
 
 var operationKindNames = [...]string{
-	OpRunInstance:       "RunInstance",
-	OpStartInstance:     "StartInstance",
-	OpStopInstance:      "StopInstance",
-	OpRebootInstance:    "RebootInstance",
-	OpTerminateInstance: "TerminateInstance",
-	OpRegisterImage:     "RegisterImage",
-	OpCreateImage:       "CreateImage",
-	OpDeregisterImage:   "DeregisterImage",
-	OpCreateKeyPair:     "CreateKeyPair",
-	OpImportKeyPair:     "ImportKeyPair",
-	OpDeleteKeyPair:     "DeleteKeyPair",
+	OpRunInstance:            "RunInstance",
+	OpStartInstance:          "StartInstance",
+	OpStopInstance:           "StopInstance",
+	OpRebootInstance:         "RebootInstance",
+	OpTerminateInstance:      "TerminateInstance",
+	OpRegisterImage:          "RegisterImage",
+	OpCreateImage:            "CreateImage",
+	OpDeregisterImage:        "DeregisterImage",
+	OpCreateKeyPair:          "CreateKeyPair",
+	OpImportKeyPair:          "ImportKeyPair",
+	OpDeleteKeyPair:          "DeleteKeyPair",
+	OpUpdateInstanceMetadata: "UpdateInstanceMetadata",
+	OpUpdateImageMetadata:    "UpdateImageMetadata",
+	OpUpdateKeyPairMetadata:  "UpdateKeyPairMetadata",
 }
 
 // OperationKinds returns every kind in declaration order.
@@ -99,6 +105,7 @@ func (s OperationState) String() string {
 // An Operation targets exactly one (resource, generation) pair. It leaves
 // Pending only through Settle:
 //
+//	Pending --MetadataOnly----------------------------> Succeeded
 //	Pending --observed == target, no failure--------> Succeeded
 //	Pending --observed == target, failure-----------> Failed
 //	Pending --observed > target, or spec > target---> Superseded
@@ -112,7 +119,12 @@ type Operation struct {
 	Kind             OperationKind
 	Target           Ref
 	TargetGeneration int64
-	CreatedAt        time.Time
+	// MetadataOnly marks a request that carried metadata and wrote no spec
+	// generation. Settle succeeds it the first time it runs, inside
+	// CommitDesired, so it does not wait on the agent. NewOperation sets it
+	// once and it never changes.
+	MetadataOnly bool
+	CreatedAt    time.Time
 
 	state     OperationState
 	failure   *Failure
@@ -137,6 +149,7 @@ func NewOperation(env Env, req RequestID, in Intent, ch Change) (Operation, erro
 		Kind:             in.Kind(),
 		Target:           ch.Spec.Ref(),
 		TargetGeneration: ch.Spec.Gen(),
+		MetadataOnly:     !ch.Write && in.carriesMetadata(),
 		CreatedAt:        env.Now,
 		state:            OperationPending,
 	}, nil
@@ -168,6 +181,8 @@ func Settle(o Operation, spec int64, obs Observed, now time.Time) Operation {
 		return o
 	}
 	switch {
+	case o.MetadataOnly:
+		o.state = OperationSucceeded
 	case obs.Generation > o.TargetGeneration:
 		o.state = OperationSuperseded
 	case obs.Generation == o.TargetGeneration && obs.Failure != nil:
@@ -197,6 +212,8 @@ func RestoreOperation(base Operation, state OperationState, failure *Failure, se
 		return Operation{}, Errorf(CodeInternal, "operation %s: state %s with settled time %v", base.ID, state, settledAt)
 	case (state == OperationFailed) != (failure != nil):
 		return Operation{}, Errorf(CodeInternal, "operation %s: state %s with failure %v", base.ID, state, failure)
+	case base.MetadataOnly && state != OperationSucceeded:
+		return Operation{}, Errorf(CodeInternal, "operation %s: metadata-only record is %s", base.ID, state)
 	}
 	base.state, base.settledAt = state, settledAt
 	if failure != nil {

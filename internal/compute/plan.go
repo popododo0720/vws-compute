@@ -38,6 +38,11 @@ type Change struct {
 	// Secret is the private key for CreateKeyPair and nil otherwise.
 	// store.DesiredChange has no field for it.
 	Secret *PrivateKey
+	// Meta is the target's metadata after the intent, when the intent
+	// changes it, and nil otherwise. A create sets it with Revision 0.
+	// An update sets Revision to stored+1 through MetadataPatch.next.
+	// Meta never makes Write true: metadata moves no generation.
+	Meta *Metadata
 }
 
 // Plan applies in to the state visible through v. It is the only place the
@@ -104,14 +109,18 @@ func (in setPower) plan(v View, env Env) (Change, error) {
 	if cur.Power == PowerTerminated && in.want != PowerTerminated {
 		return Change{}, Errorf(CodeFailedPrecondition, "instance %s is terminated", in.instance)
 	}
+	meta, err := in.patch.next(inst.Meta, env)
+	if err != nil {
+		return Change{}, err
+	}
 	if cur.Power == in.want && !inst.Status.Observed.Parked(cur.Generation) {
-		return Change{Spec: cur}, nil
+		return Change{Spec: cur, Meta: meta}, nil
 	}
 	next := cur
 	next.Power = in.want
 	next.Generation++
 	next.ChangedAt = env.Now
-	return Change{Spec: next, Write: true}, nil
+	return Change{Spec: next, Write: true, Meta: meta}, nil
 }
 
 // plan requires desired power Running. Every accepted reboot advances the
@@ -219,7 +228,55 @@ func (in importKeyPair) plan(v View, env Env) (Change, error) {
 	if err := requireFreeName(v, in.name); err != nil {
 		return Change{}, err
 	}
-	return newKeyPair(env, in.name, in.key)
+	ch, err := newKeyPair(env, in.name, in.key)
+	if err != nil {
+		return Change{}, err
+	}
+	if in.labels.Len() > 0 {
+		ch.Meta = &Metadata{Labels: in.labels}
+	}
+	return ch, nil
+}
+
+func (in updateInstanceMetadata) plan(v View, env Env) (Change, error) {
+	inst, err := v.Instance(in.instance)
+	if err != nil {
+		return Change{}, err
+	}
+	if inst.Spec.Power == PowerTerminated {
+		return Change{}, Errorf(CodeFailedPrecondition, "instance %s is terminated", in.instance)
+	}
+	return metadataChange(inst.Spec, inst.Meta, in.patch, env)
+}
+
+func (in updateImageMetadata) plan(v View, env Env) (Change, error) {
+	img, err := v.Image(in.image)
+	if err != nil {
+		return Change{}, err
+	}
+	if img.Spec.Deregistered {
+		return Change{}, Errorf(CodeFailedPrecondition, "image %s is deregistered", in.image)
+	}
+	return metadataChange(img.Spec, img.Meta, in.patch, env)
+}
+
+func (in updateKeyPairMetadata) plan(v View, env Env) (Change, error) {
+	kp, err := v.KeyPairByName(in.name)
+	if err != nil {
+		return Change{}, err
+	}
+	if kp.Spec.Deleted {
+		return Change{}, Errorf(CodeNotFound, "key pair %q not found", in.name)
+	}
+	return metadataChange(kp.Spec, kp.Meta, in.patch, env)
+}
+
+func metadataChange(spec Spec, cur Metadata, p MetadataPatch, env Env) (Change, error) {
+	meta, err := p.next(cur, env)
+	if err != nil {
+		return Change{}, err
+	}
+	return Change{Spec: spec, Meta: meta}, nil
 }
 
 func requireFreeName(v View, name KeyName) error {

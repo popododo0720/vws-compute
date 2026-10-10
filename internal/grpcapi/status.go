@@ -124,7 +124,10 @@ func randomResourceID() (string, error) {
 	return "n-" + hex.EncodeToString(b[:]), nil
 }
 
-func (s *server) submit(ctx context.Context, requestID string, in compute.Intent, inErr error) (controller.Receipt, error) {
+// submit admits in. fresh runs only when requestID has no stored operation,
+// which is where an etag is checked: a retry of a request that already
+// moved the resource returns the original operation instead of ETAG_MISMATCH.
+func (s *server) submit(ctx context.Context, requestID string, in compute.Intent, inErr error, fresh func() error) (controller.Receipt, error) {
 	if err := checkRequestID(requestID); err != nil {
 		return controller.Receipt{}, err
 	}
@@ -142,9 +145,40 @@ func (s *server) submit(ctx context.Context, requestID string, in compute.Intent
 	if inErr != nil {
 		return controller.Receipt{}, toStatus(inErr)
 	}
+	if fresh != nil {
+		_, err := s.read.OperationByRequest(ctx, req)
+		switch {
+		case compute.CodeOf(err) == compute.CodeNotFound:
+			if err := fresh(); err != nil {
+				return controller.Receipt{}, err
+			}
+		case err != nil:
+			return controller.Receipt{}, toStatus(err)
+		}
+	}
 	rc, err := s.ctl.Submit(ctx, req, in)
 	if err != nil {
 		return controller.Receipt{}, toStatus(err)
 	}
 	return rc, nil
+}
+
+// storedOperation returns the operation for requestID, or the zero operation
+// when the id is empty or unused.
+func (s *server) storedOperation(ctx context.Context, requestID string) (compute.Operation, error) {
+	if requestID == "" {
+		return compute.Operation{}, nil
+	}
+	req, err := compute.ParseRequestID(requestID)
+	if err != nil {
+		return compute.Operation{}, toStatus(err)
+	}
+	op, err := s.read.OperationByRequest(ctx, req)
+	if err == nil {
+		return op, nil
+	}
+	if compute.CodeOf(err) == compute.CodeNotFound {
+		return compute.Operation{}, nil
+	}
+	return compute.Operation{}, toStatus(err)
 }

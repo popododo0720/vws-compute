@@ -25,7 +25,7 @@ type Store struct {
 
 	instances map[string]*instanceRow
 	images    map[string]*imageRow
-	keyPairs  map[string]compute.KeyPairSpec
+	keyPairs  map[string]keyPairRow
 
 	ops         map[compute.OperationID]compute.Operation
 	opByRequest map[compute.RequestID]compute.OperationID
@@ -35,11 +35,18 @@ type Store struct {
 type instanceRow struct {
 	spec   compute.InstanceSpec
 	status compute.InstanceStatus
+	meta   compute.Metadata
 }
 
 type imageRow struct {
 	spec   compute.ImageSpec
 	status compute.ImageStatus
+	meta   compute.Metadata
+}
+
+type keyPairRow struct {
+	spec compute.KeyPairSpec
+	meta compute.Metadata
 }
 
 // New returns an empty store.
@@ -47,7 +54,7 @@ func New() *Store {
 	return &Store{
 		instances:   map[string]*instanceRow{},
 		images:      map[string]*imageRow{},
-		keyPairs:    map[string]compute.KeyPairSpec{},
+		keyPairs:    map[string]keyPairRow{},
 		ops:         map[compute.OperationID]compute.Operation{},
 		opByRequest: map[compute.RequestID]compute.OperationID{},
 		pending:     map[compute.Ref]map[compute.OperationID]struct{}{},
@@ -101,30 +108,30 @@ func (s *Store) Images(_ context.Context, q store.ImageQuery) (store.Page[comput
 func (s *Store) KeyPair(_ context.Context, id compute.KeyPairID) (compute.KeyPair, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	spec, ok := s.keyPairs[id.String()]
+	row, ok := s.keyPairs[id.String()]
 	if !ok {
 		return compute.KeyPair{}, compute.Errorf(compute.CodeNotFound, "key pair %s not found", id)
 	}
-	return compute.KeyPair{Spec: spec}, nil
+	return row.read(), nil
 }
 
 func (s *Store) KeyPairByName(_ context.Context, name compute.KeyName) (compute.KeyPair, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	var best compute.KeyPairSpec
+	var best keyPairRow
 	found := false
-	for _, spec := range s.keyPairs {
-		if spec.Name != name {
+	for _, row := range s.keyPairs {
+		if row.spec.Name != name {
 			continue
 		}
-		if !found || newerIncarnation(spec, best) {
-			best, found = spec, true
+		if !found || newerIncarnation(row.spec, best.spec) {
+			best, found = row, true
 		}
 	}
 	if !found {
 		return compute.KeyPair{}, compute.Errorf(compute.CodeNotFound, "key pair %q not found", name)
 	}
-	return compute.KeyPair{Spec: best}, nil
+	return best.read(), nil
 }
 
 // newerIncarnation orders key pairs sharing a name: live first, then the
@@ -142,10 +149,10 @@ func newerIncarnation(a, b compute.KeyPairSpec) bool {
 func (s *Store) KeyPairs(_ context.Context, q store.KeyPairQuery) (store.Page[compute.KeyPair], error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	live := map[string]compute.KeyPairSpec{}
-	for _, spec := range s.keyPairs {
-		if !spec.Deleted {
-			live[spec.Name.String()] = spec
+	live := map[string]keyPairRow{}
+	for _, row := range s.keyPairs {
+		if !row.spec.Deleted {
+			live[row.spec.Name.String()] = row
 		}
 	}
 	keys := make([]string, 0, len(q.Names))
@@ -153,7 +160,7 @@ func (s *Store) KeyPairs(_ context.Context, q store.KeyPairQuery) (store.Page[co
 		keys = append(keys, n.String())
 	}
 	names := selectKeys(live, keys, q.After)
-	return page(names, q.PageSize, func(n string) compute.KeyPair { return compute.KeyPair{Spec: live[n]} }), nil
+	return page(names, q.PageSize, func(n string) compute.KeyPair { return live[n].read() }), nil
 }
 
 func (s *Store) Operation(_ context.Context, id compute.OperationID) (compute.Operation, error) {
@@ -201,11 +208,23 @@ func (s *Store) CommitDesired(_ context.Context, c store.DesiredChange) (compute
 		if c.Spec.Gen() != cur+1 {
 			return compute.Operation{}, store.ErrConflict
 		}
+	} else if c.Spec.Gen() != cur {
+		return compute.Operation{}, store.ErrConflict
+	}
+	if c.Meta != nil {
+		if err := store.CheckMetadata(*c.Meta, cur == 0, s.revision(ref)); err != nil {
+			return compute.Operation{}, err
+		}
+	}
+	if c.Write {
 		if err := s.put(c.Spec); err != nil {
 			return compute.Operation{}, err
 		}
-	} else if c.Spec.Gen() != cur {
-		return compute.Operation{}, store.ErrConflict
+	}
+	if c.Meta != nil {
+		if err := s.putMeta(ref, *c.Meta); err != nil {
+			return compute.Operation{}, err
+		}
 	}
 	spec, obs, _ := s.progress(ref)
 	if c.Write {
@@ -246,12 +265,14 @@ func (s *Store) put(spec compute.Spec) error {
 	case compute.KeyPairSpec:
 		if !spec.Deleted {
 			for id, other := range s.keyPairs {
-				if id != spec.ID.String() && other.Name == spec.Name && !other.Deleted {
+				if id != spec.ID.String() && other.spec.Name == spec.Name && !other.spec.Deleted {
 					return store.ErrConflict
 				}
 			}
 		}
-		s.keyPairs[spec.ID.String()] = spec
+		row := s.keyPairs[spec.ID.String()]
+		row.spec = spec
+		s.keyPairs[spec.ID.String()] = row
 	default:
 		return compute.Errorf(compute.CodeInternal, "unknown spec %T", spec)
 	}
@@ -271,8 +292,8 @@ func (s *Store) progress(ref compute.Ref) (int64, compute.Observed, bool) {
 			return row.spec.Generation, row.status.Observed, true
 		}
 	case compute.KindKeyPair:
-		if spec, ok := s.keyPairs[ref.ID]; ok {
-			return spec.Generation, compute.KeyPair{Spec: spec}.Observed(), true
+		if row, ok := s.keyPairs[ref.ID]; ok {
+			return row.spec.Generation, compute.KeyPair{Spec: row.spec}.Observed(), true
 		}
 	}
 	return 0, compute.Observed{}, false
@@ -358,11 +379,60 @@ func (s *Store) laggingLocked(include func(compute.Retry) bool) []compute.Ref {
 }
 
 func (r *instanceRow) read() compute.Instance {
-	return compute.Instance{Spec: cloneInstanceSpec(r.spec), Status: cloneInstanceStatus(r.status)}
+	return compute.Instance{Spec: cloneInstanceSpec(r.spec), Status: cloneInstanceStatus(r.status), Meta: r.meta}
 }
 
 func (r *imageRow) read() compute.Image {
-	return compute.Image{Spec: r.spec, Status: cloneImageStatus(r.status)}
+	return compute.Image{Spec: r.spec, Status: cloneImageStatus(r.status), Meta: r.meta}
+}
+
+func (r keyPairRow) read() compute.KeyPair {
+	return compute.KeyPair{Spec: r.spec, Meta: r.meta}
+}
+
+func (s *Store) revision(ref compute.Ref) int64 {
+	switch ref.Kind {
+	case compute.KindInstance:
+		if row, ok := s.instances[ref.ID]; ok {
+			return row.meta.Revision
+		}
+	case compute.KindImage:
+		if row, ok := s.images[ref.ID]; ok {
+			return row.meta.Revision
+		}
+	case compute.KindKeyPair:
+		if row, ok := s.keyPairs[ref.ID]; ok {
+			return row.meta.Revision
+		}
+	}
+	return 0
+}
+
+func (s *Store) putMeta(ref compute.Ref, m compute.Metadata) error {
+	switch ref.Kind {
+	case compute.KindInstance:
+		row, ok := s.instances[ref.ID]
+		if !ok {
+			return store.ErrConflict
+		}
+		row.meta = m
+	case compute.KindImage:
+		row, ok := s.images[ref.ID]
+		if !ok {
+			return store.ErrConflict
+		}
+		row.meta = m
+	case compute.KindKeyPair:
+		row, ok := s.keyPairs[ref.ID]
+		if !ok {
+			return store.ErrConflict
+		}
+		row.meta = m
+		s.keyPairs[ref.ID] = row
+	default:
+		return compute.Errorf(compute.CodeInternal, "unknown resource kind %d", ref.Kind)
+	}
+	return nil
 }
 
 func cloneInstanceSpec(s compute.InstanceSpec) compute.InstanceSpec {

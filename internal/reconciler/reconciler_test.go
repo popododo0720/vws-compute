@@ -612,3 +612,31 @@ func TestRunConverges(t *testing.T) {
 		})
 	}
 }
+
+func TestMetadataUpdateDoesNotCallTheAgent(t *testing.T) {
+	eachStore(t, func(h *harness) {
+		imgID := h.image()
+		before := h.agent.Calls()
+		labels := ok(compute.ParseLabels(map[string]string{"vws-fingerprint": "fp"}))
+		desc := ok(compute.ParseDescription("notes"))
+		patch := compute.MetadataPatch{}.ReplaceLabels(labels).SetDescription(desc)
+		op := h.submit("meta", ok(compute.NewUpdateImageMetadata(imgID.String(), patch)))
+		if op.State() != compute.OperationSucceeded || !op.MetadataOnly {
+			h.t.Fatalf("metadata update born %s metadata=%v, want Succeeded MetadataOnly", op.State(), op.MetadataOnly)
+		}
+		h.sweep()
+		if h.agent.Calls() != before {
+			h.t.Fatal("label and description update called the agent")
+		}
+		img := ok(h.repo.Image(context.Background(), imgID))
+		if !img.Available() || img.Spec.Generation != 1 || !img.Meta.Labels.Equal(labels) || img.Meta.Description.String() != "notes" {
+			h.t.Fatalf("image after metadata = available %v gen %d labels %v desc %q", img.Available(), img.Spec.Generation, img.Meta.Labels.Map(), img.Meta.Description.String())
+		}
+		run := h.submit("launch", ok(compute.NewRunInstance(imgID.String(), "vws.small", "")))
+		h.sweep()
+		h.wantStates(compute.OperationSucceeded, run)
+		if !ok(h.repo.Image(context.Background(), imgID)).Available() {
+			h.t.Fatal("image stopped being launchable after a metadata update")
+		}
+	})
+}

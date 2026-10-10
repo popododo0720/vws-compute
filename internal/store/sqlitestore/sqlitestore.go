@@ -37,23 +37,51 @@ func Open(ctx context.Context, path string) (*Store, error) {
 		return nil, err
 	}
 	db.SetMaxOpenConns(1)
-	if _, err := db.ExecContext(ctx, schema); err != nil {
+	if err := migrate(ctx, db); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("sqlitestore: open %s: %w", path, err)
 	}
-	// CREATE TABLE IF NOT EXISTS does not write when the schema is already
-	// there, so it leaves only a shared lock. BEGIN EXCLUSIVE takes the write
-	// lock, and locking_mode=EXCLUSIVE keeps it until Close. A second Open
-	// then fails instead of serving beside the first.
-	if _, err := db.ExecContext(ctx, `BEGIN EXCLUSIVE`); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("sqlitestore: lock %s: %w", path, err)
-	}
-	if _, err := db.ExecContext(ctx, `COMMIT`); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("sqlitestore: lock %s: %w", path, err)
-	}
 	return &Store{db: db}, nil
+}
+
+// migrate takes the file's write lock and brings the schema up to date in
+// one transaction. locking_mode=EXCLUSIVE keeps the lock after COMMIT until
+// Close, so a second Open fails whether or not this one migrated anything.
+// A file whose user_version is ahead of this binary is refused.
+func migrate(ctx context.Context, db *sql.DB) error {
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	if _, err := conn.ExecContext(ctx, `BEGIN EXCLUSIVE`); err != nil {
+		return fmt.Errorf("lock: %w", err)
+	}
+	rollback := func(err error) error {
+		_, _ = conn.ExecContext(ctx, `ROLLBACK`)
+		return err
+	}
+	var v int
+	if err := conn.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&v); err != nil {
+		return rollback(err)
+	}
+	if v > len(migrations) {
+		return rollback(fmt.Errorf("schema version %d is newer than this binary's %d", v, len(migrations)))
+	}
+	for i := v; i < len(migrations); i++ {
+		if _, err := conn.ExecContext(ctx, migrations[i]); err != nil {
+			return rollback(fmt.Errorf("migration %d: %w", i+1, err))
+		}
+	}
+	if v < len(migrations) {
+		if _, err := conn.ExecContext(ctx, fmt.Sprintf(`PRAGMA user_version = %d`, len(migrations))); err != nil {
+			return rollback(err)
+		}
+	}
+	if _, err := conn.ExecContext(ctx, `COMMIT`); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (s *Store) Close() error { return s.db.Close() }
@@ -217,11 +245,27 @@ func (s *Store) CommitDesired(ctx context.Context, c store.DesiredChange) (compu
 			if c.Spec.Gen() != cur+1 {
 				return store.ErrConflict
 			}
+		} else if c.Spec.Gen() != cur {
+			return store.ErrConflict
+		}
+		if c.Meta != nil {
+			stored, err := metaRevision(ctx, tx, ref)
+			if err != nil {
+				return err
+			}
+			if err := store.CheckMetadata(*c.Meta, cur == 0, stored); err != nil {
+				return err
+			}
+		}
+		if c.Write {
 			if err := putSpec(ctx, tx, c.Spec, cur); err != nil {
 				return err
 			}
-		} else if c.Spec.Gen() != cur {
-			return store.ErrConflict
+		}
+		if c.Meta != nil {
+			if err := putMeta(ctx, tx, ref, *c.Meta); err != nil {
+				return err
+			}
 		}
 		spec, obs, err := progress(ctx, tx, ref)
 		if err != nil {
@@ -390,11 +434,57 @@ func settlePending(ctx context.Context, tx *sql.Tx, ref compute.Ref, spec int64,
 func insertOperation(ctx context.Context, tx *sql.Tx, op compute.Operation) error {
 	code, msg := failureArgs(op.Failure())
 	_, err := tx.ExecContext(ctx, `INSERT INTO operations (id, request_id, fingerprint, kind, target_kind, target_id,
-		target_generation, state, failure_code, failure_message, created_at, settled_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		target_generation, state, failure_code, failure_message, created_at, settled_at, metadata_only)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		op.ID.String(), op.Request.String(), op.Fingerprint[:], op.Kind.String(), int64(op.Target.Kind), op.Target.ID,
-		op.TargetGeneration, int64(op.State()), code, msg, nanos(op.CreatedAt), nanos(op.SettledAt()))
+		op.TargetGeneration, int64(op.State()), code, msg, nanos(op.CreatedAt), nanos(op.SettledAt()), boolInt(op.MetadataOnly))
 	return err
+}
+
+func metaRevision(ctx context.Context, q querier, ref compute.Ref) (int64, error) {
+	table, err := tableOf(ref.Kind)
+	if err != nil {
+		return 0, err
+	}
+	var rev int64
+	err = q.QueryRowContext(ctx, `SELECT meta_revision FROM `+table+` WHERE id = ?`, ref.ID).Scan(&rev)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, nil
+	}
+	return rev, err
+}
+
+func tableOf(k compute.Kind) (string, error) {
+	switch k {
+	case compute.KindInstance:
+		return "instances", nil
+	case compute.KindImage:
+		return "images", nil
+	case compute.KindKeyPair:
+		return "key_pairs", nil
+	default:
+		return "", compute.Errorf(compute.CodeInternal, "unknown resource kind %d", k)
+	}
+}
+
+func putMeta(ctx context.Context, tx *sql.Tx, ref compute.Ref, m compute.Metadata) error {
+	table, err := tableOf(ref.Kind)
+	if err != nil {
+		return err
+	}
+	labels, err := labelsJSON(m.Labels)
+	if err != nil {
+		return err
+	}
+	res, err := tx.ExecContext(ctx, `UPDATE `+table+` SET labels = ?, description = ?, meta_revision = ?, meta_changed_at = ?
+		WHERE id = ?`, labels, m.Description.String(), m.Revision, nanos(m.ChangedAt), ref.ID)
+	if err != nil {
+		return err
+	}
+	if n, err := res.RowsAffected(); err != nil || n != 1 {
+		return errors.Join(store.ErrConflict, err)
+	}
+	return nil
 }
 
 func (s *Store) CommitInstanceStatus(ctx context.Context, id compute.InstanceID, st compute.InstanceStatus) error {

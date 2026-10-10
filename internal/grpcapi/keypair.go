@@ -90,8 +90,20 @@ func (s *server) UpdateKeyPair(ctx context.Context, r *computev1.UpdateKeyPairRe
 	if err := checkMask(paths); err != nil {
 		return nil, err
 	}
-	if err := rejectLabels(kp.GetLabels()); err != nil {
-		return nil, err
+	if _, err := metadataPatch(paths, kp.GetLabels(), nil, maskIncludes(paths, "spec")); err != nil {
+		return nil, toStatus(err)
+	}
+	// allow_missing inserts on the first attempt and the row exists on the
+	// retry. Resubmitting the import keeps the fingerprint, which an update
+	// intent would not.
+	if !r.GetValidateOnly() {
+		prior, err := s.storedOperation(ctx, r.GetRequestId())
+		if err != nil {
+			return nil, err
+		}
+		if prior.Kind == compute.OpImportKeyPair || prior.Kind == compute.OpCreateKeyPair {
+			return s.importKeyPair(ctx, project, kp.GetName(), kp, r.GetRequestId(), false)
+		}
 	}
 	existing, name, err := s.liveKeyPair(ctx, kp.GetName())
 	if err != nil {
@@ -100,8 +112,9 @@ func (s *server) UpdateKeyPair(ctx context.Context, r *computev1.UpdateKeyPairRe
 		}
 		return nil, err
 	}
-	if err := checkEtag(kp.GetEtag(), etagOf(existing.Spec.Generation)); err != nil {
-		return nil, err
+	patch, err := metadataPatch(paths, kp.GetLabels(), nil, maskIncludes(paths, "spec"))
+	if err != nil {
+		return nil, toStatus(err)
 	}
 	if maskIncludes(paths, "spec") {
 		if kp.GetSpec() == nil || kp.GetSpec().GetPublicKey() == "" {
@@ -115,17 +128,27 @@ func (s *server) UpdateKeyPair(ctx context.Context, r *computev1.UpdateKeyPairRe
 			return nil, invalidSpec("key_pair.spec.public_key is immutable")
 		}
 	}
+	in, err := compute.NewUpdateKeyPairMetadata(name, patch)
 	if r.GetValidateOnly() {
+		if err != nil {
+			return nil, toStatus(err)
+		}
+		if err := checkEtag(kp.GetEtag(), etagOf(existing.Spec.Generation, existing.Meta.Revision)); err != nil {
+			return nil, err
+		}
 		return doneOperation(project, name, commonv1.OperationVerb_OPERATION_VERB_UPDATE, r.GetRequestId(), nil)
 	}
-	if op, ok, err := s.replay(ctx, project, r.GetRequestId(), existing.Spec.ID.String()); err != nil || ok {
-		return op, err
-	}
-	pb, err := keyPairPB(existing)
+	rc, err := s.submit(ctx, r.GetRequestId(), in, err, func() error {
+		cur, _, err := s.liveKeyPair(ctx, kp.GetName())
+		if err != nil {
+			return err
+		}
+		return checkEtag(kp.GetEtag(), etagOf(cur.Spec.Generation, cur.Meta.Revision))
+	})
 	if err != nil {
-		return nil, toStatus(err)
+		return nil, err
 	}
-	return doneOperation(project, name, commonv1.OperationVerb_OPERATION_VERB_UPDATE, r.GetRequestId(), pb)
+	return s.operationPB(ctx, project, name, rc.Operation)
 }
 
 func (s *server) DeleteKeyPair(ctx context.Context, r *computev1.DeleteKeyPairRequest) (*longrunningpb.Operation, error) {
@@ -136,22 +159,25 @@ func (s *server) DeleteKeyPair(ctx context.Context, r *computev1.DeleteKeyPairRe
 	if err != nil {
 		return nil, err
 	}
-	existing, name, err := s.liveKeyPair(ctx, r.GetName())
+	_, name, err := s.liveKeyPair(ctx, r.GetName())
 	if err != nil {
 		if r.GetAllowMissing() && statusNotFound(err) {
 			return doneOperation(project, r.GetName(), commonv1.OperationVerb_OPERATION_VERB_DELETE, r.GetRequestId(), nil)
 		}
 		return nil, err
 	}
-	if err := checkEtag(r.GetEtag(), etagOf(existing.Spec.Generation)); err != nil {
-		return nil, err
-	}
 	in, err := compute.NewDeleteKeyPair(name)
-	rc, err := s.submit(ctx, r.GetRequestId(), in, err)
+	rc, err := s.submit(ctx, r.GetRequestId(), in, err, func() error {
+		cur, _, err := s.liveKeyPair(ctx, r.GetName())
+		if err != nil {
+			return err
+		}
+		return checkEtag(r.GetEtag(), etagOf(cur.Spec.Generation, cur.Meta.Revision))
+	})
 	if err != nil {
 		return nil, err
 	}
-	return s.operationPB(ctx, project, rc.Operation)
+	return s.operationPB(ctx, project, name, rc.Operation)
 }
 
 func (s *server) ReportKeyPairStatus(ctx context.Context, r *computev1.ReportKeyPairStatusRequest) (*computev1.ReportKeyPairStatusResponse, error) {
@@ -186,8 +212,9 @@ func (s *server) importKeyPair(ctx context.Context, project, name string, kp *co
 		kp.GetCreateTime() != nil || kp.GetUpdateTime() != nil || kp.GetDeleteTime() != nil {
 		return nil, invalidSpec("output-only fields must be unset")
 	}
-	if err := rejectLabels(kp.GetLabels()); err != nil {
-		return nil, err
+	labels, err := compute.ParseLabels(kp.GetLabels())
+	if err != nil {
+		return nil, toStatus(err)
 	}
 	if _, err := compute.ParsePublicKey(kp.GetSpec().GetPublicKey()); err != nil {
 		return nil, toStatus(err)
@@ -200,12 +227,12 @@ func (s *server) importKeyPair(ctx context.Context, project, name string, kp *co
 		}
 		return doneOperation(project, name, commonv1.OperationVerb_OPERATION_VERB_CREATE, requestID, nil)
 	}
-	in, err := compute.NewImportKeyPair(name, kp.GetSpec().GetPublicKey())
-	rc, err := s.submit(ctx, requestID, in, err)
+	in, err := compute.NewImportKeyPair(name, kp.GetSpec().GetPublicKey(), labels)
+	rc, err := s.submit(ctx, requestID, in, err, nil)
 	if err != nil {
 		return nil, err
 	}
-	return s.operationPB(ctx, project, rc.Operation)
+	return s.operationPB(ctx, project, name, rc.Operation)
 }
 
 func (s *server) liveKeyPair(ctx context.Context, name string) (compute.KeyPair, string, error) {

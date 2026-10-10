@@ -8,7 +8,9 @@ import (
 	"encoding/hex"
 	"errors"
 	"net"
+	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -23,6 +25,7 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/anypb"
 	"google.golang.org/protobuf/types/known/durationpb"
+	"google.golang.org/protobuf/types/known/fieldmaskpb"
 
 	commonv1 "github.com/popododo0720/vws-proto/gen/go/vws/common/v1"
 	computev1 "github.com/popododo0720/vws-proto/gen/go/vws/compute/v1"
@@ -33,7 +36,9 @@ import (
 	"github.com/popododo0720/vws-compute/internal/hypervisor"
 	"github.com/popododo0720/vws-compute/internal/hypervisor/fakeagent"
 	"github.com/popododo0720/vws-compute/internal/reconciler"
+	"github.com/popododo0720/vws-compute/internal/store"
 	"github.com/popododo0720/vws-compute/internal/store/memstore"
+	"github.com/popododo0720/vws-compute/internal/store/sqlitestore"
 )
 
 type harness struct {
@@ -43,11 +48,16 @@ type harness struct {
 	ops   longrunningpb.OperationsClient
 	agent *fakeagent.Agent
 	ctl   *controller.Controller
+	stop  func()
 }
 
 func serve(t *testing.T) *harness {
 	t.Helper()
-	repo := memstore.New()
+	return serveRepo(t, memstore.New())
+}
+
+func serveRepo(t *testing.T, repo store.Repository) *harness {
+	t.Helper()
 	agent := fakeagent.New()
 	rec := reconciler.New(repo, agent, reconciler.WithInterval(10*time.Millisecond))
 	ctl := controller.New(repo, controller.WithKick(rec.Kick))
@@ -69,13 +79,7 @@ func serve(t *testing.T) *harness {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() {
-		_ = conn.Close()
-		srv.Stop()
-		cancel()
-		<-stopped
-	})
-	return &harness{
+	h := &harness{
 		inst:  computev1.NewInstanceServiceClient(conn),
 		img:   computev1.NewImageServiceClient(conn),
 		keys:  computev1.NewKeyPairServiceClient(conn),
@@ -83,6 +87,18 @@ func serve(t *testing.T) *harness {
 		agent: agent,
 		ctl:   ctl,
 	}
+	var once sync.Once
+	h.stop = func() {
+		once.Do(func() {
+			_ = conn.Close()
+			srv.Stop()
+			cancel()
+			<-stopped
+			_ = repo.Close()
+		})
+	}
+	t.Cleanup(h.stop)
+	return h
 }
 
 func wantCode(t *testing.T, err error, want codes.Code) {
@@ -470,5 +486,436 @@ func TestFailedChangeSurfacesOnOperationAndInstance(t *testing.T) {
 	obs := inst.GetStatus().GetObserved()
 	if obs.GetState() != commonv1.ReconciliationState_RECONCILIATION_STATE_ERROR || obs.GetMessage() != "disk corrupt" {
 		t.Fatalf("instance status = %s %q", obs.GetState(), obs.GetMessage())
+	}
+}
+
+func operationResource(t *testing.T, op *longrunningpb.Operation) string {
+	t.Helper()
+	var md commonv1.OperationMetadata
+	if err := anypb.UnmarshalTo(op.GetMetadata(), &md, proto.UnmarshalOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	return md.GetResource()
+}
+
+func unpackKeyPair(t *testing.T, op *longrunningpb.Operation) *computev1.KeyPair {
+	t.Helper()
+	var got computev1.KeyPair
+	if err := anypb.UnmarshalTo(op.GetResponse(), &got, proto.UnmarshalOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	return &got
+}
+
+func seedRunning(t *testing.T, h *harness) (instanceName, imageName string) {
+	t.Helper()
+	reg, err := compute.NewRegisterImage("debian-13", "https://images.example/debian-13.qcow2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	imageOp := h.submit(t, "img-seed", reg)
+	h.wait(t, imageOp)
+	run, err := compute.NewRunInstance(imageOp.Target.ID, "vws.small", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	runOp := h.submit(t, "run-seed", run)
+	h.wait(t, runOp)
+	return "projects/demo/zones/demo/instances/" + runOp.Target.ID,
+		"projects/demo/regions/demo/images/" + imageOp.Target.ID
+}
+
+func TestConsoleKeyPairWithFingerprintLabel(t *testing.T) {
+	ctx := context.Background()
+	h := serve(t)
+	line, _ := ed25519Line(t)
+	parent := "projects/a12345/regions/us-east1"
+	name := parent + "/keyPairs/console"
+	req := "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+	body := &computev1.KeyPair{
+		Spec:   &computev1.KeyPairSpec{PublicKey: line},
+		Labels: map[string]string{"vws-fingerprint": "fp-console"},
+	}
+	created, err := h.keys.CreateKeyPair(ctx, &computev1.CreateKeyPairRequest{
+		Parent: parent, KeyPairId: "console", RequestId: req, KeyPair: body,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := unpackKeyPair(t, created)
+	if got.GetName() != name || got.GetLabels()["vws-fingerprint"] != "fp-console" || got.GetGeneration() != 1 || got.GetEtag() != "1" {
+		t.Fatalf("created = name %s gen %d etag %s labels %v", got.GetName(), got.GetGeneration(), got.GetEtag(), got.GetLabels())
+	}
+	if resource := operationResource(t, created); resource != name {
+		t.Fatalf("create resource = %s, want %s", resource, name)
+	}
+
+	replay, err := h.keys.CreateKeyPair(ctx, &computev1.CreateKeyPairRequest{
+		Parent: parent, KeyPairId: "console", RequestId: req, KeyPair: body,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replay.GetName() != created.GetName() {
+		t.Fatalf("replay = %s, want %s", replay.GetName(), created.GetName())
+	}
+
+	_, err = h.keys.CreateKeyPair(ctx, &computev1.CreateKeyPairRequest{
+		Parent: parent, KeyPairId: "console", RequestId: req,
+		KeyPair: &computev1.KeyPair{
+			Spec:   &computev1.KeyPairSpec{PublicKey: line},
+			Labels: map[string]string{"vws-fingerprint": "other"},
+		},
+	})
+	wantCode(t, err, codes.Aborted)
+	wantReason(t, err, "IDEMPOTENCY_CONFLICT")
+
+	updated, err := h.keys.UpdateKeyPair(ctx, &computev1.UpdateKeyPairRequest{
+		RequestId:  "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+		UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"labels.vws-fingerprint"}},
+		KeyPair: &computev1.KeyPair{
+			Name: name, Etag: got.GetEtag(),
+			Labels: map[string]string{"vws-fingerprint": "fp-next"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	next := unpackKeyPair(t, updated)
+	if next.GetGeneration() != 1 || next.GetEtag() != "1.1" || next.GetLabels()["vws-fingerprint"] != "fp-next" {
+		t.Fatalf("updated = gen %d etag %s labels %v", next.GetGeneration(), next.GetEtag(), next.GetLabels())
+	}
+
+	again, err := h.keys.UpdateKeyPair(ctx, &computev1.UpdateKeyPairRequest{
+		RequestId:  "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+		UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"labels.vws-fingerprint"}},
+		KeyPair: &computev1.KeyPair{
+			Name: name, Etag: "1",
+			Labels: map[string]string{"vws-fingerprint": "fp-next"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.GetName() != updated.GetName() {
+		t.Fatalf("stale-etag retry = %s, want %s", again.GetName(), updated.GetName())
+	}
+	if fetched, err := h.keys.GetKeyPair(ctx, &computev1.GetKeyPairRequest{Name: name}); err != nil || fetched.GetLabels()["vws-fingerprint"] != "fp-next" {
+		t.Fatalf("get after retry = %v, %v", fetched.GetLabels(), err)
+	}
+
+	_, err = h.keys.UpdateKeyPair(ctx, &computev1.UpdateKeyPairRequest{
+		RequestId:  "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+		UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"labels.vws-fingerprint"}},
+		KeyPair: &computev1.KeyPair{
+			Name: name, Etag: "1",
+			Labels: map[string]string{"vws-fingerprint": "fp-stale"},
+		},
+	})
+	wantCode(t, err, codes.Aborted)
+	wantReason(t, err, "ETAG_MISMATCH")
+
+	_, err = h.keys.CreateKeyPair(ctx, &computev1.CreateKeyPairRequest{
+		Parent: "projects/a<accountId>/regions/us-east1", KeyPairId: "console",
+		RequestId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+		KeyPair:   &computev1.KeyPair{Spec: &computev1.KeyPairSpec{PublicKey: line}},
+	})
+	wantCode(t, err, codes.InvalidArgument)
+	wantReason(t, err, "INVALID_RESOURCE_ID")
+
+	missing := parent + "/keyPairs/later"
+	other, _ := ed25519Line(t)
+	importReq := "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
+	imported, err := h.keys.UpdateKeyPair(ctx, &computev1.UpdateKeyPairRequest{
+		RequestId: importReq, AllowMissing: true,
+		KeyPair: &computev1.KeyPair{
+			Name:   missing,
+			Spec:   &computev1.KeyPairSpec{PublicKey: other},
+			Labels: map[string]string{"vws-fingerprint": "fp-import"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	retried, err := h.keys.UpdateKeyPair(ctx, &computev1.UpdateKeyPairRequest{
+		RequestId: importReq, AllowMissing: true,
+		KeyPair: &computev1.KeyPair{
+			Name:   missing,
+			Spec:   &computev1.KeyPairSpec{PublicKey: other},
+			Labels: map[string]string{"vws-fingerprint": "fp-import"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if retried.GetName() != imported.GetName() || unpackKeyPair(t, retried).GetLabels()["vws-fingerprint"] != "fp-import" {
+		t.Fatalf("allow_missing retry = %s labels %v", retried.GetName(), unpackKeyPair(t, retried).GetLabels())
+	}
+}
+
+func TestUpdateMaskSemantics(t *testing.T) {
+	ctx := context.Background()
+	h := serve(t)
+	instanceName, imageName := seedRunning(t, h)
+
+	_, err := h.inst.CreateInstance(ctx, &computev1.CreateInstanceRequest{
+		Parent: "projects/demo/zones/demo", InstanceId: "bad", RequestId: "11111111-1111-4111-8111-111111111111",
+		Instance: &computev1.Instance{
+			Labels: map[string]string{"Bad": "x"},
+			Spec: &computev1.InstanceSpec{
+				MachineType: "vws.small", Power: computev1.InstancePower_INSTANCE_POWER_RUNNING,
+				Volumes: []*computev1.VolumeAttachment{{
+					Volume: "projects/demo/zones/demo/volumes/root", DeviceName: "boot", Boot: true,
+				}},
+			},
+		},
+	})
+	wantCode(t, err, codes.InvalidArgument)
+	wantReason(t, err, "INVALID_SPEC")
+
+	_, err = h.img.CreateImage(ctx, &computev1.CreateImageRequest{
+		Parent: "projects/demo/regions/demo", ImageId: "bad", RequestId: "22222222-2222-4222-8222-222222222222",
+		Image: &computev1.Image{Spec: &computev1.ImageSpec{
+			Source:      &computev1.ImageSpec_Snapshot{Snapshot: "projects/demo/regions/demo/snapshots/snap"},
+			Description: "has\x00nul",
+		}},
+	})
+	wantCode(t, err, codes.InvalidArgument)
+	wantReason(t, err, "INVALID_SPEC")
+
+	set := func(req string, mask []string, labels map[string]string, power computev1.InstancePower) *computev1.Instance {
+		t.Helper()
+		op, err := h.inst.UpdateInstance(ctx, &computev1.UpdateInstanceRequest{
+			RequestId: req, UpdateMask: &fieldmaskpb.FieldMask{Paths: mask},
+			Instance: &computev1.Instance{
+				Name: instanceName, Labels: labels,
+				Spec: &computev1.InstanceSpec{Power: power},
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := h.ops.WaitOperation(ctx, &longrunningpb.WaitOperationRequest{Name: op.GetName(), Timeout: durationpb.New(10 * time.Second)}); err != nil {
+			t.Fatal(err)
+		}
+		got, err := h.inst.GetInstance(ctx, &computev1.GetInstanceRequest{Name: instanceName})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+
+	got := set("33333333-3333-4333-8333-333333333333", []string{"labels.vws-fingerprint"}, map[string]string{"vws-fingerprint": "fp"}, 0)
+	if got.GetGeneration() != 1 || got.GetEtag() != "1.1" || got.GetLabels()["vws-fingerprint"] != "fp" {
+		t.Fatalf("fingerprint label = gen %d etag %s labels %v", got.GetGeneration(), got.GetEtag(), got.GetLabels())
+	}
+	got = set("44444444-4444-4444-8444-444444444444", []string{"labels.role"}, map[string]string{"role": "web"}, 0)
+	if got.GetGeneration() != 1 || got.GetLabels()["vws-fingerprint"] != "fp" || got.GetLabels()["role"] != "web" || got.GetEtag() != "1.2" {
+		t.Fatalf("per-key label = gen %d etag %s labels %v", got.GetGeneration(), got.GetEtag(), got.GetLabels())
+	}
+	got = set("55555555-5555-4555-8555-555555555555", []string{"labels.role"}, nil, 0)
+	if _, ok := got.GetLabels()["role"]; ok || got.GetLabels()["vws-fingerprint"] != "fp" || got.GetGeneration() != 1 {
+		t.Fatalf("delete role = gen %d labels %v", got.GetGeneration(), got.GetLabels())
+	}
+	got = set("66666666-6666-4666-8666-666666666666", []string{"labels"}, map[string]string{"role": "web"}, 0)
+	if len(got.GetLabels()) != 1 || got.GetLabels()["role"] != "web" {
+		t.Fatalf("replace labels = %v", got.GetLabels())
+	}
+	got = set("77777777-7777-4777-8777-777777777777", []string{"labels"}, nil, 0)
+	if len(got.GetLabels()) != 0 || got.GetGeneration() != 1 {
+		t.Fatalf("clear labels = gen %d %v", got.GetGeneration(), got.GetLabels())
+	}
+
+	got = set("88888888-8888-4888-8888-888888888888", []string{"labels"}, map[string]string{"vws-fingerprint": "kept"}, 0)
+	rev := got.GetEtag()
+	got = set("99999999-9999-4999-8999-999999999999", nil, nil, computev1.InstancePower_INSTANCE_POWER_STOPPED)
+	if got.GetSpec().GetPower() != computev1.InstancePower_INSTANCE_POWER_STOPPED || got.GetLabels()["vws-fingerprint"] != "kept" || got.GetGeneration() != 2 {
+		t.Fatalf("stop with empty labels = gen %d power %s labels %v", got.GetGeneration(), got.GetSpec().GetPower(), got.GetLabels())
+	}
+	if got.GetEtag() == rev {
+		t.Fatalf("etag stayed %s across a generation change", rev)
+	}
+
+	got = set("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaab", []string{"spec"}, map[string]string{"role": "ignored"}, computev1.InstancePower_INSTANCE_POWER_RUNNING)
+	if _, ok := got.GetLabels()["role"]; ok || got.GetLabels()["vws-fingerprint"] != "kept" || got.GetSpec().GetPower() != computev1.InstancePower_INSTANCE_POWER_RUNNING {
+		t.Fatalf("spec-only update = power %s labels %v", got.GetSpec().GetPower(), got.GetLabels())
+	}
+
+	before, err := h.inst.GetInstance(ctx, &computev1.GetInstanceRequest{Name: instanceName})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = h.inst.UpdateInstance(ctx, &computev1.UpdateInstanceRequest{
+		RequestId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbc", UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"spec"}},
+		Instance: &computev1.Instance{
+			Name: instanceName, Labels: map[string]string{"Bad": "x"},
+			Spec: &computev1.InstanceSpec{Power: computev1.InstancePower_INSTANCE_POWER_STOPPED},
+		},
+	})
+	wantCode(t, err, codes.InvalidArgument)
+	wantReason(t, err, "INVALID_SPEC")
+	after, err := h.inst.GetInstance(ctx, &computev1.GetInstanceRequest{Name: instanceName})
+	if err != nil || after.GetGeneration() != before.GetGeneration() || after.GetEtag() != before.GetEtag() {
+		t.Fatalf("invalid labels changed the instance: %v %v", after, err)
+	}
+
+	img, err := h.img.UpdateImage(ctx, &computev1.UpdateImageRequest{
+		RequestId: "cccccccc-cccc-4ccc-8ccc-cccccccccccd", UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"spec.description"}},
+		Image: &computev1.Image{Name: imageName, Spec: &computev1.ImageSpec{Description: "line1\nline2"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !img.GetDone() {
+		t.Fatal("description update is still running")
+	}
+	gotImg, err := h.img.GetImage(ctx, &computev1.GetImageRequest{Name: imageName})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotImg.GetSpec().GetDescription() != "line1\nline2" || gotImg.GetSpec().GetFamily() != "debian-13" ||
+		gotImg.GetGeneration() != 1 || gotImg.GetStatus().GetObserved().GetState() != commonv1.ReconciliationState_RECONCILIATION_STATE_READY {
+		t.Fatalf("image after description = gen %d family %s desc %q state %s", gotImg.GetGeneration(), gotImg.GetSpec().GetFamily(), gotImg.GetSpec().GetDescription(), gotImg.GetStatus().GetObserved().GetState())
+	}
+	if _, err := h.img.UpdateImage(ctx, &computev1.UpdateImageRequest{
+		RequestId: "dddddddd-dddd-4ddd-8ddd-ddddddddddde", UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"spec.family"}},
+		Image: &computev1.Image{Name: imageName, Spec: &computev1.ImageSpec{Family: "debian-13", Description: "ignored"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	gotImg, err = h.img.GetImage(ctx, &computev1.GetImageRequest{Name: imageName})
+	if err != nil || gotImg.GetSpec().GetDescription() != "line1\nline2" {
+		t.Fatalf("family echo changed description to %q (%v)", gotImg.GetSpec().GetDescription(), err)
+	}
+	_, err = h.img.UpdateImage(ctx, &computev1.UpdateImageRequest{
+		RequestId: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeef", UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"spec.family"}},
+		Image: &computev1.Image{Name: imageName, Spec: &computev1.ImageSpec{Family: "other"}},
+	})
+	wantCode(t, err, codes.InvalidArgument)
+	wantReason(t, err, "INVALID_SPEC")
+
+	if _, err := h.img.UpdateImage(ctx, &computev1.UpdateImageRequest{
+		RequestId: "ffffffff-ffff-4fff-8fff-ffffffffff00",
+		Image: &computev1.Image{
+			Name: imageName, Labels: map[string]string{"vws-fingerprint": "img"},
+			Spec: &computev1.ImageSpec{Description: "replaced"},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	gotImg, err = h.img.GetImage(ctx, &computev1.GetImageRequest{Name: imageName})
+	if err != nil || gotImg.GetSpec().GetDescription() != "replaced" || gotImg.GetLabels()["vws-fingerprint"] != "img" || gotImg.GetGeneration() != 1 {
+		t.Fatalf("omitted mask = gen %d desc %q labels %v", gotImg.GetGeneration(), gotImg.GetSpec().GetDescription(), gotImg.GetLabels())
+	}
+}
+
+func TestUpdateResponsesKeepTheCallersLocation(t *testing.T) {
+	ctx := context.Background()
+	h := serve(t)
+	instanceName, imageName := seedRunning(t, h)
+	stopped, err := h.inst.UpdateInstance(ctx, &computev1.UpdateInstanceRequest{
+		RequestId: "12121212-1212-4212-8212-121212121212",
+		Instance: &computev1.Instance{
+			Name: instanceName,
+			Spec: &computev1.InstanceSpec{Power: computev1.InstancePower_INSTANCE_POWER_STOPPED},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := operationResource(t, stopped); got != instanceName {
+		t.Fatalf("update resource = %s, want %s", got, instanceName)
+	}
+	polled, err := h.ops.GetOperation(ctx, &longrunningpb.GetOperationRequest{Name: stopped.GetName()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := operationResource(t, polled); !strings.Contains(got, "/zones/default/") {
+		t.Fatalf("GetOperation resource = %s, want the placeholder zone", got)
+	}
+
+	described, err := h.img.UpdateImage(ctx, &computev1.UpdateImageRequest{
+		RequestId:  "13131313-1313-4313-8313-131313131313",
+		UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"spec.description"}},
+		Image:      &computev1.Image{Name: imageName, Spec: &computev1.ImageSpec{Description: "kept"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := operationResource(t, described); got != imageName {
+		t.Fatalf("image update resource = %s, want %s", got, imageName)
+	}
+}
+
+func TestMetadataSurvivesRestart(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "state.db")
+	repo, err := sqlitestore.Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := serveRepo(t, repo)
+	line, _ := ed25519Line(t)
+	parent := "projects/a12345/regions/us-east1"
+	name := parent + "/keyPairs/console"
+	req := "14141414-1414-4414-8414-141414141414"
+	if _, err := h.keys.CreateKeyPair(ctx, &computev1.CreateKeyPairRequest{
+		Parent: parent, KeyPairId: "console", RequestId: req,
+		KeyPair: &computev1.KeyPair{
+			Spec:   &computev1.KeyPairSpec{PublicKey: line},
+			Labels: map[string]string{"vws-fingerprint": "fp-restart"},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	instanceName, imageName := seedRunning(t, h)
+	if _, err := h.inst.UpdateInstance(ctx, &computev1.UpdateInstanceRequest{
+		RequestId:  "15151515-1515-4515-8515-151515151515",
+		UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"labels"}},
+		Instance:   &computev1.Instance{Name: instanceName, Labels: map[string]string{"vws-fingerprint": "inst"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.img.UpdateImage(ctx, &computev1.UpdateImageRequest{
+		RequestId: "16161616-1616-4616-8616-161616161616",
+		Image: &computev1.Image{
+			Name: imageName, Labels: map[string]string{"vws-fingerprint": "img"},
+			Spec: &computev1.ImageSpec{Description: "kept\nacross restart"},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	h.stop()
+
+	repo, err = sqlitestore.Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h = serveRepo(t, repo)
+	got, err := h.keys.GetKeyPair(ctx, &computev1.GetKeyPairRequest{Name: name})
+	if err != nil || got.GetLabels()["vws-fingerprint"] != "fp-restart" {
+		t.Fatalf("key pair after restart = %v %v", got.GetLabels(), err)
+	}
+	replay, err := h.keys.CreateKeyPair(ctx, &computev1.CreateKeyPairRequest{
+		Parent: parent, KeyPairId: "console", RequestId: req,
+		KeyPair: &computev1.KeyPair{
+			Spec:   &computev1.KeyPairSpec{PublicKey: line},
+			Labels: map[string]string{"vws-fingerprint": "fp-restart"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !replay.GetDone() || unpackKeyPair(t, replay).GetName() != name {
+		t.Fatalf("replay after restart = done %v name %s", replay.GetDone(), unpackKeyPair(t, replay).GetName())
+	}
+	inst, err := h.inst.GetInstance(ctx, &computev1.GetInstanceRequest{Name: instanceName})
+	if err != nil || inst.GetLabels()["vws-fingerprint"] != "inst" {
+		t.Fatalf("instance after restart = %v %v", inst.GetLabels(), err)
+	}
+	img, err := h.img.GetImage(ctx, &computev1.GetImageRequest{Name: imageName})
+	if err != nil || img.GetLabels()["vws-fingerprint"] != "img" || img.GetSpec().GetDescription() != "kept\nacross restart" ||
+		img.GetStatus().GetObserved().GetState() != commonv1.ReconciliationState_RECONCILIATION_STATE_READY {
+		t.Fatalf("image after restart = desc %q labels %v state %s err %v", img.GetSpec().GetDescription(), img.GetLabels(), img.GetStatus().GetObserved().GetState(), err)
 	}
 }

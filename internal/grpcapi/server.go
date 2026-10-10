@@ -16,7 +16,6 @@ import (
 	"context"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	longrunningpb "cloud.google.com/go/longrunning/autogen/longrunningpb"
 	"google.golang.org/grpc"
@@ -100,7 +99,7 @@ func (s *server) wait(ctx context.Context, name string, timeout time.Duration) (
 			return nil, toStatus(err)
 		}
 		if op.State().Terminal() || !time.Now().Before(end) {
-			return s.operationPB(ctx, project, op)
+			return s.operationPB(ctx, project, "", op)
 		}
 		timer := time.NewTimer(pollEvery)
 		select {
@@ -110,30 +109,6 @@ func (s *server) wait(ctx context.Context, name string, timeout time.Duration) (
 		case <-timer.C:
 		}
 	}
-}
-
-func rejectLabels(labels map[string]string) error {
-	if len(labels) == 0 {
-		return nil
-	}
-	if len(labels) > 64 {
-		return invalidSpec("labels exceed 64 entries")
-	}
-	for k, v := range labels {
-		if !labelKeyPattern.MatchString(k) || !utf8.ValidString(v) || len(v) > 63 || hasControl(v) {
-			return invalidSpec("invalid label " + k)
-		}
-	}
-	return invalidSpec("labels are not stored")
-}
-
-func hasControl(s string) bool {
-	for _, r := range s {
-		if r < 0x20 || r == 0x7f {
-			return true
-		}
-	}
-	return false
 }
 
 func checkMask(paths []string) error {
@@ -224,29 +199,4 @@ func doneOperation(project, resource string, verb commonv1.OperationVerb, reques
 		out.Result = &longrunningpb.Operation_Response{Response: packed}
 	}
 	return out, nil
-}
-
-func (s *server) replay(ctx context.Context, project, requestID, targetID string) (*longrunningpb.Operation, bool, error) {
-	if requestID == "" {
-		return nil, false, nil
-	}
-	req, err := compute.ParseRequestID(requestID)
-	if err != nil {
-		return nil, false, toStatus(err)
-	}
-	op, err := s.read.OperationByRequest(ctx, req)
-	if err != nil {
-		if compute.CodeOf(err) == compute.CodeNotFound {
-			return nil, false, nil
-		}
-		return nil, false, toStatus(err)
-	}
-	if op.Target.ID != targetID {
-		return nil, false, aborted("IDEMPOTENCY_CONFLICT", "request_id was already used for another resource")
-	}
-	pb, err := s.operationPB(ctx, project, op)
-	if err != nil {
-		return nil, false, err
-	}
-	return pb, true, nil
 }

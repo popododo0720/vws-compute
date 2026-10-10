@@ -152,7 +152,9 @@ func TestPlanRejects(t *testing.T) {
 		{"stop missing instance", newView(), func() (compute.Intent, error) { return compute.NewStopInstance(instanceID) }, compute.CodeNotFound},
 		{"create image from terminated", newView().with(terminated), func() (compute.Intent, error) { return compute.NewCreateImage(instanceID, "snap-1") }, compute.CodeFailedPrecondition},
 		{"create key with live name", newView().with(keyPair(t, "deploy", false)), func() (compute.Intent, error) { return compute.NewCreateKeyPair("deploy") }, compute.CodeAlreadyExists},
-		{"import key with live name", newView().with(keyPair(t, "deploy", false)), func() (compute.Intent, error) { return compute.NewImportKeyPair("deploy", rsa2048Line) }, compute.CodeAlreadyExists},
+		{"import key with live name", newView().with(keyPair(t, "deploy", false)), func() (compute.Intent, error) {
+			return compute.NewImportKeyPair("deploy", rsa2048Line, compute.Labels{})
+		}, compute.CodeAlreadyExists},
 		{"delete never-stored key", newView(), func() (compute.Intent, error) { return compute.NewDeleteKeyPair("ghost") }, compute.CodeNotFound},
 	}
 	for _, c := range cases {
@@ -177,7 +179,7 @@ func TestIntentConstructorsValidate(t *testing.T) {
 		},
 		"short image name": func() (compute.Intent, error) { return compute.NewRegisterImage("d", "https://images.example/d.qcow2") },
 		"empty key name":   func() (compute.Intent, error) { return compute.NewCreateKeyPair("") },
-		"weak rsa import":  func() (compute.Intent, error) { return compute.NewImportKeyPair("weak", rsa1024Line) },
+		"weak rsa import":  func() (compute.Intent, error) { return compute.NewImportKeyPair("weak", rsa1024Line, compute.Labels{}) },
 	}
 	for name, build := range cases {
 		if _, err := build(); compute.CodeOf(err) != compute.CodeInvalid {
