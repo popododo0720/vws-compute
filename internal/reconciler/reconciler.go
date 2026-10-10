@@ -458,8 +458,14 @@ func imageSpec(s compute.ImageSpec) hypervisor.ImageSpec {
 	switch src := s.Source.(type) {
 	case compute.FromURL:
 		i.SourceURL = src.URL.String()
+	case compute.FromFile:
+		i.SourcePath = src.Path.String()
 	case compute.FromInstance:
 		i.SourceMachine = src.Instance.String()
+	case compute.FromVolume:
+		i.SourceVolume = src.Ref.String()
+	case compute.FromSnapshot:
+		i.SourceSnapshot = src.Ref.String()
 	}
 	return i
 }

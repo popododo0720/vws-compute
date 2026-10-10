@@ -354,27 +354,23 @@ func putSpec(ctx context.Context, tx *sql.Tx, spec compute.Spec, cur int64) erro
 				int64(s.Power), int64(s.RebootEpoch), s.ID.String(), cur)
 		}
 	case compute.ImageSpec:
-		var srcURL, srcInstance sql.NullString
-		switch src := s.Source.(type) {
-		case compute.FromURL:
-			srcURL = nullString(src.URL.String(), true)
-		case compute.FromInstance:
-			srcInstance = nullString(src.Instance.String(), true)
-		default:
-			return compute.Errorf(compute.CodeInternal, "image %s has no source", s.ID)
+		srcURL, srcInstance, srcPath, srcVolume, srcSnapshot, srcErr := imageSourceColumns(s.Source)
+		if srcErr != nil {
+			return srcErr
 		}
 		if cur == 0 {
 			res, err = tx.ExecContext(ctx, `INSERT INTO images (id, generation, created_at, changed_at, name,
-				source_url, source_instance_id, deregistered) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+				source_url, source_instance_id, source_path, source_volume, source_snapshot, deregistered)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 				s.ID.String(), s.Generation, nanos(s.CreatedAt), nanos(s.ChangedAt), s.Name.String(),
-				srcURL, srcInstance, boolInt(s.Deregistered))
+				srcURL, srcInstance, srcPath, srcVolume, srcSnapshot, boolInt(s.Deregistered))
 		} else {
 			res, err = tx.ExecContext(ctx, `UPDATE images SET generation = ?, changed_at = ?, name = ?,
-				source_url = ?, source_instance_id = ?, deregistered = ?,
-				attempts = 0, retry_at = 0, last_error = ''
+				source_url = ?, source_instance_id = ?, source_path = ?, source_volume = ?, source_snapshot = ?,
+				deregistered = ?, attempts = 0, retry_at = 0, last_error = ''
 				WHERE id = ? AND generation = ?`,
-				s.Generation, nanos(s.ChangedAt), s.Name.String(), srcURL, srcInstance, boolInt(s.Deregistered),
-				s.ID.String(), cur)
+				s.Generation, nanos(s.ChangedAt), s.Name.String(), srcURL, srcInstance, srcPath, srcVolume, srcSnapshot,
+				boolInt(s.Deregistered), s.ID.String(), cur)
 		}
 	case compute.KeyPairSpec:
 		if !s.Deleted {

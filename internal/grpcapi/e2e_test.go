@@ -324,15 +324,6 @@ func TestInstanceAndImageProjection(t *testing.T) {
 	wantCode(t, err, codes.InvalidArgument)
 	wantReason(t, err, "INVALID_SPEC")
 
-	_, err = h.img.CreateImage(ctx, &computev1.CreateImageRequest{
-		Parent: parent, ImageId: "debian", RequestId: "44444444-4444-4444-8444-444444444444",
-		Image: &computev1.Image{Spec: &computev1.ImageSpec{
-			Source: &computev1.ImageSpec_Snapshot{Snapshot: parent + "/snapshots/snap"},
-		}},
-	})
-	wantCode(t, err, codes.FailedPrecondition)
-	wantReason(t, err, "DEPENDENCY_MISSING")
-
 	reg, err := compute.NewRegisterImage("debian-13", "https://images.example/debian-13.qcow2")
 	if err != nil {
 		t.Fatal(err)
@@ -398,6 +389,38 @@ func TestInstanceAndImageProjection(t *testing.T) {
 	if gotInst.GetSpec().GetPower() != computev1.InstancePower_INSTANCE_POWER_STOPPED {
 		t.Fatalf("after stop = %s", gotInst.GetSpec().GetPower())
 	}
+	stoppedMachine, ok := h.agent.Machine(instanceID)
+	if !ok || stoppedMachine.Power != hypervisor.PowerOff {
+		t.Fatalf("agent after stop = %+v exists %v", stoppedMachine, ok)
+	}
+
+	started, err := h.inst.UpdateInstance(ctx, &computev1.UpdateInstanceRequest{
+		RequestId: "88888888-8888-4888-8888-888888888888",
+		Instance: &computev1.Instance{
+			Name: instanceName,
+			Spec: &computev1.InstanceSpec{
+				MachineType: "vws.small",
+				Power:       computev1.InstancePower_INSTANCE_POWER_RUNNING,
+				KeyPair:     keyName,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.ops.WaitOperation(ctx, &longrunningpb.WaitOperationRequest{Name: started.GetName(), Timeout: durationpb.New(10 * time.Second)}); err != nil {
+		t.Fatal(err)
+	}
+	gotInst, err = h.inst.GetInstance(ctx, &computev1.GetInstanceRequest{Name: instanceName})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotInst.GetSpec().GetPower() != computev1.InstancePower_INSTANCE_POWER_RUNNING {
+		t.Fatalf("after start = %s", gotInst.GetSpec().GetPower())
+	}
+	if got := h.agent.Creations(instanceID); got != 1 {
+		t.Fatalf("creations after start = %d, want 1", got)
+	}
 
 	deleted, err := h.inst.DeleteInstance(ctx, &computev1.DeleteInstanceRequest{
 		Name: instanceName, RequestId: "77777777-7777-4777-8777-777777777777",
@@ -409,6 +432,80 @@ func TestInstanceAndImageProjection(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err = h.inst.GetInstance(ctx, &computev1.GetInstanceRequest{Name: instanceName})
+	wantCode(t, err, codes.NotFound)
+	if _, exists := h.agent.Machine(instanceID); exists {
+		t.Fatal("machine exists after terminate")
+	}
+}
+
+func TestCreateImageRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	h := serve(t)
+	parent := "projects/demo/regions/demo"
+	snap := parent + "/snapshots/snap"
+	name := parent + "/images/debian-12"
+	created, err := h.img.CreateImage(ctx, &computev1.CreateImageRequest{
+		Parent: parent, ImageId: "debian-12", RequestId: "44444444-4444-4444-8444-444444444444",
+		Image: &computev1.Image{Spec: &computev1.ImageSpec{
+			Family: "debian-12",
+			Source: &computev1.ImageSpec_Snapshot{Snapshot: snap},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.ops.WaitOperation(ctx, &longrunningpb.WaitOperationRequest{Name: created.GetName(), Timeout: durationpb.New(10 * time.Second)}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := h.img.GetImage(ctx, &computev1.GetImageRequest{Name: name})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.GetName() != name || got.GetSpec().GetSnapshot() != snap || got.GetSpec().GetVolume() != "" ||
+		got.GetSpec().GetFamily() != "debian-12" || got.GetStatus().GetSizeGib() != 2 ||
+		got.GetStatus().GetObserved().GetState() != commonv1.ReconciliationState_RECONCILIATION_STATE_READY ||
+		got.GetStatus().GetProgressPercent() != 100 {
+		t.Fatalf("image = %v", got)
+	}
+	listed, err := h.img.ListImages(ctx, &computev1.ListImagesRequest{Parent: parent})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listed.GetImages()) != 1 || listed.GetImages()[0].GetName() != name {
+		t.Fatalf("list = %v", listed.GetImages())
+	}
+
+	_, err = h.img.CreateImage(ctx, &computev1.CreateImageRequest{
+		Parent: parent, ImageId: "debian-12", RequestId: "55555555-5555-4555-8555-555555555555",
+		Image: &computev1.Image{Spec: &computev1.ImageSpec{
+			Source: &computev1.ImageSpec_Snapshot{Snapshot: snap},
+		}},
+	})
+	wantCode(t, err, codes.AlreadyExists)
+
+	only, err := h.img.CreateImage(ctx, &computev1.CreateImageRequest{
+		Parent: parent, ImageId: "other-disk", RequestId: "66666666-6666-4666-8666-666666666666",
+		ValidateOnly: true,
+		Image: &computev1.Image{Spec: &computev1.ImageSpec{
+			Source: &computev1.ImageSpec_Volume{Volume: "projects/demo/zones/demo/volumes/root"},
+		}},
+	})
+	if err != nil || !only.GetDone() {
+		t.Fatalf("validate_only = %v %v", only, err)
+	}
+	_, err = h.img.GetImage(ctx, &computev1.GetImageRequest{Name: parent + "/images/other-disk"})
+	wantCode(t, err, codes.NotFound)
+
+	deleted, err := h.img.DeleteImage(ctx, &computev1.DeleteImageRequest{
+		Name: name, RequestId: "77777777-7777-4777-8777-777777777777",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.ops.WaitOperation(ctx, &longrunningpb.WaitOperationRequest{Name: deleted.GetName(), Timeout: durationpb.New(10 * time.Second)}); err != nil {
+		t.Fatal(err)
+	}
+	_, err = h.img.GetImage(ctx, &computev1.GetImageRequest{Name: name})
 	wantCode(t, err, codes.NotFound)
 }
 

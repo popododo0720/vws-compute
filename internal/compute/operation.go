@@ -24,6 +24,8 @@ const (
 	OpUpdateInstanceMetadata
 	OpUpdateImageMetadata
 	OpUpdateKeyPairMetadata
+	OpCopyImage
+	OpRegisterFile
 )
 
 var operationKindNames = [...]string{
@@ -41,6 +43,8 @@ var operationKindNames = [...]string{
 	OpUpdateInstanceMetadata: "UpdateInstanceMetadata",
 	OpUpdateImageMetadata:    "UpdateImageMetadata",
 	OpUpdateKeyPairMetadata:  "UpdateKeyPairMetadata",
+	OpCopyImage:              "CopyImage",
+	OpRegisterFile:           "RegisterFile",
 }
 
 // OperationKinds returns every kind in declaration order.

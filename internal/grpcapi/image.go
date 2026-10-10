@@ -68,14 +68,53 @@ func (s *server) CreateImage(ctx context.Context, r *computev1.CreateImageReques
 		return nil, err
 	}
 	name := imageResourceName(project, region, r.GetImageId())
-	if err := validateCreateImage(name, r.GetImage()); err != nil {
+	body := r.GetImage()
+	if err := validateCreateImage(name, body); err != nil {
 		return nil, err
 	}
-	source := r.GetImage().GetSpec().GetVolume()
-	if source == "" {
-		source = r.GetImage().GetSpec().GetSnapshot()
+	id, err := compute.ParseImageID(r.GetImageId())
+	if err != nil {
+		return nil, invalidID("image_id " + r.GetImageId() + " is not a resource id")
 	}
-	return nil, dependencyMissing("image source " + source + " is not registered in this process")
+	if r.GetValidateOnly() {
+		_, err := s.read.Image(ctx, id)
+		if err == nil {
+			return nil, alreadyExists("image " + name + " already exists")
+		}
+		if compute.CodeOf(err) != compute.CodeNotFound {
+			return nil, toStatus(err)
+		}
+		return doneOperation(project, name, commonv1.OperationVerb_OPERATION_VERB_CREATE, r.GetRequestId(), nil)
+	}
+	src, err := copySource(body.GetSpec())
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	labels, err := compute.ParseLabels(body.GetLabels())
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	in, err := compute.NewCopyImage(id.String(), src, body.GetSpec().GetFamily(), body.GetSpec().GetDescription(), labels)
+	rc, err := s.submit(ctx, r.GetRequestId(), in, err, nil)
+	if err != nil {
+		return nil, err
+	}
+	return s.operationPB(ctx, project, name, rc.Operation)
+}
+
+func copySource(spec *computev1.ImageSpec) (compute.CopySource, error) {
+	if spec.GetVolume() != "" {
+		ref, err := compute.ParseVolumeRef(spec.GetVolume())
+		if err != nil {
+			return nil, err
+		}
+		return compute.FromVolume{Ref: ref}, nil
+	}
+	ref, err := compute.ParseSnapshotRef(spec.GetSnapshot())
+	if err != nil {
+		return nil, err
+	}
+	return compute.FromSnapshot{Ref: ref}, nil
 }
 
 func (s *server) UpdateImage(ctx context.Context, r *computev1.UpdateImageRequest) (*longrunningpb.Operation, error) {
@@ -114,7 +153,7 @@ func (s *server) UpdateImage(ctx context.Context, r *computev1.UpdateImageReques
 			return nil, invalidSpec("image.spec.source is immutable")
 		}
 		if spec.GetFamily() != "" && spec.GetFamily() != existing.Spec.Name.String() {
-			return nil, invalidSpec("image.spec.family is not stored")
+			return nil, invalidSpec("image.spec.family is immutable")
 		}
 	}
 	in, err := compute.NewUpdateImageMetadata(existing.Spec.ID.String(), patch)

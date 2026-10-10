@@ -156,6 +156,12 @@ func TestPlanRejects(t *testing.T) {
 			return compute.NewImportKeyPair("deploy", rsa2048Line, compute.Labels{})
 		}, compute.CodeAlreadyExists},
 		{"delete never-stored key", newView(), func() (compute.Intent, error) { return compute.NewDeleteKeyPair("ghost") }, compute.CodeNotFound},
+		{"copy taken image", newView().with(availableImage()), func() (compute.Intent, error) {
+			return compute.NewCopyImage(imageID, compute.FromSnapshot{Ref: ok(compute.ParseSnapshotRef("projects/demo/regions/demo/snapshots/snap"))}, "debian-13", "", compute.Labels{})
+		}, compute.CodeAlreadyExists},
+		{"file over deregistered image", newView().with(goneImage), func() (compute.Intent, error) {
+			return compute.NewRegisterFile(imageID, "/var/lib/vws/images/debian-13.qcow2", "debian-13")
+		}, compute.CodeAlreadyExists},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -172,8 +178,14 @@ func TestIntentConstructorsValidate(t *testing.T) {
 	cases := map[string]func() (compute.Intent, error){
 		"missing instance type": func() (compute.Intent, error) { return compute.NewRunInstance(imageID, "", "") },
 		"unknown instance type": func() (compute.Intent, error) { return compute.NewRunInstance(imageID, "vws.large", "") },
-		"bad image id":          func() (compute.Intent, error) { return compute.NewRunInstance("ami-1", "vws.small", "") },
-		"bad instance id":       func() (compute.Intent, error) { return compute.NewStopInstance("i-XYZ") },
+		"bad image id":          func() (compute.Intent, error) { return compute.NewRunInstance("9debian", "vws.small", "") },
+		"bad image path": func() (compute.Intent, error) {
+			return compute.NewRegisterFile("debian-12", "images/debian-12.qcow2", "debian-12")
+		},
+		"bad copy source": func() (compute.Intent, error) {
+			return compute.NewCopyImage("debian-12", nil, "", "", compute.Labels{})
+		},
+		"bad instance id": func() (compute.Intent, error) { return compute.NewStopInstance("i-XYZ") },
 		"http image url": func() (compute.Intent, error) {
 			return compute.NewRegisterImage("debian-13", "http://images.example/d.qcow2")
 		},
@@ -304,4 +316,29 @@ func bornState(t *testing.T, v *view, in compute.Intent, ch compute.Change) comp
 		obs = compute.KeyPair{Spec: s}.Observed()
 	}
 	return compute.Settle(op, ch.Spec.Gen(), obs, t0.Add(time.Second)).State()
+}
+
+func TestPlanCopyAndFileImage(t *testing.T) {
+	vol := ok(compute.ParseVolumeRef("projects/demo/zones/demo/volumes/root"))
+	ch, err := plan(t, newView(), ok(compute.NewCopyImage("debian-12", compute.FromVolume{Ref: vol}, "debian-12", "a disk", compute.Labels{})), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec := ch.Spec.(compute.ImageSpec)
+	src, isVol := spec.Source.(compute.FromVolume)
+	if !ch.Write || spec.ID.String() != "debian-12" || spec.Name.String() != "debian-12" || !isVol || src.Ref != vol {
+		t.Fatalf("copy = %+v", spec)
+	}
+	if ch.Meta == nil || ch.Meta.Description.String() != "a disk" || ch.Meta.Revision != 0 {
+		t.Fatalf("meta = %+v", ch.Meta)
+	}
+
+	file, err := plan(t, newView(), ok(compute.NewRegisterFile("debian-12", "/var/lib/vws/images/debian-12.qcow2", "debian-12")), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := file.Spec.(compute.ImageSpec).Source.(compute.FromFile)
+	if got.Path.String() != "/var/lib/vws/images/debian-12.qcow2" || file.Meta != nil {
+		t.Fatalf("file = %+v meta %+v", file.Spec, file.Meta)
+	}
 }

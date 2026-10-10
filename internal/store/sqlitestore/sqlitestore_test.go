@@ -222,6 +222,51 @@ func TestOpenMigratesAVersion1File(t *testing.T) {
 	}
 }
 
+func TestOpenMigratesAnImageSource(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "v2.db")
+	raw, err := sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := raw.Exec(schemaV1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := raw.Exec(metadataV2); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := raw.Exec(`PRAGMA user_version = 2`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := raw.Exec(`INSERT INTO images (id, generation, created_at, changed_at, name, source_url, deregistered)
+		VALUES ('debian-12', 1, 1, 1, 'debian-12', 'https://images.example/d.qcow2', 0)`); err != nil {
+		t.Fatal(err)
+	}
+	if err := raw.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := context.Background()
+	s := open(t, path)
+	defer s.Close()
+	img, err := s.Image(ctx, mustImage(t, "debian-12"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	src, ok := img.Spec.Source.(compute.FromURL)
+	if !ok || src.URL.String() != "https://images.example/d.qcow2" || img.Spec.Name.String() != "debian-12" {
+		t.Fatalf("migrated image = %+v", img.Spec)
+	}
+}
+
+func mustImage(t *testing.T, s string) compute.ImageID {
+	t.Helper()
+	id, err := compute.ParseImageID(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return id
+}
+
 func TestOpenRefusesNewerSchema(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "new.db")
 	raw, err := sql.Open("sqlite", "file:"+path)

@@ -2,7 +2,9 @@ package compute
 
 import (
 	"net/url"
+	"path"
 	"strings"
+	"unicode/utf8"
 )
 
 // RequestID is the caller-chosen idempotency key every mutation carries:
@@ -76,6 +78,64 @@ func ParseImageURL(s string) (ImageURL, error) {
 }
 
 func (u ImageURL) String() string { return u.s }
+
+// ImagePath is an absolute, clean POSIX path of a disk image file on the
+// agent's host. This process parses it and does not open it.
+type ImagePath struct{ s string }
+
+const maxImagePathBytes = 4096
+
+// ParseImagePath accepts an absolute path other than "/" that path.Clean
+// leaves unchanged, of at most 4096 bytes, with no ASCII control characters.
+// It fails with CodeInvalid.
+func ParseImagePath(s string) (ImagePath, error) {
+	if len(s) == 0 || len(s) > maxImagePathBytes || !utf8.ValidString(s) || strings.IndexFunc(s, isASCIIControl) >= 0 ||
+		!path.IsAbs(s) || path.Clean(s) != s || s == "/" {
+		return ImagePath{}, Errorf(CodeInvalid, "invalid image path %q: want an absolute, clean file path", s)
+	}
+	return ImagePath{s}, nil
+}
+
+func (p ImagePath) String() string { return p.s }
+
+// VolumeRef is projects/{project}/zones/{zone}/volumes/{volume}. Every
+// segment is a ResourceId. The string is stored and returned whole.
+type VolumeRef struct{ s string }
+
+// SnapshotRef is projects/{project}/regions/{region}/snapshots/{snapshot}.
+type SnapshotRef struct{ s string }
+
+// ParseVolumeRef validates a volume resource name. It fails with CodeInvalid.
+func ParseVolumeRef(s string) (VolumeRef, error) {
+	if err := parseResourceName(s, "zones", "volumes"); err != nil {
+		return VolumeRef{}, Errorf(CodeInvalid, "invalid volume %q", s)
+	}
+	return VolumeRef{s}, nil
+}
+
+// ParseSnapshotRef validates a snapshot resource name. It fails with CodeInvalid.
+func ParseSnapshotRef(s string) (SnapshotRef, error) {
+	if err := parseResourceName(s, "regions", "snapshots"); err != nil {
+		return SnapshotRef{}, Errorf(CodeInvalid, "invalid snapshot %q", s)
+	}
+	return SnapshotRef{s}, nil
+}
+
+func (r VolumeRef) String() string   { return r.s }
+func (r SnapshotRef) String() string { return r.s }
+
+func parseResourceName(s, scopeKind, collection string) error {
+	parts := strings.Split(s, "/")
+	if len(parts) != 6 || parts[0] != "projects" || parts[2] != scopeKind || parts[4] != collection {
+		return Errorf(CodeInvalid, "bad name")
+	}
+	for _, i := range []int{1, 3, 5} {
+		if !validResourceID(parts[i]) {
+			return Errorf(CodeInvalid, "bad name")
+		}
+	}
+	return nil
+}
 
 // InstanceType is one entry of the static catalog. ParseInstanceType is the
 // only constructor, so every non-zero InstanceType is a catalog entry.

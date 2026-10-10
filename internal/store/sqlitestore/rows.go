@@ -85,7 +85,8 @@ func (r instanceRow) instance() (compute.Instance, error) {
 	}, nil
 }
 
-const imageColumns = `id, generation, created_at, changed_at, name, source_url, source_instance_id, deregistered,
+const imageColumns = `id, generation, created_at, changed_at, name, source_url, source_instance_id,
+  source_path, source_volume, source_snapshot, deregistered,
   observed_generation, failure_code, failure_message, present, size_bytes, attempts, retry_at, last_error, updated_at, ` + metaColumns
 
 // imageRow mirrors one row of the images table.
@@ -93,6 +94,7 @@ type imageRow struct {
 	id, name                                         string
 	generation, createdAt, changedAt                 int64
 	sourceURL, sourceInstanceID                      sql.NullString
+	sourcePath, sourceVolume, sourceSnapshot         sql.NullString
 	deregistered, observedGeneration                 int64
 	failureCode                                      sql.NullInt64
 	failureMessage                                   sql.NullString
@@ -103,7 +105,8 @@ type imageRow struct {
 
 func scanImage(sc scanner) (compute.Image, error) {
 	var r imageRow
-	err := sc.Scan(append([]any{&r.id, &r.generation, &r.createdAt, &r.changedAt, &r.name, &r.sourceURL, &r.sourceInstanceID, &r.deregistered,
+	err := sc.Scan(append([]any{&r.id, &r.generation, &r.createdAt, &r.changedAt, &r.name, &r.sourceURL, &r.sourceInstanceID,
+		&r.sourcePath, &r.sourceVolume, &r.sourceSnapshot, &r.deregistered,
 		&r.observedGeneration, &r.failureCode, &r.failureMessage, &r.present, &r.sizeBytes, &r.attempts, &r.retryAt, &r.lastError, &r.updatedAt},
 		r.meta.dest()...)...)
 	if err != nil {
@@ -114,22 +117,13 @@ func scanImage(sc scanner) (compute.Image, error) {
 
 func (r imageRow) image() (compute.Image, error) {
 	id, err1 := compute.ParseImageID(r.id)
-	name, err2 := compute.ParseImageName(r.name)
-	failure, err3 := failureOf(r.failureCode, r.failureMessage)
-	var src compute.ImageSource
-	var err4 error
-	switch {
-	case r.sourceURL.Valid:
-		var u compute.ImageURL
-		u, err4 = compute.ParseImageURL(r.sourceURL.String)
-		src = compute.FromURL{URL: u}
-	case r.sourceInstanceID.Valid:
-		var inst compute.InstanceID
-		inst, err4 = compute.ParseInstanceID(r.sourceInstanceID.String)
-		src = compute.FromInstance{Instance: inst}
-	default:
-		err4 = errors.New("no image source")
+	var name compute.ImageName
+	var err2 error
+	if r.name != "" {
+		name, err2 = compute.ParseImageName(r.name)
 	}
+	failure, err3 := failureOf(r.failureCode, r.failureMessage)
+	src, err4 := imageSource(r)
 	meta, err5 := r.meta.metadata()
 	if err := errors.Join(err1, err2, err3, err4, err5); err != nil {
 		return compute.Image{}, corrupt("image", r.id, err)
@@ -153,6 +147,47 @@ func (r imageRow) image() (compute.Image, error) {
 		},
 		Meta: meta,
 	}, nil
+}
+
+func imageSource(r imageRow) (compute.ImageSource, error) {
+	n := 0
+	var src compute.ImageSource
+	var err error
+	set := func(e error, next compute.ImageSource) {
+		n++
+		if e != nil {
+			err = e
+			return
+		}
+		src = next
+	}
+	if r.sourceURL.Valid {
+		u, e := compute.ParseImageURL(r.sourceURL.String)
+		set(e, compute.FromURL{URL: u})
+	}
+	if r.sourceInstanceID.Valid {
+		inst, e := compute.ParseInstanceID(r.sourceInstanceID.String)
+		set(e, compute.FromInstance{Instance: inst})
+	}
+	if r.sourcePath.Valid {
+		p, e := compute.ParseImagePath(r.sourcePath.String)
+		set(e, compute.FromFile{Path: p})
+	}
+	if r.sourceVolume.Valid {
+		ref, e := compute.ParseVolumeRef(r.sourceVolume.String)
+		set(e, compute.FromVolume{Ref: ref})
+	}
+	if r.sourceSnapshot.Valid {
+		ref, e := compute.ParseSnapshotRef(r.sourceSnapshot.String)
+		set(e, compute.FromSnapshot{Ref: ref})
+	}
+	if err != nil {
+		return nil, err
+	}
+	if n != 1 {
+		return nil, errors.New("image source count")
+	}
+	return src, nil
 }
 
 const keyPairColumns = `id, generation, created_at, changed_at, name, public_key, deleted, ` + metaColumns
@@ -343,3 +378,21 @@ func boolInt(b bool) int64 {
 }
 
 func nullString(s string, valid bool) sql.NullString { return sql.NullString{String: s, Valid: valid} }
+
+func imageSourceColumns(src compute.ImageSource) (url, instance, path, volume, snapshot sql.NullString, err error) {
+	switch src := src.(type) {
+	case compute.FromURL:
+		url = nullString(src.URL.String(), true)
+	case compute.FromInstance:
+		instance = nullString(src.Instance.String(), true)
+	case compute.FromFile:
+		path = nullString(src.Path.String(), true)
+	case compute.FromVolume:
+		volume = nullString(src.Ref.String(), true)
+	case compute.FromSnapshot:
+		snapshot = nullString(src.Ref.String(), true)
+	default:
+		err = compute.Errorf(compute.CodeInternal, "image has no source")
+	}
+	return url, instance, path, volume, snapshot, err
+}

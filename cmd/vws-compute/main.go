@@ -31,35 +31,44 @@ import (
 func main() {
 	listen := flag.String("listen", "127.0.0.1:50051", "address to serve gRPC on")
 	db := flag.String("db", "", "SQLite database path; empty keeps all state in memory")
+	seedImages := flag.String("seed-images", "", "JSON file of disk images to register before serving; empty registers none")
 	flag.Parse()
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	if err := run(ctx, *listen, *db); err != nil {
+	if err := run(ctx, *listen, *db, *seedImages); err != nil {
 		fmt.Fprintln(os.Stderr, "vws-compute:", err)
 		os.Exit(1)
 	}
 }
 
-func run(ctx context.Context, listen, db string) error {
+func run(ctx context.Context, listen, db, seedImages string) error {
+	seed, err := readSeed(seedImages)
+	if err != nil {
+		return err
+	}
 	repo, err := open(ctx, db)
 	if err != nil {
 		return err
 	}
 	defer repo.Close()
 
-	lis, err := net.Listen("tcp", listen)
-	if err != nil {
-		return err
-	}
 	rec := reconciler.New(repo, fakeagent.New())
-	srv := grpc.NewServer()
-	grpcapi.Register(srv, controller.New(repo, controller.WithKick(rec.Kick)), repo)
-
+	ctl := controller.New(repo, controller.WithKick(rec.Kick))
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	reconciled := make(chan error, 1)
 	go func() { reconciled <- rec.Run(ctx) }()
+	if err := applySeed(ctx, ctl, repo, seed); err != nil {
+		return stopReconciler(cancel, reconciled, err)
+	}
+
+	lis, err := net.Listen("tcp", listen)
+	if err != nil {
+		return stopReconciler(cancel, reconciled, err)
+	}
+	srv := grpc.NewServer()
+	grpcapi.Register(srv, ctl, repo)
 	served := make(chan error, 1)
 	go func() { served <- srv.Serve(lis) }()
 	slog.Info("serving vws.compute.v1", "addr", lis.Addr().String(), "db", db)
@@ -81,6 +90,16 @@ func run(ctx context.Context, listen, db string) error {
 // them. WaitOperation may block for up to a minute, and GracefulStop does
 // not cancel handlers.
 const shutdownGrace = 2 * time.Second
+
+// stopReconciler cancels the reconciler and waits for it. A cancellation
+// is the shutdown we just asked for, so it is not reported beside err.
+func stopReconciler(cancel context.CancelFunc, reconciled <-chan error, err error) error {
+	cancel()
+	if rerr := <-reconciled; !errors.Is(rerr, context.Canceled) {
+		err = errors.Join(err, rerr)
+	}
+	return err
+}
 
 func stopServer(srv *grpc.Server, grace time.Duration) {
 	stopped := make(chan struct{})

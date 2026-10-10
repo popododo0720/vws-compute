@@ -4,7 +4,7 @@ vws-compute is the VWS compute service. It serves `InstanceService`, `ImageServi
 
 Every mutating call records desired state and returns a long-running operation at once. A reconciler converges the hypervisor agent toward that state in the background. Callers poll `GetOperation` or block in `WaitOperation`. Each mutating request may carry a UUID `request_id`, so a retry is safe. Sending the same request again returns the original operation and changes nothing.
 
-The wire contract is `github.com/popododo0720/vws-proto` (commit `a1c6084`), vendored at `third_party/vws-proto`. When vws-proto is public, remove the `replace` in `go.mod` and require a tagged version. This process stores key pairs under their resource name. It does not host volumes, snapshots, subnets, or security groups, so an instance or image spec that names one is rejected with `DEPENDENCY_MISSING`. One repository backs every project, and list responses name rows with the parent the caller sent. Contributor rules are in `AGENTS.md`.
+The wire contract is `github.com/popododo0720/vws-proto` (commit `a1c6084`), vendored at `third_party/vws-proto`. When vws-proto is public, remove the `replace` in `go.mod` and require a tagged version. This process stores key pairs under their resource name. `CreateImage` records a volume or snapshot resource name and the reconciler copies it; this process does not host those resources. An instance spec that names a volume, subnet, or security group is rejected with `DEPENDENCY_MISSING`. One repository backs every project, and list responses name rows with the parent the caller sent. Contributor rules are in `AGENTS.md`.
 
 ## Run
 
@@ -13,6 +13,28 @@ go run ./cmd/vws-compute -listen 127.0.0.1:50051
 ```
 
 `-db` selects storage. Empty, the default, keeps all state in memory. A path keeps desired state, observed status, and operations in that SQLite file, and one process holds the file at a time. The binary drives an in-memory fake agent. On startup it re-applies the stored specs, so a restart rebuilds that agent's machines and image artifacts from the repository.
+
+## Seed images
+
+`-seed-images` names a JSON file of disk images to register before the server listens. The process opens the port only after every seed image is ready, so a running server can launch instances from those ids.
+
+```sh
+go run ./cmd/vws-compute -db state.db -seed-images images.json
+```
+
+```json
+{
+  "images": [
+    {"id": "debian-12", "family": "debian-12", "path": "/var/lib/vws/images/debian-12.qcow2"}
+  ]
+}
+```
+
+`id` is the image resource id (`vws.common.v1.ResourceId`). Clients address it as `projects/{project}/regions/{region}/images/{id}`, and an in-process launch passes the same id to `RunInstance`. `family` is `spec.family`. `path` is an absolute path to a regular file on the agent's host. vws-compute checks that the file exists at startup and does not read its bytes; the agent copies it while converging the image. The fake agent this binary runs records the path without reading it.
+
+Every field is required. Unknown fields are errors. Starting again with the same file writes nothing. Changing an entry's family or path after that id was registered stops startup; give the image a new id. An image deleted with `DeleteImage` stays deleted. `GetImage` leaves `spec.volume` and `spec.snapshot` unset for a seeded image, because the proto source is a volume or a snapshot and the path is not on the wire.
+
+`CreateImage` copies a volume or a snapshot. Its `image_id` is the same kind of resource id, and `GetImage` returns the source it copied. A filesystem path is not a `CreateImage` source.
 
 ## Test
 

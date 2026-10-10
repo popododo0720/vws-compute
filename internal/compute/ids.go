@@ -11,7 +11,10 @@ import (
 // constructors are ParseInstanceID and the planner.
 type InstanceID struct{ s string }
 
-// ImageID identifies an image: "img-" followed by 17 lowercase hex digits.
+// ImageID is the image resource path segment. It uses the
+// vws.common.v1.ResourceId grammar: a lowercase letter, then up to 62 more
+// characters from [a-z0-9-], not ending in a hyphen. Capture still mints
+// "img-" plus 17 lowercase hex digits, which is one of those ids.
 type ImageID struct{ s string }
 
 // KeyPairID identifies one incarnation of a key pair: "key-" followed by 17
@@ -37,9 +40,9 @@ func ParseInstanceID(s string) (InstanceID, error) {
 	return InstanceID{s}, nil
 }
 
-// ParseImageID validates s. It fails with CodeInvalid.
+// ParseImageID validates s as a ResourceId. It fails with CodeInvalid.
 func ParseImageID(s string) (ImageID, error) {
-	if !validID(s, "img-", resourceIDDigits) {
+	if !validResourceID(s) {
 		return ImageID{}, Errorf(CodeInvalid, "invalid image id %q", s)
 	}
 	return ImageID{s}, nil
@@ -79,6 +82,24 @@ func (id ImageID) Ref() Ref { return Ref{Kind: KindImage, ID: id.s} }
 
 // Ref returns the generic pointer to this key pair.
 func (id KeyPairID) Ref() Ref { return Ref{Kind: KindKeyPair, ID: id.s} }
+
+// validResourceID reports whether s matches vws.common.v1.ResourceId.
+func validResourceID(s string) bool {
+	if len(s) < 1 || len(s) > 63 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c >= 'a' && c <= 'z':
+		case i > 0 && c >= '0' && c <= '9':
+		case i > 0 && i < len(s)-1 && c == '-':
+		default:
+			return false
+		}
+	}
+	return true
+}
 
 func validID(s, prefix string, digits int) bool {
 	rest, ok := strings.CutPrefix(s, prefix)
