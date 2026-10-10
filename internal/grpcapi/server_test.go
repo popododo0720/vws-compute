@@ -118,3 +118,46 @@ func TestErrorsMapToGRPCCodes(t *testing.T) {
 		}
 	}
 }
+
+// classifiedSpecFields is every spec field this server has decided how to
+// treat. A vendored proto that adds a field fails this test until that
+// field is classified: stored, rejected, or explicitly ignored.
+var classifiedSpecFields = map[string]map[string]bool{
+	"InstanceSpec": {
+		"machine_type":       true,
+		"power":              true,
+		"key_pair":           true,
+		"user_data":          true,
+		"network_interfaces": true,
+		"volumes":            true,
+	},
+	"ImageSpec": {
+		"volume":      true,
+		"snapshot":    true,
+		"description": true,
+		"family":      true,
+	},
+	"KeyPairSpec": {
+		"public_key": true,
+	},
+}
+
+func TestMaskClassifiesEverySpecField(t *testing.T) {
+	for _, msg := range []protoreflect.MessageDescriptor{
+		(&computev1.InstanceSpec{}).ProtoReflect().Descriptor(),
+		(&computev1.ImageSpec{}).ProtoReflect().Descriptor(),
+		(&computev1.KeyPairSpec{}).ProtoReflect().Descriptor(),
+	} {
+		allowed := classifiedSpecFields[string(msg.Name())]
+		fields := msg.Fields()
+		if fields.Len() != len(allowed) {
+			t.Errorf("%s has %d fields, classification lists %d", msg.Name(), fields.Len(), len(allowed))
+		}
+		for i := 0; i < fields.Len(); i++ {
+			name := string(fields.Get(i).Name())
+			if !allowed[name] {
+				t.Errorf("%s.%s is not classified", msg.Name(), name)
+			}
+		}
+	}
+}

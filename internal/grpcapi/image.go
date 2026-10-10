@@ -94,17 +94,15 @@ func (s *server) UpdateImage(ctx context.Context, r *computev1.UpdateImageReques
 	if err := checkMask(paths); err != nil {
 		return nil, err
 	}
-	if err := rejectLabels(body.GetLabels()); err != nil {
-		return nil, err
+	patch, err := metadataPatch(paths, body.GetLabels(), imageDescription(paths, body.GetSpec()), maskIncludes(paths, "spec"))
+	if err != nil {
+		return nil, toStatus(err)
 	}
 	existing, name, err := s.liveImage(ctx, body.GetName())
 	if err != nil {
 		if r.GetAllowMissing() && statusNotFound(err) {
 			return nil, dependencyMissing("image " + body.GetName() + " is absent and this process has no volume or snapshot to copy")
 		}
-		return nil, err
-	}
-	if err := checkEtag(body.GetEtag(), etagOf(existing.Spec.Generation)); err != nil {
 		return nil, err
 	}
 	if maskIncludes(paths, "spec") {
@@ -115,20 +113,31 @@ func (s *server) UpdateImage(ctx context.Context, r *computev1.UpdateImageReques
 		if spec.GetVolume() != "" || spec.GetSnapshot() != "" {
 			return nil, invalidSpec("image.spec.source is immutable")
 		}
-		if spec.GetDescription() != "" {
-			return nil, invalidSpec("image.spec.description is not stored")
-		}
 		if spec.GetFamily() != "" && spec.GetFamily() != existing.Spec.Name.String() {
 			return nil, invalidSpec("image.spec.family is not stored")
 		}
 	}
+	in, err := compute.NewUpdateImageMetadata(existing.Spec.ID.String(), patch)
 	if r.GetValidateOnly() {
+		if err != nil {
+			return nil, toStatus(err)
+		}
+		if err := checkEtag(body.GetEtag(), etagOf(existing.Spec.Generation, existing.Meta.Revision)); err != nil {
+			return nil, err
+		}
 		return doneOperation(project, name, commonv1.OperationVerb_OPERATION_VERB_UPDATE, r.GetRequestId(), nil)
 	}
-	if op, ok, err := s.replay(ctx, project, r.GetRequestId(), existing.Spec.ID.String()); err != nil || ok {
-		return op, err
+	rc, err := s.submit(ctx, r.GetRequestId(), in, err, func() error {
+		cur, _, err := s.liveImage(ctx, body.GetName())
+		if err != nil {
+			return err
+		}
+		return checkEtag(body.GetEtag(), etagOf(cur.Spec.Generation, cur.Meta.Revision))
+	})
+	if err != nil {
+		return nil, err
 	}
-	return doneOperation(project, name, commonv1.OperationVerb_OPERATION_VERB_UPDATE, r.GetRequestId(), imagePB(existing, name))
+	return s.operationPB(ctx, project, name, rc.Operation)
 }
 
 func (s *server) DeleteImage(ctx context.Context, r *computev1.DeleteImageRequest) (*longrunningpb.Operation, error) {
@@ -139,22 +148,24 @@ func (s *server) DeleteImage(ctx context.Context, r *computev1.DeleteImageReques
 	if err != nil {
 		return nil, err
 	}
-	existing, _, err := s.liveImage(ctx, r.GetName())
-	if err != nil {
+	if _, _, err = s.liveImage(ctx, r.GetName()); err != nil {
 		if r.GetAllowMissing() && statusNotFound(err) {
 			return doneOperation(project, r.GetName(), commonv1.OperationVerb_OPERATION_VERB_DELETE, r.GetRequestId(), nil)
 		}
 		return nil, err
 	}
-	if err := checkEtag(r.GetEtag(), etagOf(existing.Spec.Generation)); err != nil {
-		return nil, err
-	}
 	in, err := compute.NewDeregisterImage(id)
-	rc, err := s.submit(ctx, r.GetRequestId(), in, err)
+	rc, err := s.submit(ctx, r.GetRequestId(), in, err, func() error {
+		cur, _, err := s.liveImage(ctx, r.GetName())
+		if err != nil {
+			return err
+		}
+		return checkEtag(r.GetEtag(), etagOf(cur.Spec.Generation, cur.Meta.Revision))
+	})
 	if err != nil {
 		return nil, err
 	}
-	return s.operationPB(ctx, project, rc.Operation)
+	return s.operationPB(ctx, project, r.GetName(), rc.Operation)
 }
 
 func (s *server) ReportImageStatus(ctx context.Context, r *computev1.ReportImageStatusRequest) (*computev1.ReportImageStatusResponse, error) {
@@ -204,8 +215,11 @@ func validateCreateImage(name string, img *computev1.Image) error {
 		img.GetCreateTime() != nil || img.GetUpdateTime() != nil || img.GetDeleteTime() != nil {
 		return invalidSpec("output-only fields must be unset")
 	}
-	if err := rejectLabels(img.GetLabels()); err != nil {
-		return err
+	if _, err := compute.ParseLabels(img.GetLabels()); err != nil {
+		return toStatus(err)
+	}
+	if _, err := compute.ParseDescription(img.GetSpec().GetDescription()); err != nil {
+		return toStatus(err)
 	}
 	spec := img.GetSpec()
 	sources := 0

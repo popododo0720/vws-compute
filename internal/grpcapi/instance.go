@@ -91,8 +91,9 @@ func (s *server) UpdateInstance(ctx context.Context, r *computev1.UpdateInstance
 	if err := checkMask(paths); err != nil {
 		return nil, err
 	}
-	if err := rejectLabels(body.GetLabels()); err != nil {
-		return nil, err
+	patch, err := metadataPatch(paths, body.GetLabels(), nil, maskIncludes(paths, "spec"))
+	if err != nil {
+		return nil, toStatus(err)
 	}
 	existing, name, err := s.liveInstance(ctx, body.GetName())
 	if err != nil {
@@ -101,45 +102,48 @@ func (s *server) UpdateInstance(ctx context.Context, r *computev1.UpdateInstance
 		}
 		return nil, err
 	}
-	if err := checkEtag(body.GetEtag(), etagOf(existing.Spec.Generation)); err != nil {
-		return nil, err
-	}
-	if !maskIncludes(paths, "spec") {
-		if r.GetValidateOnly() {
-			return doneOperation(project, name, commonv1.OperationVerb_OPERATION_VERB_UPDATE, r.GetRequestId(), nil)
-		}
-		if op, ok, err := s.replay(ctx, project, r.GetRequestId(), existing.Spec.ID.String()); err != nil || ok {
-			return op, err
-		}
-		return doneOperation(project, name, commonv1.OperationVerb_OPERATION_VERB_UPDATE, r.GetRequestId(), instancePB(existing, name))
-	}
-	spec := body.GetSpec()
-	if spec == nil {
-		return nil, invalidSpec("instance.spec is required")
-	}
-	if err := instanceSpecDelta(spec, existing); err != nil {
-		return nil, err
-	}
 	var in compute.Intent
-	switch spec.GetPower() {
-	case computev1.InstancePower_INSTANCE_POWER_RUNNING:
-		in, err = compute.NewStartInstance(id)
-	case computev1.InstancePower_INSTANCE_POWER_STOPPED:
-		in, err = compute.NewStopInstance(id)
-	default:
-		return nil, invalidSpec("instance.spec.power must be RUNNING or STOPPED")
+	if maskIncludes(paths, "spec") {
+		spec := body.GetSpec()
+		if spec == nil {
+			return nil, invalidSpec("instance.spec is required")
+		}
+		if err := instanceSpecDelta(spec, existing); err != nil {
+			return nil, err
+		}
+		var power compute.Power
+		switch spec.GetPower() {
+		case computev1.InstancePower_INSTANCE_POWER_RUNNING:
+			power = compute.PowerRunning
+		case computev1.InstancePower_INSTANCE_POWER_STOPPED:
+			power = compute.PowerStopped
+		default:
+			return nil, invalidSpec("instance.spec.power must be RUNNING or STOPPED")
+		}
+		in, err = compute.NewSetPower(id, power, patch)
+	} else {
+		in, err = compute.NewUpdateInstanceMetadata(id, patch)
 	}
 	if r.GetValidateOnly() {
 		if err != nil {
 			return nil, toStatus(err)
 		}
+		if err := checkEtag(body.GetEtag(), etagOf(existing.Spec.Generation, existing.Meta.Revision)); err != nil {
+			return nil, err
+		}
 		return doneOperation(project, name, commonv1.OperationVerb_OPERATION_VERB_UPDATE, r.GetRequestId(), nil)
 	}
-	rc, err := s.submit(ctx, r.GetRequestId(), in, err)
+	rc, err := s.submit(ctx, r.GetRequestId(), in, err, func() error {
+		cur, _, err := s.liveInstance(ctx, body.GetName())
+		if err != nil {
+			return err
+		}
+		return checkEtag(body.GetEtag(), etagOf(cur.Spec.Generation, cur.Meta.Revision))
+	})
 	if err != nil {
 		return nil, err
 	}
-	return s.operationPB(ctx, project, rc.Operation)
+	return s.operationPB(ctx, project, name, rc.Operation)
 }
 
 func (s *server) DeleteInstance(ctx context.Context, r *computev1.DeleteInstanceRequest) (*longrunningpb.Operation, error) {
@@ -150,22 +154,24 @@ func (s *server) DeleteInstance(ctx context.Context, r *computev1.DeleteInstance
 	if err != nil {
 		return nil, err
 	}
-	existing, _, err := s.liveInstance(ctx, r.GetName())
-	if err != nil {
+	if _, _, err = s.liveInstance(ctx, r.GetName()); err != nil {
 		if r.GetAllowMissing() && statusNotFound(err) {
 			return doneOperation(project, r.GetName(), commonv1.OperationVerb_OPERATION_VERB_DELETE, r.GetRequestId(), nil)
 		}
 		return nil, err
 	}
-	if err := checkEtag(r.GetEtag(), etagOf(existing.Spec.Generation)); err != nil {
-		return nil, err
-	}
 	in, err := compute.NewTerminateInstance(id)
-	rc, err := s.submit(ctx, r.GetRequestId(), in, err)
+	rc, err := s.submit(ctx, r.GetRequestId(), in, err, func() error {
+		cur, _, err := s.liveInstance(ctx, r.GetName())
+		if err != nil {
+			return err
+		}
+		return checkEtag(r.GetEtag(), etagOf(cur.Spec.Generation, cur.Meta.Revision))
+	})
 	if err != nil {
 		return nil, err
 	}
-	return s.operationPB(ctx, project, rc.Operation)
+	return s.operationPB(ctx, project, r.GetName(), rc.Operation)
 }
 
 func (s *server) ReportInstanceStatus(ctx context.Context, r *computev1.ReportInstanceStatusRequest) (*computev1.ReportInstanceStatusResponse, error) {
@@ -217,8 +223,8 @@ func validateCreateInstance(zone, name string, inst *computev1.Instance) error {
 		inst.GetCreateTime() != nil || inst.GetUpdateTime() != nil || inst.GetDeleteTime() != nil {
 		return invalidSpec("output-only fields must be unset")
 	}
-	if err := rejectLabels(inst.GetLabels()); err != nil {
-		return err
+	if _, err := compute.ParseLabels(inst.GetLabels()); err != nil {
+		return toStatus(err)
 	}
 	spec := inst.GetSpec()
 	if !machineTypePattern.MatchString(spec.GetMachineType()) {
