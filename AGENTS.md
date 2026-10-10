@@ -13,7 +13,7 @@ Rules for anyone changing this repository, human or agent. A rule with an enforc
 | `internal/reconciler` | The loop that converges the agent toward desired state. |
 | `internal/hypervisor` | The agent contract. `fakeagent` implements it in memory. |
 | `internal/grpcapi` | The gRPC edge. Wire stubs come from `github.com/popododo0720/vws-proto`. |
-| `cmd/vws-compute` | Wiring and flags. |
+| `cmd/vws-compute` | Wiring, flags, and the `-seed-images` loader. |
 
 ## Rules
 
@@ -36,6 +36,8 @@ Rules for anyone changing this repository, human or agent. A rule with an enforc
 | Shutdown cancels an in-flight RPC instead of waiting out its timeout. | `TestStopServerCancelsHandlersAfterGrace` |
 | A second process cannot open a SQLite file this process holds, including one that already has a schema. | `TestSecondOpenFails` |
 | Startup re-applies converged specs to the agent. | `TestRestartRebuildsTheAgent` |
+| A seed file registers each image once. A restart with the same file writes nothing, and a changed path stops startup. | `TestSeedIsIdempotentAcrossRestarts` |
+| `CreateImage` stores a volume or snapshot source and `GetImage` returns it. A disk path is registered only by `-seed-images`. | `TestCreateImageRoundTrip` and `TestSeededImageLaunchStopStartTerminate` |
 | A new RPC on `InstanceService`, `ImageService`, or `KeyPairService` fails to build until it is served. | `server` embeds `UnsafeInstanceServiceServer`, `UnsafeImageServiceServer`, and `UnsafeKeyPairServiceServer` |
 | Create, Update, and Delete take `request_id` and return an `Operation`. Reads do not. A report takes `request_id` and returns the resource. | `TestServicesMatchTheResourceAPI` |
 | Wire protos come from `github.com/popododo0720/vws-proto`, vendored at `third_party/vws-proto` until that module is public. | `TestVendoredProtoModule` |

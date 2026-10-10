@@ -165,6 +165,12 @@ func imagePB(i compute.Image, name string) *computev1.Image {
 		CreateTime: timestamppb.New(i.Spec.CreatedAt),
 		UpdateTime: timestamppb.New(latest(i.Spec.ChangedAt, i.Meta.ChangedAt)),
 	}
+	switch src := i.Spec.Source.(type) {
+	case compute.FromVolume:
+		out.Spec.Source = &computev1.ImageSpec_Volume{Volume: src.Ref.String()}
+	case compute.FromSnapshot:
+		out.Spec.Source = &computev1.ImageSpec_Snapshot{Snapshot: src.Ref.String()}
+	}
 	if i.Spec.Deregistered {
 		out.DeleteTime = timestamppb.New(i.Spec.ChangedAt)
 	}
@@ -203,7 +209,7 @@ func keyPairPB(k compute.KeyPair) (*computev1.KeyPair, error) {
 
 func operationVerb(k compute.OperationKind) commonv1.OperationVerb {
 	switch k {
-	case compute.OpRunInstance, compute.OpRegisterImage, compute.OpCreateImage, compute.OpCreateKeyPair, compute.OpImportKeyPair:
+	case compute.OpRunInstance, compute.OpRegisterImage, compute.OpCreateImage, compute.OpCopyImage, compute.OpRegisterFile, compute.OpCreateKeyPair, compute.OpImportKeyPair:
 		return commonv1.OperationVerb_OPERATION_VERB_CREATE
 	case compute.OpTerminateInstance, compute.OpDeregisterImage, compute.OpDeleteKeyPair:
 		return commonv1.OperationVerb_OPERATION_VERB_DELETE

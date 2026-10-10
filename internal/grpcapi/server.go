@@ -8,8 +8,10 @@
 // This process keeps one repository. Key pairs are stored under their full
 // resource name. Instances and images are the repository rows: every parent
 // lists the same rows, and the returned name uses the parent the caller
-// asked for. Volumes, snapshots, subnets, and security groups are not hosted
-// here, so a spec that requires one is rejected with DEPENDENCY_MISSING.
+// asked for. CreateImage records a volume or snapshot name and the
+// reconciler copies it; it does not host those resources. An instance spec
+// that names a volume, subnet, or security group is rejected with
+// DEPENDENCY_MISSING. A disk file is registered only by the process seed.
 package grpcapi
 
 import (
