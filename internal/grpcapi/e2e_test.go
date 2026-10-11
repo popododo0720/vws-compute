@@ -45,6 +45,7 @@ type harness struct {
 	inst  computev1.InstanceServiceClient
 	img   computev1.ImageServiceClient
 	keys  computev1.KeyPairServiceClient
+	nodes computev1.NodeServiceClient
 	ops   longrunningpb.OperationsClient
 	agent *fakeagent.Agent
 	ctl   *controller.Controller
@@ -56,7 +57,7 @@ func serve(t *testing.T) *harness {
 	return serveRepo(t, memstore.New())
 }
 
-func serveRepo(t *testing.T, repo store.Repository) *harness {
+func serveRepo(t *testing.T, repo store.Repository, opts ...grpcapi.Option) *harness {
 	t.Helper()
 	agent := fakeagent.New()
 	rec := reconciler.New(repo, agent, reconciler.WithInterval(10*time.Millisecond))
@@ -64,7 +65,7 @@ func serveRepo(t *testing.T, repo store.Repository) *harness {
 
 	lis := bufconn.Listen(1 << 20)
 	srv := grpc.NewServer()
-	grpcapi.Register(srv, ctl, repo)
+	grpcapi.Register(srv, ctl, repo, opts...)
 	ctx, cancel := context.WithCancel(context.Background())
 	stopped := make(chan struct{})
 	go func() {
@@ -83,6 +84,7 @@ func serveRepo(t *testing.T, repo store.Repository) *harness {
 		inst:  computev1.NewInstanceServiceClient(conn),
 		img:   computev1.NewImageServiceClient(conn),
 		keys:  computev1.NewKeyPairServiceClient(conn),
+		nodes: computev1.NewNodeServiceClient(conn),
 		ops:   longrunningpb.NewOperationsClient(conn),
 		agent: agent,
 		ctl:   ctl,

@@ -33,7 +33,10 @@ func (s *server) ListInstances(ctx context.Context, r *computev1.ListInstancesRe
 			return nil, toStatus(err)
 		}
 		for _, inst := range page.Items {
-			if inst.Lifecycle() == compute.InstanceTerminated {
+			if inst.Removed() || inst.Lifecycle() == compute.InstanceTerminated {
+				continue
+			}
+			if inst.Spec.NodeDriven() && (inst.Spec.Project != project || inst.Spec.Zone != zone) {
 				continue
 			}
 			matched = append(matched, inst)
@@ -181,35 +184,105 @@ func (s *server) ReportInstanceStatus(ctx context.Context, r *computev1.ReportIn
 	if r.GetStatus() == nil || r.GetStatus().GetObserved() == nil {
 		return nil, invalidSpec("status.observed is required")
 	}
-	inst, name, err := s.liveInstance(ctx, r.GetName())
+	// A converged delete is not a live instance, but its node may still be
+	// retrying the DELETING report that removed it.
+	inst, err := s.storedInstance(ctx, r.GetName())
 	if err != nil {
 		return nil, err
 	}
-	if r.GetStatus().GetObserved().GetGeneration() > inst.Spec.Generation {
+	name := r.GetName()
+	obs := r.GetStatus().GetObserved()
+	if inst.Removed() && (!inst.Spec.NodeDriven() || obs.GetState() != commonv1.ReconciliationState_RECONCILIATION_STATE_DELETING) {
+		return nil, notFound("instance " + name + " not found")
+	}
+	if obs.GetGeneration() > inst.Spec.Generation {
 		return nil, aborted("GENERATION_CONFLICT", "observed generation is ahead of the stored generation")
 	}
-	// The in-process reconciler is the node that commits status. A report that
-	// is not ahead of the stored generation changes nothing.
-	return &computev1.ReportInstanceStatusResponse{Instance: instancePB(inst, name)}, nil
+	if !inst.Spec.NodeDriven() {
+		// The in-process reconciler is the node that commits status for this
+		// instance. A report that is not ahead of the stored generation
+		// changes nothing.
+		return &computev1.ReportInstanceStatusResponse{Instance: instancePB(inst, name)}, nil
+	}
+	rep, err := parseInstanceReport(r.GetStatus())
+	if err != nil {
+		return nil, err
+	}
+	if inst.Removed() {
+		return &computev1.ReportInstanceStatusResponse{Instance: instancePB(inst, name)}, nil
+	}
+	got, err := s.nodes.ReportInstanceStatus(ctx, inst.Spec.ID, rep, s.now())
+	if err != nil {
+		if compute.CodeOf(err) == compute.CodeAborted {
+			return nil, aborted("GENERATION_CONFLICT", err.Error())
+		}
+		return nil, toStatus(err)
+	}
+	return &computev1.ReportInstanceStatusResponse{Instance: instancePB(got, name)}, nil
+}
+
+func parseInstanceReport(st *computev1.InstanceStatus) (compute.InstanceReport, error) {
+	obs := st.GetObserved()
+	rep := compute.InstanceReport{Node: obs.GetNode(), Generation: obs.GetGeneration(), Message: obs.GetMessage()}
+	switch obs.GetState() {
+	case commonv1.ReconciliationState_RECONCILIATION_STATE_PENDING:
+		rep.State = compute.ReportPending
+	case commonv1.ReconciliationState_RECONCILIATION_STATE_RECONCILING:
+		rep.State = compute.ReportReconciling
+	case commonv1.ReconciliationState_RECONCILIATION_STATE_READY:
+		rep.State = compute.ReportReady
+	case commonv1.ReconciliationState_RECONCILIATION_STATE_DELETING:
+		rep.State = compute.ReportDeleting
+	case commonv1.ReconciliationState_RECONCILIATION_STATE_ERROR:
+		rep.State = compute.ReportError
+	default:
+		return compute.InstanceReport{}, invalidSpec("status.observed.state is required")
+	}
+	switch st.GetPower() {
+	case computev1.InstancePower_INSTANCE_POWER_RUNNING:
+		rep.Power = compute.PowerRunning
+	case computev1.InstancePower_INSTANCE_POWER_STOPPED:
+		rep.Power = compute.PowerStopped
+	}
+	for _, n := range st.GetNetworkInterfaces() {
+		rep.Interfaces = append(rep.Interfaces, compute.ObservedInterface{
+			DeviceName: n.GetDeviceName(), Subnet: n.GetSubnet(), PrivateIPv4: n.GetPrivateIpv4(), PublicIPv4: n.GetPublicIpv4(),
+		})
+	}
+	return rep, nil
 }
 
 func (s *server) liveInstance(ctx context.Context, name string) (compute.Instance, string, error) {
-	_, _, id, err := parseInstanceName(name)
+	inst, err := s.storedInstance(ctx, name)
 	if err != nil {
-		return compute.Instance{}, "", err
+		return compute.Instance{}, name, err
 	}
-	iid, err := compute.ParseInstanceID(id)
-	if err != nil {
-		return compute.Instance{}, name, notFound("instance " + name + " not found")
-	}
-	inst, err := s.read.Instance(ctx, iid)
-	if err != nil {
-		return compute.Instance{}, name, toStatus(err)
-	}
-	if inst.Lifecycle() == compute.InstanceTerminated {
+	if inst.Removed() || inst.Lifecycle() == compute.InstanceTerminated {
 		return compute.Instance{}, name, notFound("instance " + name + " not found")
 	}
 	return inst, name, nil
+}
+
+// storedInstance reads the row named name, including one whose delete has
+// converged. A node-driven instance lives in the project and zone it was
+// created in, so the same id under another parent is not found.
+func (s *server) storedInstance(ctx context.Context, name string) (compute.Instance, error) {
+	project, zone, id, err := parseInstanceName(name)
+	if err != nil {
+		return compute.Instance{}, err
+	}
+	iid, err := compute.ParseInstanceID(id)
+	if err != nil {
+		return compute.Instance{}, notFound("instance " + name + " not found")
+	}
+	inst, err := s.read.Instance(ctx, iid)
+	if err != nil {
+		return compute.Instance{}, toStatus(err)
+	}
+	if inst.Spec.NodeDriven() && (inst.Spec.Project != project || inst.Spec.Zone != zone) {
+		return compute.Instance{}, notFound("instance " + name + " not found")
+	}
+	return inst, nil
 }
 
 func validateCreateInstance(zone, name string, inst *computev1.Instance) error {

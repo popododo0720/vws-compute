@@ -46,12 +46,27 @@ const (
 	maxPageSize     = 1000
 )
 
-// Register adds InstanceService, ImageService, KeyPairService, and
-// google.longrunning.Operations to s. ctl is the only write path and r the
-// only read path.
-func Register(s grpc.ServiceRegistrar, ctl *controller.Controller, r store.Reader) {
-	srv := &server{ctl: ctl, read: r}
+// Option configures Register.
+type Option func(*server)
+
+// WithMaxSyncResponseBytes lowers the SyncNode response limit. The default is
+// the 16MiB agents accept. Tests use it to reach the limit cheaply.
+func WithMaxSyncResponseBytes(n int) Option { return func(s *server) { s.maxSync = n } }
+
+// WithClock sets the server clock SyncNode stamps heartbeats with.
+func WithClock(now func() time.Time) Option { return func(s *server) { s.clock = now } }
+
+// Register adds InstanceService, ImageService, KeyPairService, NodeService,
+// and google.longrunning.Operations to s. ctl is the only desired-state
+// write path, r the read path, and r's node methods the only write path for
+// heartbeats, placement from a sync, and node-reported instance status.
+func Register(s grpc.ServiceRegistrar, ctl *controller.Controller, r store.NodeStore, opts ...Option) {
+	srv := &server{ctl: ctl, read: r, nodes: r, clock: time.Now, maxSync: maxSyncResponseBytes}
+	for _, o := range opts {
+		o(srv)
+	}
 	computev1.RegisterInstanceServiceServer(s, srv)
+	computev1.RegisterNodeServiceServer(s, srv)
 	computev1.RegisterImageServiceServer(s, srv)
 	computev1.RegisterKeyPairServiceServer(s, srv)
 	longrunningpb.RegisterOperationsServer(s, srv)
@@ -65,9 +80,13 @@ type server struct {
 	computev1.UnsafeInstanceServiceServer
 	computev1.UnsafeImageServiceServer
 	computev1.UnsafeKeyPairServiceServer
+	computev1.UnsafeNodeServiceServer
 	longrunningpb.UnimplementedOperationsServer
-	ctl  *controller.Controller
-	read store.Reader
+	ctl     *controller.Controller
+	read    store.Reader
+	nodes   store.NodeStore
+	clock   func() time.Time
+	maxSync int
 }
 
 func (s *server) GetOperation(ctx context.Context, r *longrunningpb.GetOperationRequest) (*longrunningpb.Operation, error) {
