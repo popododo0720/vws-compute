@@ -25,6 +25,8 @@ const (
 	ObjectService_CreateObject_FullMethodName       = "/vws.storage.v1.ObjectService/CreateObject"
 	ObjectService_UpdateObject_FullMethodName       = "/vws.storage.v1.ObjectService/UpdateObject"
 	ObjectService_DeleteObject_FullMethodName       = "/vws.storage.v1.ObjectService/DeleteObject"
+	ObjectService_ReadObject_FullMethodName         = "/vws.storage.v1.ObjectService/ReadObject"
+	ObjectService_WriteObject_FullMethodName        = "/vws.storage.v1.ObjectService/WriteObject"
 	ObjectService_ReportObjectStatus_FullMethodName = "/vws.storage.v1.ObjectService/ReportObjectStatus"
 )
 
@@ -33,9 +35,15 @@ const (
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 //
 // ObjectService stores desired state for one object.
-// Nodes reconcile spec. Mutations follow vws.common.v1.OperationMetadata.
-// The payload is accepted on the RPC and stored before the operation name is returned.
-// Unary payload limit is 4194304 bytes. Get does not return the payload.
+// Nodes reconcile spec. Mutations follow vws.common.v1.OperationMetadata
+// except where a method comment below overrides it.
+// The payload is stored by this API before the operation name is returned.
+// Decoded payload limit is 4194304 bytes on CreateObject, UpdateObject, and WriteObject.
+// GetObject and ListObjects do not return the payload. ReadObject does.
+// Object.etag is the concurrency token. status.md5 and spec.sha256 are digests.
+// Servers accept CreateObject, UpdateObject, and WriteObject requests of at least 8MiB.
+// Clients of ReadObject accept responses of at least 8MiB.
+// The limit is on decoded bytes. JSON base64 is larger and is not the limit.
 type ObjectServiceClient interface {
 	// AIP-131: the Get response is the resource. The payload is not included.
 	// buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
@@ -51,7 +59,47 @@ type ObjectServiceClient interface {
 	// buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
 	// buf:lint:ignore RPC_REQUEST_RESPONSE_UNIQUE
 	DeleteObject(ctx context.Context, in *DeleteObjectRequest, opts ...grpc.CallOption) (*longrunningpb.Operation, error)
+	// ReadObject returns the stored payload.
+	// No side effects. A read concurrent with a payload store returns either the
+	// previous record or the committed record, with contents and object from that
+	// same record. delete_time set, or a delete marker, is NOT_FOUND / RESOURCE_NOT_FOUND.
+	ReadObject(ctx context.Context, in *ReadObjectRequest, opts ...grpc.CallOption) (*ReadObjectResponse, error)
+	// WriteObject replaces the stored payload, including with a zero-length payload.
+	// It does not create. verb is UPDATE.
+	//
+	// Idempotency key is (name, request_id). The fingerprint is name, contents,
+	// sha256, etag, and validate_only. Replay is checked before existence,
+	// delete_time, and the etag compare, so a lost response retries onto the
+	// operation that committed.
+	// Same request_id and same fingerprint: return that operation.
+	// Same request_id and a different fingerprint: ABORTED / IDEMPOTENCY_CONFLICT
+	// and write nothing. request_id is remembered for 24 hours and recorded only
+	// when a store commits.
+	//
+	// Then: missing object is NOT_FOUND / RESOURCE_NOT_FOUND.
+	// delete_time set is FAILED_PRECONDITION / DEPENDENCY_NOT_READY.
+	// etag set and different is ABORTED / ETAG_MISMATCH.
+	// sha256 set and different from contents is INVALID_ARGUMENT / INVALID_SPEC.
+	// Identical stored bytes: succeeded operation. generation, etag, sha256, md5,
+	// size_bytes, and version stay as stored.
+	// Otherwise one store writes the bytes, sets spec.sha256, status.md5, and
+	// status.size_bytes, changes etag, increments generation, and stores a RUNNING
+	// operation. When bucket versioning is on, that store also sets status.version
+	// to a new non-empty value. Then the server returns the operation name.
+	// validate_only checks the request and writes nothing. The succeeded operation
+	// has an unset response.
+	// Crash before the store leaves the previous bytes and no new operation.
+	// Crash after it is recovered by reading the operation.
+	//
+	// AIP-151: the mutation returns google.longrunning.Operation.
+	// buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
+	// buf:lint:ignore RPC_REQUEST_RESPONSE_UNIQUE
+	WriteObject(ctx context.Context, in *WriteObjectRequest, opts ...grpc.CallOption) (*longrunningpb.Operation, error)
 	// ReportObjectStatus is the node reconcile write.
+	// The server ignores status.md5 and status.size_bytes and rewrites both from
+	// the stored payload. status.version is left as stored when the server assigned
+	// it. status.observed is the node's to write.
+	// A generation conflict stores nothing.
 	ReportObjectStatus(ctx context.Context, in *ReportObjectStatusRequest, opts ...grpc.CallOption) (*ReportObjectStatusResponse, error)
 }
 
@@ -113,6 +161,26 @@ func (c *objectServiceClient) DeleteObject(ctx context.Context, in *DeleteObject
 	return out, nil
 }
 
+func (c *objectServiceClient) ReadObject(ctx context.Context, in *ReadObjectRequest, opts ...grpc.CallOption) (*ReadObjectResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ReadObjectResponse)
+	err := c.cc.Invoke(ctx, ObjectService_ReadObject_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *objectServiceClient) WriteObject(ctx context.Context, in *WriteObjectRequest, opts ...grpc.CallOption) (*longrunningpb.Operation, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(longrunningpb.Operation)
+	err := c.cc.Invoke(ctx, ObjectService_WriteObject_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *objectServiceClient) ReportObjectStatus(ctx context.Context, in *ReportObjectStatusRequest, opts ...grpc.CallOption) (*ReportObjectStatusResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ReportObjectStatusResponse)
@@ -128,9 +196,15 @@ func (c *objectServiceClient) ReportObjectStatus(ctx context.Context, in *Report
 // for forward compatibility.
 //
 // ObjectService stores desired state for one object.
-// Nodes reconcile spec. Mutations follow vws.common.v1.OperationMetadata.
-// The payload is accepted on the RPC and stored before the operation name is returned.
-// Unary payload limit is 4194304 bytes. Get does not return the payload.
+// Nodes reconcile spec. Mutations follow vws.common.v1.OperationMetadata
+// except where a method comment below overrides it.
+// The payload is stored by this API before the operation name is returned.
+// Decoded payload limit is 4194304 bytes on CreateObject, UpdateObject, and WriteObject.
+// GetObject and ListObjects do not return the payload. ReadObject does.
+// Object.etag is the concurrency token. status.md5 and spec.sha256 are digests.
+// Servers accept CreateObject, UpdateObject, and WriteObject requests of at least 8MiB.
+// Clients of ReadObject accept responses of at least 8MiB.
+// The limit is on decoded bytes. JSON base64 is larger and is not the limit.
 type ObjectServiceServer interface {
 	// AIP-131: the Get response is the resource. The payload is not included.
 	// buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
@@ -146,7 +220,47 @@ type ObjectServiceServer interface {
 	// buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
 	// buf:lint:ignore RPC_REQUEST_RESPONSE_UNIQUE
 	DeleteObject(context.Context, *DeleteObjectRequest) (*longrunningpb.Operation, error)
+	// ReadObject returns the stored payload.
+	// No side effects. A read concurrent with a payload store returns either the
+	// previous record or the committed record, with contents and object from that
+	// same record. delete_time set, or a delete marker, is NOT_FOUND / RESOURCE_NOT_FOUND.
+	ReadObject(context.Context, *ReadObjectRequest) (*ReadObjectResponse, error)
+	// WriteObject replaces the stored payload, including with a zero-length payload.
+	// It does not create. verb is UPDATE.
+	//
+	// Idempotency key is (name, request_id). The fingerprint is name, contents,
+	// sha256, etag, and validate_only. Replay is checked before existence,
+	// delete_time, and the etag compare, so a lost response retries onto the
+	// operation that committed.
+	// Same request_id and same fingerprint: return that operation.
+	// Same request_id and a different fingerprint: ABORTED / IDEMPOTENCY_CONFLICT
+	// and write nothing. request_id is remembered for 24 hours and recorded only
+	// when a store commits.
+	//
+	// Then: missing object is NOT_FOUND / RESOURCE_NOT_FOUND.
+	// delete_time set is FAILED_PRECONDITION / DEPENDENCY_NOT_READY.
+	// etag set and different is ABORTED / ETAG_MISMATCH.
+	// sha256 set and different from contents is INVALID_ARGUMENT / INVALID_SPEC.
+	// Identical stored bytes: succeeded operation. generation, etag, sha256, md5,
+	// size_bytes, and version stay as stored.
+	// Otherwise one store writes the bytes, sets spec.sha256, status.md5, and
+	// status.size_bytes, changes etag, increments generation, and stores a RUNNING
+	// operation. When bucket versioning is on, that store also sets status.version
+	// to a new non-empty value. Then the server returns the operation name.
+	// validate_only checks the request and writes nothing. The succeeded operation
+	// has an unset response.
+	// Crash before the store leaves the previous bytes and no new operation.
+	// Crash after it is recovered by reading the operation.
+	//
+	// AIP-151: the mutation returns google.longrunning.Operation.
+	// buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
+	// buf:lint:ignore RPC_REQUEST_RESPONSE_UNIQUE
+	WriteObject(context.Context, *WriteObjectRequest) (*longrunningpb.Operation, error)
 	// ReportObjectStatus is the node reconcile write.
+	// The server ignores status.md5 and status.size_bytes and rewrites both from
+	// the stored payload. status.version is left as stored when the server assigned
+	// it. status.observed is the node's to write.
+	// A generation conflict stores nothing.
 	ReportObjectStatus(context.Context, *ReportObjectStatusRequest) (*ReportObjectStatusResponse, error)
 	mustEmbedUnimplementedObjectServiceServer()
 }
@@ -172,6 +286,12 @@ func (UnimplementedObjectServiceServer) UpdateObject(context.Context, *UpdateObj
 }
 func (UnimplementedObjectServiceServer) DeleteObject(context.Context, *DeleteObjectRequest) (*longrunningpb.Operation, error) {
 	return nil, status.Error(codes.Unimplemented, "method DeleteObject not implemented")
+}
+func (UnimplementedObjectServiceServer) ReadObject(context.Context, *ReadObjectRequest) (*ReadObjectResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ReadObject not implemented")
+}
+func (UnimplementedObjectServiceServer) WriteObject(context.Context, *WriteObjectRequest) (*longrunningpb.Operation, error) {
+	return nil, status.Error(codes.Unimplemented, "method WriteObject not implemented")
 }
 func (UnimplementedObjectServiceServer) ReportObjectStatus(context.Context, *ReportObjectStatusRequest) (*ReportObjectStatusResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ReportObjectStatus not implemented")
@@ -287,6 +407,42 @@ func _ObjectService_DeleteObject_Handler(srv interface{}, ctx context.Context, d
 	return interceptor(ctx, in, info, handler)
 }
 
+func _ObjectService_ReadObject_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ReadObjectRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ObjectServiceServer).ReadObject(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ObjectService_ReadObject_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ObjectServiceServer).ReadObject(ctx, req.(*ReadObjectRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ObjectService_WriteObject_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(WriteObjectRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ObjectServiceServer).WriteObject(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ObjectService_WriteObject_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ObjectServiceServer).WriteObject(ctx, req.(*WriteObjectRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _ObjectService_ReportObjectStatus_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(ReportObjectStatusRequest)
 	if err := dec(in); err != nil {
@@ -331,6 +487,14 @@ var ObjectService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "DeleteObject",
 			Handler:    _ObjectService_DeleteObject_Handler,
+		},
+		{
+			MethodName: "ReadObject",
+			Handler:    _ObjectService_ReadObject_Handler,
+		},
+		{
+			MethodName: "WriteObject",
+			Handler:    _ObjectService_WriteObject_Handler,
 		},
 		{
 			MethodName: "ReportObjectStatus",

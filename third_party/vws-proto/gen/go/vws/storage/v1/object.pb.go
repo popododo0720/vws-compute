@@ -35,10 +35,12 @@ const (
 // with "/", does not contain "//", and contains no ASCII control characters.
 // This is the only resource id that is not vws.common.v1.ResourceId.
 type Object struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
-	Uid           string                 `protobuf:"bytes,2,opt,name=uid,proto3" json:"uid,omitempty"`
-	Generation    int64                  `protobuf:"varint,3,opt,name=generation,proto3" json:"generation,omitempty"`
+	state      protoimpl.MessageState `protogen:"open.v1"`
+	Name       string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	Uid        string                 `protobuf:"bytes,2,opt,name=uid,proto3" json:"uid,omitempty"`
+	Generation int64                  `protobuf:"varint,3,opt,name=generation,proto3" json:"generation,omitempty"`
+	// Concurrency token. Not an MD5 and not spec.sha256.
+	// Changes when a stored spec, label, or payload change is committed.
 	Etag          string                 `protobuf:"bytes,4,opt,name=etag,proto3" json:"etag,omitempty"`
 	Labels        map[string]string      `protobuf:"bytes,5,rep,name=labels,proto3" json:"labels,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	Spec          *ObjectSpec            `protobuf:"bytes,6,opt,name=spec,proto3" json:"spec,omitempty"`
@@ -155,8 +157,15 @@ type ObjectSpec struct {
 	ContentType  string                 `protobuf:"bytes,1,opt,name=content_type,json=contentType,proto3" json:"content_type,omitempty"`
 	CacheControl string                 `protobuf:"bytes,2,opt,name=cache_control,json=cacheControl,proto3" json:"cache_control,omitempty"`
 	Metadata     map[string]string      `protobuf:"bytes,3,rep,name=metadata,proto3" json:"metadata,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
-	// Lowercase hex SHA-256 of the payload. When contents is set and this is
-	// empty, the server fills it. When both are set they must match.
+	// Lowercase hex SHA-256 of the stored payload. 64 hex characters.
+	// Empty on create, or on a payload replace, means the server fills it from
+	// the bytes being stored. A non-empty value must match those bytes or the
+	// RPC returns INVALID_ARGUMENT / INVALID_SPEC and stores nothing.
+	// On an update that does not replace the payload, empty means keep the stored
+	// hash. A non-empty value must match the stored payload.
+	// A create or update retry whose sha256 is empty matches a stored hash of the
+	// same bytes. That fill is not a desired-state mismatch.
+	// This field is not Object.etag and not ObjectStatus.md5.
 	Sha256        string `protobuf:"bytes,4,opt,name=sha256,proto3" json:"sha256,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -221,11 +230,20 @@ func (x *ObjectSpec) GetSha256() string {
 }
 
 type ObjectStatus struct {
-	state     protoimpl.MessageState `protogen:"open.v1"`
-	Observed  *v1.ObservedState      `protobuf:"bytes,1,opt,name=observed,proto3" json:"observed,omitempty"`
-	SizeBytes int64                  `protobuf:"varint,2,opt,name=size_bytes,json=sizeBytes,proto3" json:"size_bytes,omitempty"`
-	// Set when bucket versioning is on. Empty otherwise.
-	Version       string `protobuf:"bytes,3,opt,name=version,proto3" json:"version,omitempty"`
+	state    protoimpl.MessageState `protogen:"open.v1"`
+	Observed *v1.ObservedState      `protobuf:"bytes,1,opt,name=observed,proto3" json:"observed,omitempty"`
+	// Byte length of the stored payload. The server writes it in the same store
+	// as the payload. OUTPUT_ONLY. ReportObjectStatus rewrites it from the payload.
+	SizeBytes int64 `protobuf:"varint,2,opt,name=size_bytes,json=sizeBytes,proto3" json:"size_bytes,omitempty"`
+	// Set by the server when bucket versioning is on and the payload changes.
+	// Empty when versioning is off. ReportObjectStatus does not overwrite it.
+	Version string `protobuf:"bytes,3,opt,name=version,proto3" json:"version,omitempty"`
+	// Lowercase hex MD5 of the stored payload. 32 hex characters, no quotes.
+	// The server writes it in the same store as the payload, before the operation
+	// name is returned. GetObject returns it before any node report.
+	// When empty and a payload is stored, Get and List fill it from that payload.
+	// OUTPUT_ONLY. Not a concurrency token. Object.etag is the concurrency token.
+	Md5           string `protobuf:"bytes,4,opt,name=md5,proto3" json:"md5,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -277,6 +295,13 @@ func (x *ObjectStatus) GetSizeBytes() int64 {
 func (x *ObjectStatus) GetVersion() string {
 	if x != nil {
 		return x.Version
+	}
+	return ""
+}
+
+func (x *ObjectStatus) GetMd5() string {
+	if x != nil {
+		return x.Md5
 	}
 	return ""
 }
@@ -444,7 +469,13 @@ type CreateObjectRequest struct {
 	// Percent-encoded object key. See Object.
 	ObjectId string  `protobuf:"bytes,2,opt,name=object_id,json=objectId,proto3" json:"object_id,omitempty"`
 	Object   *Object `protobuf:"bytes,3,opt,name=object,proto3" json:"object,omitempty"`
-	// Payload. Required on create. Maximum 4194304 bytes.
+	// Payload. Zero length is a valid empty object. Maximum 4194304 bytes.
+	// The server stores these bytes, spec.sha256, status.md5, and status.size_bytes
+	// before it returns the operation name. When bucket versioning is on, it also
+	// sets status.version in that store.
+	// Idempotency follows OperationMetadata create rules. The request fingerprint
+	// includes contents, labels, and spec other than a server-filled sha256.
+	// An empty request sha256 matches the stored hash of those same contents.
 	Contents      []byte `protobuf:"bytes,4,opt,name=contents,proto3" json:"contents,omitempty"`
 	RequestId     string `protobuf:"bytes,5,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
 	ValidateOnly  bool   `protobuf:"varint,6,opt,name=validate_only,json=validateOnly,proto3" json:"validate_only,omitempty"`
@@ -527,10 +558,21 @@ func (x *CreateObjectRequest) GetValidateOnly() bool {
 type UpdateObjectRequest struct {
 	state  protoimpl.MessageState `protogen:"open.v1"`
 	Object *Object                `protobuf:"bytes,1,opt,name=object,proto3" json:"object,omitempty"`
-	// Replacement payload. Omit to keep the stored bytes.
-	// Maximum 4194304 bytes when set.
+	// Legacy payload replace. Independent of update_mask.
+	// Length 0, including an omitted proto3 bytes field, leaves the payload unchanged.
+	// Length greater than 0 replaces the payload in the same store as WriteObject,
+	// together with the spec and label update. One generation increment if either
+	// the effective spec, the labels, or the bytes change.
+	// The update no-op includes the payload: identical spec, labels, and bytes
+	// succeed without a new generation. A non-empty contents that differs is a change
+	// even when spec and labels match.
+	// Zero-length replacement is WriteObject only.
+	// Maximum 4194304 bytes when non-empty.
+	// allow_missing creates through the CreateObject rules, including hashes for
+	// a zero-length payload.
 	Contents []byte `protobuf:"bytes,2,opt,name=contents,proto3" json:"contents,omitempty"`
-	// Paths are relative to Object. Omitted mask is treated as "spec,labels".
+	// Paths are relative to Object. status and output-only fields are rejected.
+	// Omitted mask is treated as "spec,labels".
 	UpdateMask    *fieldmaskpb.FieldMask `protobuf:"bytes,3,opt,name=update_mask,json=updateMask,proto3" json:"update_mask,omitempty"`
 	RequestId     string                 `protobuf:"bytes,4,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
 	ValidateOnly  bool                   `protobuf:"varint,5,opt,name=validate_only,json=validateOnly,proto3" json:"validate_only,omitempty"`
@@ -783,6 +825,207 @@ func (x *ReportObjectStatusResponse) GetObject() *Object {
 	return nil
 }
 
+type ReadObjectRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Name  string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	// When set, must equal Object.etag of the record that would be returned.
+	// Otherwise ABORTED / ETAG_MISMATCH and no response body.
+	Etag          string `protobuf:"bytes,2,opt,name=etag,proto3" json:"etag,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ReadObjectRequest) Reset() {
+	*x = ReadObjectRequest{}
+	mi := &file_vws_storage_v1_object_proto_msgTypes[11]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ReadObjectRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ReadObjectRequest) ProtoMessage() {}
+
+func (x *ReadObjectRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_vws_storage_v1_object_proto_msgTypes[11]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ReadObjectRequest.ProtoReflect.Descriptor instead.
+func (*ReadObjectRequest) Descriptor() ([]byte, []int) {
+	return file_vws_storage_v1_object_proto_rawDescGZIP(), []int{11}
+}
+
+func (x *ReadObjectRequest) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *ReadObjectRequest) GetEtag() string {
+	if x != nil {
+		return x.Etag
+	}
+	return ""
+}
+
+type ReadObjectResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Entire stored payload. No range. Empty when the stored object is empty.
+	// Maximum 4194304 bytes.
+	Contents []byte `protobuf:"bytes,1,opt,name=contents,proto3" json:"contents,omitempty"`
+	// Metadata of the same record as contents, including etag, spec.sha256, and status.md5.
+	Object        *Object `protobuf:"bytes,2,opt,name=object,proto3" json:"object,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ReadObjectResponse) Reset() {
+	*x = ReadObjectResponse{}
+	mi := &file_vws_storage_v1_object_proto_msgTypes[12]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ReadObjectResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ReadObjectResponse) ProtoMessage() {}
+
+func (x *ReadObjectResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_vws_storage_v1_object_proto_msgTypes[12]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ReadObjectResponse.ProtoReflect.Descriptor instead.
+func (*ReadObjectResponse) Descriptor() ([]byte, []int) {
+	return file_vws_storage_v1_object_proto_rawDescGZIP(), []int{12}
+}
+
+func (x *ReadObjectResponse) GetContents() []byte {
+	if x != nil {
+		return x.Contents
+	}
+	return nil
+}
+
+func (x *ReadObjectResponse) GetObject() *Object {
+	if x != nil {
+		return x.Object
+	}
+	return nil
+}
+
+type WriteObjectRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Name  string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	// Full replacement payload. Maximum 4194304 bytes.
+	// Unset is INVALID_ARGUMENT / INVALID_SPEC and stores nothing.
+	// Set and empty stores an empty object.
+	// Callers that want to keep the stored bytes do not call WriteObject.
+	Contents []byte `protobuf:"bytes,2,opt,name=contents,proto3,oneof" json:"contents,omitempty"`
+	// Lowercase hex SHA-256 of contents. Empty means the server computes it.
+	// When set, it must match contents or the RPC returns INVALID_ARGUMENT / INVALID_SPEC.
+	Sha256 string `protobuf:"bytes,3,opt,name=sha256,proto3" json:"sha256,omitempty"`
+	// When set, must equal the stored Object.etag. Checked after request_id replay
+	// and before the byte compare.
+	Etag          string `protobuf:"bytes,4,opt,name=etag,proto3" json:"etag,omitempty"`
+	RequestId     string `protobuf:"bytes,5,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
+	ValidateOnly  bool   `protobuf:"varint,6,opt,name=validate_only,json=validateOnly,proto3" json:"validate_only,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *WriteObjectRequest) Reset() {
+	*x = WriteObjectRequest{}
+	mi := &file_vws_storage_v1_object_proto_msgTypes[13]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *WriteObjectRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*WriteObjectRequest) ProtoMessage() {}
+
+func (x *WriteObjectRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_vws_storage_v1_object_proto_msgTypes[13]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use WriteObjectRequest.ProtoReflect.Descriptor instead.
+func (*WriteObjectRequest) Descriptor() ([]byte, []int) {
+	return file_vws_storage_v1_object_proto_rawDescGZIP(), []int{13}
+}
+
+func (x *WriteObjectRequest) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *WriteObjectRequest) GetContents() []byte {
+	if x != nil {
+		return x.Contents
+	}
+	return nil
+}
+
+func (x *WriteObjectRequest) GetSha256() string {
+	if x != nil {
+		return x.Sha256
+	}
+	return ""
+}
+
+func (x *WriteObjectRequest) GetEtag() string {
+	if x != nil {
+		return x.Etag
+	}
+	return ""
+}
+
+func (x *WriteObjectRequest) GetRequestId() string {
+	if x != nil {
+		return x.RequestId
+	}
+	return ""
+}
+
+func (x *WriteObjectRequest) GetValidateOnly() bool {
+	if x != nil {
+		return x.ValidateOnly
+	}
+	return false
+}
+
 var File_vws_storage_v1_object_proto protoreflect.FileDescriptor
 
 const file_vws_storage_v1_object_proto_rawDesc = "" +
@@ -817,12 +1060,13 @@ const file_vws_storage_v1_object_proto_rawDesc = "" +
 	"\x06sha256\x18\x04 \x01(\tR\x06sha256\x1a;\n" +
 	"\rMetadataEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x81\x01\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x9d\x01\n" +
 	"\fObjectStatus\x128\n" +
-	"\bobserved\x18\x01 \x01(\v2\x1c.vws.common.v1.ObservedStateR\bobserved\x12\x1d\n" +
+	"\bobserved\x18\x01 \x01(\v2\x1c.vws.common.v1.ObservedStateR\bobserved\x12\"\n" +
 	"\n" +
-	"size_bytes\x18\x02 \x01(\x03R\tsizeBytes\x12\x18\n" +
-	"\aversion\x18\x03 \x01(\tR\aversion\"B\n" +
+	"size_bytes\x18\x02 \x01(\x03B\x03\xe0A\x03R\tsizeBytes\x12\x18\n" +
+	"\aversion\x18\x03 \x01(\tR\aversion\x12\x15\n" +
+	"\x03md5\x18\x04 \x01(\tB\x03\xe0A\x03R\x03md5\"B\n" +
 	"\x10GetObjectRequest\x12.\n" +
 	"\x04name\x18\x01 \x01(\tB\x1a\xe0A\x02\xfaA\x14\n" +
 	"\x12vws.storage/ObjectR\x04name\"\x84\x01\n" +
@@ -865,7 +1109,25 @@ const file_vws_storage_v1_object_proto_rawDesc = "" +
 	"\n" +
 	"request_id\x18\x03 \x01(\tB\v\xe0A\x01\xe2\x8c\xcf\xd7\b\x02\b\x01R\trequestId\"L\n" +
 	"\x1aReportObjectStatusResponse\x12.\n" +
-	"\x06object\x18\x01 \x01(\v2\x16.vws.storage.v1.ObjectR\x06object2\x9c\b\n" +
+	"\x06object\x18\x01 \x01(\v2\x16.vws.storage.v1.ObjectR\x06object\"\\\n" +
+	"\x11ReadObjectRequest\x12.\n" +
+	"\x04name\x18\x01 \x01(\tB\x1a\xe0A\x02\xfaA\x14\n" +
+	"\x12vws.storage/ObjectR\x04name\x12\x17\n" +
+	"\x04etag\x18\x02 \x01(\tB\x03\xe0A\x01R\x04etag\"j\n" +
+	"\x12ReadObjectResponse\x12\x1f\n" +
+	"\bcontents\x18\x01 \x01(\fB\x03\xe0A\x03R\bcontents\x123\n" +
+	"\x06object\x18\x02 \x01(\v2\x16.vws.storage.v1.ObjectB\x03\xe0A\x03R\x06object\"\x83\x02\n" +
+	"\x12WriteObjectRequest\x12.\n" +
+	"\x04name\x18\x01 \x01(\tB\x1a\xe0A\x02\xfaA\x14\n" +
+	"\x12vws.storage/ObjectR\x04name\x12$\n" +
+	"\bcontents\x18\x02 \x01(\fB\x03\xe0A\x02H\x00R\bcontents\x88\x01\x01\x12\x1b\n" +
+	"\x06sha256\x18\x03 \x01(\tB\x03\xe0A\x01R\x06sha256\x12\x17\n" +
+	"\x04etag\x18\x04 \x01(\tB\x03\xe0A\x01R\x04etag\x12*\n" +
+	"\n" +
+	"request_id\x18\x05 \x01(\tB\v\xe0A\x01\xe2\x8c\xcf\xd7\b\x02\b\x01R\trequestId\x12(\n" +
+	"\rvalidate_only\x18\x06 \x01(\bB\x03\xe0A\x01R\fvalidateOnlyB\v\n" +
+	"\t_contents2\xf4\n" +
+	"\n" +
 	"\rObjectService\x12x\n" +
 	"\tGetObject\x12 .vws.storage.v1.GetObjectRequest\x1a\x16.vws.storage.v1.Object\"1\x82\xd3\xe4\x93\x02+\x12)/v1/{name=projects/*/buckets/*/objects/*}\x12\x89\x01\n" +
 	"\vListObjects\x12\".vws.storage.v1.ListObjectsRequest\x1a#.vws.storage.v1.ListObjectsResponse\"1\x82\xd3\xe4\x93\x02+\x12)/v1/{parent=projects/*/buckets/*}/objects\x12\xc3\x01\n" +
@@ -874,7 +1136,11 @@ const file_vws_storage_v1_object_proto_rawDesc = "" +
 	"\fUpdateObject\x12#.vws.storage.v1.UpdateObjectRequest\x1a\x1d.google.longrunning.Operation\"v\xcaA8\n" +
 	"\x15vws.storage.v1.Object\x12\x1fvws.common.v1.OperationMetadata\x82\xd3\xe4\x93\x025:\x01*20/v1/{object.name=projects/*/buckets/*/objects/*}\x12\xc0\x01\n" +
 	"\fDeleteObject\x12#.vws.storage.v1.DeleteObjectRequest\x1a\x1d.google.longrunning.Operation\"l\xcaA8\n" +
-	"\x15vws.storage.v1.Object\x12\x1fvws.common.v1.OperationMetadata\x82\xd3\xe4\x93\x02+*)/v1/{name=projects/*/buckets/*/objects/*}\x12\xae\x01\n" +
+	"\x15vws.storage.v1.Object\x12\x1fvws.common.v1.OperationMetadata\x82\xd3\xe4\x93\x02+*)/v1/{name=projects/*/buckets/*/objects/*}\x12\x8b\x01\n" +
+	"\n" +
+	"ReadObject\x12!.vws.storage.v1.ReadObjectRequest\x1a\".vws.storage.v1.ReadObjectResponse\"6\x82\xd3\xe4\x93\x020\x12./v1/{name=projects/*/buckets/*/objects/*}:read\x12\xc7\x01\n" +
+	"\vWriteObject\x12\".vws.storage.v1.WriteObjectRequest\x1a\x1d.google.longrunning.Operation\"u\xcaA8\n" +
+	"\x15vws.storage.v1.Object\x12\x1fvws.common.v1.OperationMetadata\x82\xd3\xe4\x93\x024:\x01*\"//v1/{name=projects/*/buckets/*/objects/*}:write\x12\xae\x01\n" +
 	"\x12ReportObjectStatus\x12).vws.storage.v1.ReportObjectStatusRequest\x1a*.vws.storage.v1.ReportObjectStatusResponse\"A\x82\xd3\xe4\x93\x02;:\x01*\"6/v1/{name=projects/*/buckets/*/objects/*}:reportStatusBf\n" +
 	"\x12dev.vws.storage.v1B\vObjectProtoP\x01ZAgithub.com/popododo0720/vws-proto/gen/go/vws/storage/v1;storagev1b\x06proto3"
 
@@ -890,7 +1156,7 @@ func file_vws_storage_v1_object_proto_rawDescGZIP() []byte {
 	return file_vws_storage_v1_object_proto_rawDescData
 }
 
-var file_vws_storage_v1_object_proto_msgTypes = make([]protoimpl.MessageInfo, 13)
+var file_vws_storage_v1_object_proto_msgTypes = make([]protoimpl.MessageInfo, 16)
 var file_vws_storage_v1_object_proto_goTypes = []any{
 	(*Object)(nil),                     // 0: vws.storage.v1.Object
 	(*ObjectSpec)(nil),                 // 1: vws.storage.v1.ObjectSpec
@@ -903,45 +1169,53 @@ var file_vws_storage_v1_object_proto_goTypes = []any{
 	(*DeleteObjectRequest)(nil),        // 8: vws.storage.v1.DeleteObjectRequest
 	(*ReportObjectStatusRequest)(nil),  // 9: vws.storage.v1.ReportObjectStatusRequest
 	(*ReportObjectStatusResponse)(nil), // 10: vws.storage.v1.ReportObjectStatusResponse
-	nil,                                // 11: vws.storage.v1.Object.LabelsEntry
-	nil,                                // 12: vws.storage.v1.ObjectSpec.MetadataEntry
-	(*timestamppb.Timestamp)(nil),      // 13: google.protobuf.Timestamp
-	(*v1.ObservedState)(nil),           // 14: vws.common.v1.ObservedState
-	(*fieldmaskpb.FieldMask)(nil),      // 15: google.protobuf.FieldMask
-	(*longrunningpb.Operation)(nil),    // 16: google.longrunning.Operation
+	(*ReadObjectRequest)(nil),          // 11: vws.storage.v1.ReadObjectRequest
+	(*ReadObjectResponse)(nil),         // 12: vws.storage.v1.ReadObjectResponse
+	(*WriteObjectRequest)(nil),         // 13: vws.storage.v1.WriteObjectRequest
+	nil,                                // 14: vws.storage.v1.Object.LabelsEntry
+	nil,                                // 15: vws.storage.v1.ObjectSpec.MetadataEntry
+	(*timestamppb.Timestamp)(nil),      // 16: google.protobuf.Timestamp
+	(*v1.ObservedState)(nil),           // 17: vws.common.v1.ObservedState
+	(*fieldmaskpb.FieldMask)(nil),      // 18: google.protobuf.FieldMask
+	(*longrunningpb.Operation)(nil),    // 19: google.longrunning.Operation
 }
 var file_vws_storage_v1_object_proto_depIdxs = []int32{
-	11, // 0: vws.storage.v1.Object.labels:type_name -> vws.storage.v1.Object.LabelsEntry
+	14, // 0: vws.storage.v1.Object.labels:type_name -> vws.storage.v1.Object.LabelsEntry
 	1,  // 1: vws.storage.v1.Object.spec:type_name -> vws.storage.v1.ObjectSpec
 	2,  // 2: vws.storage.v1.Object.status:type_name -> vws.storage.v1.ObjectStatus
-	13, // 3: vws.storage.v1.Object.create_time:type_name -> google.protobuf.Timestamp
-	13, // 4: vws.storage.v1.Object.update_time:type_name -> google.protobuf.Timestamp
-	13, // 5: vws.storage.v1.Object.delete_time:type_name -> google.protobuf.Timestamp
-	12, // 6: vws.storage.v1.ObjectSpec.metadata:type_name -> vws.storage.v1.ObjectSpec.MetadataEntry
-	14, // 7: vws.storage.v1.ObjectStatus.observed:type_name -> vws.common.v1.ObservedState
+	16, // 3: vws.storage.v1.Object.create_time:type_name -> google.protobuf.Timestamp
+	16, // 4: vws.storage.v1.Object.update_time:type_name -> google.protobuf.Timestamp
+	16, // 5: vws.storage.v1.Object.delete_time:type_name -> google.protobuf.Timestamp
+	15, // 6: vws.storage.v1.ObjectSpec.metadata:type_name -> vws.storage.v1.ObjectSpec.MetadataEntry
+	17, // 7: vws.storage.v1.ObjectStatus.observed:type_name -> vws.common.v1.ObservedState
 	0,  // 8: vws.storage.v1.ListObjectsResponse.objects:type_name -> vws.storage.v1.Object
 	0,  // 9: vws.storage.v1.CreateObjectRequest.object:type_name -> vws.storage.v1.Object
 	0,  // 10: vws.storage.v1.UpdateObjectRequest.object:type_name -> vws.storage.v1.Object
-	15, // 11: vws.storage.v1.UpdateObjectRequest.update_mask:type_name -> google.protobuf.FieldMask
+	18, // 11: vws.storage.v1.UpdateObjectRequest.update_mask:type_name -> google.protobuf.FieldMask
 	2,  // 12: vws.storage.v1.ReportObjectStatusRequest.status:type_name -> vws.storage.v1.ObjectStatus
 	0,  // 13: vws.storage.v1.ReportObjectStatusResponse.object:type_name -> vws.storage.v1.Object
-	3,  // 14: vws.storage.v1.ObjectService.GetObject:input_type -> vws.storage.v1.GetObjectRequest
-	4,  // 15: vws.storage.v1.ObjectService.ListObjects:input_type -> vws.storage.v1.ListObjectsRequest
-	6,  // 16: vws.storage.v1.ObjectService.CreateObject:input_type -> vws.storage.v1.CreateObjectRequest
-	7,  // 17: vws.storage.v1.ObjectService.UpdateObject:input_type -> vws.storage.v1.UpdateObjectRequest
-	8,  // 18: vws.storage.v1.ObjectService.DeleteObject:input_type -> vws.storage.v1.DeleteObjectRequest
-	9,  // 19: vws.storage.v1.ObjectService.ReportObjectStatus:input_type -> vws.storage.v1.ReportObjectStatusRequest
-	0,  // 20: vws.storage.v1.ObjectService.GetObject:output_type -> vws.storage.v1.Object
-	5,  // 21: vws.storage.v1.ObjectService.ListObjects:output_type -> vws.storage.v1.ListObjectsResponse
-	16, // 22: vws.storage.v1.ObjectService.CreateObject:output_type -> google.longrunning.Operation
-	16, // 23: vws.storage.v1.ObjectService.UpdateObject:output_type -> google.longrunning.Operation
-	16, // 24: vws.storage.v1.ObjectService.DeleteObject:output_type -> google.longrunning.Operation
-	10, // 25: vws.storage.v1.ObjectService.ReportObjectStatus:output_type -> vws.storage.v1.ReportObjectStatusResponse
-	20, // [20:26] is the sub-list for method output_type
-	14, // [14:20] is the sub-list for method input_type
-	14, // [14:14] is the sub-list for extension type_name
-	14, // [14:14] is the sub-list for extension extendee
-	0,  // [0:14] is the sub-list for field type_name
+	0,  // 14: vws.storage.v1.ReadObjectResponse.object:type_name -> vws.storage.v1.Object
+	3,  // 15: vws.storage.v1.ObjectService.GetObject:input_type -> vws.storage.v1.GetObjectRequest
+	4,  // 16: vws.storage.v1.ObjectService.ListObjects:input_type -> vws.storage.v1.ListObjectsRequest
+	6,  // 17: vws.storage.v1.ObjectService.CreateObject:input_type -> vws.storage.v1.CreateObjectRequest
+	7,  // 18: vws.storage.v1.ObjectService.UpdateObject:input_type -> vws.storage.v1.UpdateObjectRequest
+	8,  // 19: vws.storage.v1.ObjectService.DeleteObject:input_type -> vws.storage.v1.DeleteObjectRequest
+	11, // 20: vws.storage.v1.ObjectService.ReadObject:input_type -> vws.storage.v1.ReadObjectRequest
+	13, // 21: vws.storage.v1.ObjectService.WriteObject:input_type -> vws.storage.v1.WriteObjectRequest
+	9,  // 22: vws.storage.v1.ObjectService.ReportObjectStatus:input_type -> vws.storage.v1.ReportObjectStatusRequest
+	0,  // 23: vws.storage.v1.ObjectService.GetObject:output_type -> vws.storage.v1.Object
+	5,  // 24: vws.storage.v1.ObjectService.ListObjects:output_type -> vws.storage.v1.ListObjectsResponse
+	19, // 25: vws.storage.v1.ObjectService.CreateObject:output_type -> google.longrunning.Operation
+	19, // 26: vws.storage.v1.ObjectService.UpdateObject:output_type -> google.longrunning.Operation
+	19, // 27: vws.storage.v1.ObjectService.DeleteObject:output_type -> google.longrunning.Operation
+	12, // 28: vws.storage.v1.ObjectService.ReadObject:output_type -> vws.storage.v1.ReadObjectResponse
+	19, // 29: vws.storage.v1.ObjectService.WriteObject:output_type -> google.longrunning.Operation
+	10, // 30: vws.storage.v1.ObjectService.ReportObjectStatus:output_type -> vws.storage.v1.ReportObjectStatusResponse
+	23, // [23:31] is the sub-list for method output_type
+	15, // [15:23] is the sub-list for method input_type
+	15, // [15:15] is the sub-list for extension type_name
+	15, // [15:15] is the sub-list for extension extendee
+	0,  // [0:15] is the sub-list for field type_name
 }
 
 func init() { file_vws_storage_v1_object_proto_init() }
@@ -949,13 +1223,14 @@ func file_vws_storage_v1_object_proto_init() {
 	if File_vws_storage_v1_object_proto != nil {
 		return
 	}
+	file_vws_storage_v1_object_proto_msgTypes[13].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_vws_storage_v1_object_proto_rawDesc), len(file_vws_storage_v1_object_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   13,
+			NumMessages:   16,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

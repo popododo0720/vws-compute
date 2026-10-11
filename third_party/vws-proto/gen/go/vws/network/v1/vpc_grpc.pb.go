@@ -34,7 +34,8 @@ const (
 //
 // VpcService stores desired state for a regional network.
 // Nodes reconcile spec. Mutations follow vws.common.v1.OperationMetadata.
-// Delete is rejected with DEPENDENCY_MISSING while a subnet or security group remains.
+// Delete is rejected with DEPENDENCY_MISSING while a subnet, a security group,
+// or an Address whose spec.vpc names this VPC remains.
 type VpcServiceClient interface {
 	// AIP-131: the Get response is the resource.
 	// buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
@@ -128,7 +129,8 @@ func (c *vpcServiceClient) ReportVpcStatus(ctx context.Context, in *ReportVpcSta
 //
 // VpcService stores desired state for a regional network.
 // Nodes reconcile spec. Mutations follow vws.common.v1.OperationMetadata.
-// Delete is rejected with DEPENDENCY_MISSING while a subnet or security group remains.
+// Delete is rejected with DEPENDENCY_MISSING while a subnet, a security group,
+// or an Address whose spec.vpc names this VPC remains.
 type VpcServiceServer interface {
 	// AIP-131: the Get response is the resource.
 	// buf:lint:ignore RPC_RESPONSE_STANDARD_NAME

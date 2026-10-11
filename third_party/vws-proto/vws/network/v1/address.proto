@@ -22,6 +22,25 @@ option java_package = "dev.vws.network.v1";
 // Mutations follow vws.common.v1.OperationMetadata.
 // The instance must be in a zone of this address region, and device_name must
 // match one of that instance's network interfaces.
+//
+// spec.vpc, when set, is the VPC the address is allocated in. That is
+// AllocateAddress with Domain=vpc for this VPC. CreateAddress stores it before
+// returning the operation name. It is part of the create desired-state
+// fingerprint. UpdateAddress with allow_missing creates through those same rules
+// and may set vpc on that create. There is no separate domain field and no
+// AssociateAddress RPC.
+//
+// When spec.vpc is set and the effective association is set, the named instance
+// must exist (FAILED_PRECONDITION / DEPENDENCY_MISSING) and that interface's
+// subnet name must start with spec.vpc + "/subnets/" (INVALID_ARGUMENT /
+// INVALID_SPEC). A VPC with delete_time set does not satisfy the existence check.
+// When spec.vpc is empty, the prefix check does not run. The existence check,
+// the prefix check, and the write are one store for the address region.
+//
+// One address per network interface. In that same store, another address in
+// this region whose association names the same instance and device_name is
+// INVALID_ARGUMENT / INVALID_SPEC. The address being updated is excluded.
+// Rows with delete_time set still count until they are removed.
 service AddressService {
   // AIP-131: the Get response is the resource.
   // buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
@@ -108,7 +127,23 @@ message AddressSpec {
   // Only IPV4 is valid.
   IpVersion ip_version = 1 [(google.api.field_behavior) = REQUIRED];
   // Unset means the address is reserved and not attached.
+  // This message is the only attach. UpdateAddress with mask spec.association
+  // replaces it. The same mask with association unset clears it.
+  // AssociateAddress maps here: instance is the instance, device_name is the NIC.
+  // The private IPv4 stays on the instance network interface.
   AddressAssociation association = 2;
+  // VPC this address is allocated in. Full resource name of vws.network/Vpc.
+  // Project and region must equal the address (INVALID_ARGUMENT / INVALID_SPEC).
+  // Empty means not bound to a VPC. Existing rows stay empty.
+  // Immutable after create. On an update of an existing address, empty keeps
+  // the stored value, including when the mask is spec or spec,labels. A
+  // non-empty value that differs from the stored name returns INVALID_ARGUMENT /
+  // INVALID_SPEC and writes nothing. GetAddress and ListAddresses show the
+  // binding here. AddressStatus does not copy it.
+  string vpc = 3 [
+    (google.api.field_behavior) = IMMUTABLE,
+    (google.api.resource_reference).type = "vws.network/Vpc"
+  ];
 }
 
 message AddressAssociation {
@@ -170,8 +205,9 @@ message CreateAddressRequest {
 
 message UpdateAddressRequest {
   Address address = 1 [(google.api.field_behavior) = REQUIRED];
-  // Paths are relative to Address. ip_version is immutable.
+  // Paths are relative to Address. ip_version and vpc are immutable.
   // Omitted mask is treated as "spec,labels".
+  // An empty spec.vpc on an existing address keeps the stored vpc.
   google.protobuf.FieldMask update_mask = 2;
   string request_id = 3 [
     (google.api.field_info).format = UUID4,

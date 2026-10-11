@@ -19,6 +19,11 @@ option java_package = "dev.vws.compute.v1";
 // KeyPairService stores a public key. The private key never enters this API.
 // Nodes reconcile spec. Mutations follow vws.common.v1.OperationMetadata.
 // Delete is rejected with DEPENDENCY_MISSING while an Instance spec names this key pair.
+// The server writes status.fingerprint_sha256 in the create store, before the
+// operation name is returned. GetKeyPair returns it before any report.
+// Create, Get, List, and the finished Create operation all return that field.
+// There is no Describe RPC. GetKeyPair is the read. UpdateKeyPair with
+// allow_missing creates through the CreateKeyPair rules, including the fingerprint.
 service KeyPairService {
   // AIP-131: the Get response is the resource.
   // buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
@@ -68,6 +73,7 @@ service KeyPairService {
   }
 
   // ReportKeyPairStatus is the node reconcile write.
+  // The server keeps the stored fingerprint_sha256 and ignores the request value.
   rpc ReportKeyPairStatus(ReportKeyPairStatusRequest) returns (ReportKeyPairStatusResponse) {
     option (google.api.http) = {
       post: "/v1/{name=projects/*/regions/*/keyPairs/*}:reportStatus"
@@ -102,7 +108,15 @@ message KeyPair {
 }
 
 message KeyPairSpec {
-  // OpenSSH public key line. Immutable. The server stores this text and nothing else.
+  // OpenSSH public key line: algorithm, base64 blob, optional comment.
+  // The server stores this text as sent. At most one trailing newline is valid.
+  // Any other newline is INVALID_ARGUMENT / INVALID_SPEC and stores nothing.
+  // The second whitespace-separated field, after stripping one trailing newline
+  // for this check only, must be non-empty standard base64 that decodes to a
+  // non-empty byte string. Immutable.
+  // Create idempotency and the immutability check compare this stored text.
+  // status.fingerprint_sha256 is SHA-256 of the decoded blob, computed in the
+  // create store before the operation name is returned.
   string public_key = 1 [
     (google.api.field_behavior) = REQUIRED,
     (google.api.field_behavior) = IMMUTABLE
@@ -111,8 +125,14 @@ message KeyPairSpec {
 
 message KeyPairStatus {
   vws.common.v1.ObservedState observed = 1;
-  // Lowercase hex SHA-256 of the decoded public key blob.
-  string fingerprint_sha256 = 2;
+  // Lowercase hex SHA-256 of the decoded public key blob. 64 hex characters.
+  // No "SHA256:" prefix and no base64 digest. Create and Get both use this
+  // field and this encoding. List and the Create operation response return it too.
+  // The server writes it. When it is empty and public_key decodes, Get, List,
+  // and an operation response fill it from the stored line.
+  // OUTPUT_ONLY. ReportKeyPairStatus and UpdateKeyPair ignore a caller-supplied
+  // value. The server does not compare the ignored value.
+  string fingerprint_sha256 = 2 [(google.api.field_behavior) = OUTPUT_ONLY];
 }
 
 message GetKeyPairRequest {
@@ -155,6 +175,7 @@ message CreateKeyPairRequest {
 message UpdateKeyPairRequest {
   KeyPair key_pair = 1 [(google.api.field_behavior) = REQUIRED];
   // Paths are relative to KeyPair. public_key is immutable.
+  // status and output-only fields are rejected.
   // Omitted mask is treated as "spec,labels".
   google.protobuf.FieldMask update_mask = 2;
   string request_id = 3 [

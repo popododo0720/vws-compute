@@ -146,7 +146,15 @@ func (x *KeyPair) GetDeleteTime() *timestamppb.Timestamp {
 
 type KeyPairSpec struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// OpenSSH public key line. Immutable. The server stores this text and nothing else.
+	// OpenSSH public key line: algorithm, base64 blob, optional comment.
+	// The server stores this text as sent. At most one trailing newline is valid.
+	// Any other newline is INVALID_ARGUMENT / INVALID_SPEC and stores nothing.
+	// The second whitespace-separated field, after stripping one trailing newline
+	// for this check only, must be non-empty standard base64 that decodes to a
+	// non-empty byte string. Immutable.
+	// Create idempotency and the immutability check compare this stored text.
+	// status.fingerprint_sha256 is SHA-256 of the decoded blob, computed in the
+	// create store before the operation name is returned.
 	PublicKey     string `protobuf:"bytes,1,opt,name=public_key,json=publicKey,proto3" json:"public_key,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -192,7 +200,13 @@ func (x *KeyPairSpec) GetPublicKey() string {
 type KeyPairStatus struct {
 	state    protoimpl.MessageState `protogen:"open.v1"`
 	Observed *v1.ObservedState      `protobuf:"bytes,1,opt,name=observed,proto3" json:"observed,omitempty"`
-	// Lowercase hex SHA-256 of the decoded public key blob.
+	// Lowercase hex SHA-256 of the decoded public key blob. 64 hex characters.
+	// No "SHA256:" prefix and no base64 digest. Create and Get both use this
+	// field and this encoding. List and the Create operation response return it too.
+	// The server writes it. When it is empty and public_key decodes, Get, List,
+	// and an operation response fill it from the stored line.
+	// OUTPUT_ONLY. ReportKeyPairStatus and UpdateKeyPair ignore a caller-supplied
+	// value. The server does not compare the ignored value.
 	FingerprintSha256 string `protobuf:"bytes,2,opt,name=fingerprint_sha256,json=fingerprintSha256,proto3" json:"fingerprint_sha256,omitempty"`
 	unknownFields     protoimpl.UnknownFields
 	sizeCache         protoimpl.SizeCache
@@ -480,6 +494,7 @@ type UpdateKeyPairRequest struct {
 	state   protoimpl.MessageState `protogen:"open.v1"`
 	KeyPair *KeyPair               `protobuf:"bytes,1,opt,name=key_pair,json=keyPair,proto3" json:"key_pair,omitempty"`
 	// Paths are relative to KeyPair. public_key is immutable.
+	// status and output-only fields are rejected.
 	// Omitted mask is treated as "spec,labels".
 	UpdateMask    *fieldmaskpb.FieldMask `protobuf:"bytes,2,opt,name=update_mask,json=updateMask,proto3" json:"update_mask,omitempty"`
 	RequestId     string                 `protobuf:"bytes,3,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
@@ -754,10 +769,10 @@ const file_vws_compute_v1_key_pair_proto_rawDesc = "" +
 	"\x13vws.compute/KeyPair\x127projects/{project}/regions/{region}/keyPairs/{key_pair}*\bkeyPairs2\akeyPair\"4\n" +
 	"\vKeyPairSpec\x12%\n" +
 	"\n" +
-	"public_key\x18\x01 \x01(\tB\x06\xe0A\x02\xe0A\x05R\tpublicKey\"x\n" +
+	"public_key\x18\x01 \x01(\tB\x06\xe0A\x02\xe0A\x05R\tpublicKey\"}\n" +
 	"\rKeyPairStatus\x128\n" +
-	"\bobserved\x18\x01 \x01(\v2\x1c.vws.common.v1.ObservedStateR\bobserved\x12-\n" +
-	"\x12fingerprint_sha256\x18\x02 \x01(\tR\x11fingerprintSha256\"D\n" +
+	"\bobserved\x18\x01 \x01(\v2\x1c.vws.common.v1.ObservedStateR\bobserved\x122\n" +
+	"\x12fingerprint_sha256\x18\x02 \x01(\tB\x03\xe0A\x03R\x11fingerprintSha256\"D\n" +
 	"\x11GetKeyPairRequest\x12/\n" +
 	"\x04name\x18\x01 \x01(\tB\x1b\xe0A\x02\xfaA\x15\n" +
 	"\x13vws.compute/KeyPairR\x04name\"\x86\x01\n" +
