@@ -273,7 +273,7 @@ func (r *Reconciler) Restore(ctx context.Context) error {
 		return ctx.Err()
 	}
 	if err := r.eachInstance(ctx, func(inst compute.Instance) error {
-		if inst.Spec.Power == compute.PowerTerminated || inst.Lifecycle() == compute.InstanceError {
+		if inst.Spec.NodeDriven() || inst.Spec.Power == compute.PowerTerminated || inst.Lifecycle() == compute.InstanceError {
 			return nil
 		}
 		if inst.Status.Observed.Generation != inst.Spec.Generation {

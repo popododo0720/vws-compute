@@ -308,3 +308,111 @@ func TestSecondOpenFails(t *testing.T) {
 		t.Fatal("a second Open on a held database succeeded")
 	}
 }
+
+// TestNodeDrivenStateSurvivesRestart reopens the file between every step and
+// checks that placement, the node report, and volume ownership are on disk.
+func TestNodeDrivenStateSurvivesRestart(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "state.db")
+	now := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
+	env := compute.Env{Now: now, Rand: rand.Reader}
+	reopen := func(s *Store) *Store {
+		t.Helper()
+		if s != nil {
+			if err := s.Close(); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return open(t, path)
+	}
+
+	s := reopen(nil)
+	const node = "projects/p/zones/z/nodes/a"
+	nin, err := compute.NewCreateNode(node, 1, compute.Labels{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	nch, err := compute.Plan(viewOf{s}, env, nin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nop, err := compute.NewOperation(env, mustRequest(t, "node-1"), nin, nch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CommitDesired(ctx, store.DesiredChange{Op: nop, Spec: nch.Spec, Write: nch.Write, Meta: nch.Meta}); err != nil {
+		t.Fatal(err)
+	}
+	name, _ := compute.ParseNodeName(node)
+	s = reopen(s)
+	if _, _, err := s.SyncNode(ctx, name, compute.Heartbeat{State: compute.NodeReady, AgentVersion: "agent-1"}, now,
+		func(compute.Node, []compute.Instance) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+
+	s = reopen(s)
+	vol, _ := compute.ParseVolumeRef("projects/p/zones/z/volumes/root")
+	in, err := compute.NewCreateInstance(compute.CreateInstanceParams{
+		ID: "web-1", Project: "p", Zone: "z", MachineType: "n1.medium", Power: compute.PowerRunning,
+		Volumes: []compute.VolumeAttachment{{Volume: vol, DeviceName: "vda", Boot: true}},
+		NICs:    []compute.NetworkInterface{{DeviceName: "eth0", Subnet: "projects/p/regions/r/vpcs/v/subnets/s"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ch, err := compute.Plan(viewOf{s}, env, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	op, err := compute.NewOperation(env, mustRequest(t, "inst-1"), in, ch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CommitDesired(ctx, store.DesiredChange{Op: op, Spec: ch.Spec, Write: ch.Write}); err != nil {
+		t.Fatal(err)
+	}
+
+	s = reopen(s)
+	id, _ := compute.ParseInstanceID("web-1")
+	got, err := s.Instance(ctx, id)
+	if err != nil || got.Status.AssignedNode != node || len(got.Spec.Volumes) != 1 {
+		t.Fatalf("after restart: %+v, %v", got, err)
+	}
+	if _, err := s.ReportInstanceStatus(ctx, id, compute.InstanceReport{Node: node, Generation: 1, State: compute.ReportReady, Power: compute.PowerRunning}, now); err != nil {
+		t.Fatal(err)
+	}
+
+	s = reopen(s)
+	defer s.Close()
+	got, err = s.Instance(ctx, id)
+	if err != nil || got.Status.Observed.Generation != 1 || got.Status.Report.State != compute.ReportReady || got.Status.AssignedNode != node {
+		t.Fatalf("report after restart: %+v, %v", got.Status, err)
+	}
+	if n, err := s.Node(ctx, name); err != nil || n.Status.AgentVersion != "agent-1" || !n.Status.LastSync.Equal(now) {
+		t.Fatalf("node after restart: %+v, %v", n.Status, err)
+	}
+	if done, err := s.Operation(ctx, op.ID); err != nil || done.State() != compute.OperationSucceeded {
+		t.Fatalf("create operation after report: %v, %v", done.State(), err)
+	}
+	// The same request after the restart is the same operation.
+	again, err := s.CommitDesired(ctx, store.DesiredChange{Op: op, Spec: ch.Spec, Write: ch.Write})
+	if err != nil || again.ID != op.ID {
+		t.Fatalf("replay = %v, %v", again.ID, err)
+	}
+}
+
+// viewOf lets a test plan against a store without the controller.
+type viewOf struct{ s *Store }
+
+func (v viewOf) Instance(id compute.InstanceID) (compute.Instance, error) {
+	return v.s.Instance(context.Background(), id)
+}
+func (v viewOf) Image(id compute.ImageID) (compute.Image, error) {
+	return v.s.Image(context.Background(), id)
+}
+func (v viewOf) Node(n compute.NodeName) (compute.Node, error) {
+	return v.s.Node(context.Background(), n)
+}
+func (v viewOf) KeyPairByName(n compute.KeyName) (compute.KeyPair, error) {
+	return v.s.KeyPairByName(context.Background(), n)
+}

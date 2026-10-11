@@ -15,7 +15,8 @@ const metaColumns = `labels, description, meta_revision, meta_changed_at`
 
 const instanceColumns = `id, generation, created_at, changed_at, image_id, instance_type, key_name, key_public,
   power, reboot_epoch, observed_generation, failure_code, failure_message, machine, applied_epoch,
-  attempts, retry_at, last_error, updated_at, ` + metaColumns
+  attempts, retry_at, last_error, updated_at, ` + metaColumns + `,
+  node_driven, project, zone, user_data, volumes, nics, assigned_node, report`
 
 // instanceRow mirrors one row of the instances table.
 type instanceRow struct {
@@ -29,13 +30,17 @@ type instanceRow struct {
 	machine, appliedEpoch, attempts, retryAt, updatedAt int64
 	lastError                                           string
 	meta                                                metaRow
+	nodeDriven                                          int64
+	project, zone, userData, volumes, nics              string
+	assignedNode, report                                string
 }
 
 func scanInstance(sc scanner) (compute.Instance, error) {
 	var r instanceRow
 	err := sc.Scan(append([]any{&r.id, &r.generation, &r.createdAt, &r.changedAt, &r.imageID, &r.typeName, &r.keyName, &r.keyPublic,
 		&r.power, &r.rebootEpoch, &r.observedGeneration, &r.failureCode, &r.failureMessage, &r.machine, &r.appliedEpoch,
-		&r.attempts, &r.retryAt, &r.lastError, &r.updatedAt}, r.meta.dest()...)...)
+		&r.attempts, &r.retryAt, &r.lastError, &r.updatedAt}, append(r.meta.dest(),
+		&r.nodeDriven, &r.project, &r.zone, &r.userData, &r.volumes, &r.nics, &r.assignedNode, &r.report)...)...)
 	if err != nil {
 		return compute.Instance{}, err
 	}
@@ -46,8 +51,12 @@ func scanInstance(sc scanner) (compute.Instance, error) {
 // corrupted row surfaces as an error rather than an invalid domain value.
 func (r instanceRow) instance() (compute.Instance, error) {
 	id, err1 := compute.ParseInstanceID(r.id)
-	img, err2 := compute.ParseImageID(r.imageID)
-	typ, err3 := compute.ParseInstanceType(r.typeName)
+	var img compute.ImageID
+	var err2 error
+	if r.nodeDriven == 0 {
+		img, err2 = compute.ParseImageID(r.imageID)
+	}
+	typ, err3 := compute.ParseMachineType(r.typeName)
 	failure, err4 := failureOf(r.failureCode, r.failureMessage)
 	err5 := inRange("power", r.power, int64(compute.PowerRunning), int64(compute.PowerTerminated))
 	err6 := inRange("machine", r.machine, int64(compute.MachineUnknown), int64(compute.MachineOn))
@@ -59,7 +68,10 @@ func (r instanceRow) instance() (compute.Instance, error) {
 		key, err7 = &compute.AuthorizedKey{Name: name, PublicKey: pub}, errors.Join(errName, errPub)
 	}
 	meta, err8 := r.meta.metadata()
-	if err := errors.Join(err1, err2, err3, err4, err5, err6, err7, err8); err != nil {
+	vols, err9 := parseVolumesJSON(r.volumes)
+	nics, err10 := parseNICsJSON(r.nics)
+	report, err11 := parseReportJSON(r.report)
+	if err := errors.Join(err1, err2, err3, err4, err5, err6, err7, err8, err9, err10, err11); err != nil {
 		return compute.Instance{}, corrupt("instance", r.id, err)
 	}
 	return compute.Instance{
@@ -73,6 +85,11 @@ func (r instanceRow) instance() (compute.Instance, error) {
 			Key:         key,
 			Power:       compute.Power(r.power),
 			RebootEpoch: uint32(r.rebootEpoch),
+			Project:     r.project,
+			Zone:        r.zone,
+			UserData:    r.userData,
+			Volumes:     vols,
+			NICs:        nics,
 		},
 		Status: compute.InstanceStatus{
 			Observed:    compute.Observed{Generation: r.observedGeneration, Failure: failure},
@@ -80,6 +97,9 @@ func (r instanceRow) instance() (compute.Instance, error) {
 			RebootEpoch: uint32(r.appliedEpoch),
 			Retry:       compute.Retry{Attempts: int(r.attempts), At: fromNanos(r.retryAt), LastError: r.lastError},
 			UpdatedAt:   fromNanos(r.updatedAt),
+
+			AssignedNode: r.assignedNode,
+			Report:       report,
 		},
 		Meta: meta,
 	}, nil
@@ -258,7 +278,7 @@ func (r operationRow) operation() (compute.Operation, error) {
 	req, err2 := compute.ParseRequestID(r.requestID)
 	kind, err3 := compute.ParseOperationKind(r.kind)
 	failure, err4 := failureOf(r.failureCode, r.failureMessage)
-	err5 := inRange("target kind", r.targetKind, int64(compute.KindInstance), int64(compute.KindKeyPair))
+	err5 := inRange("target kind", r.targetKind, int64(compute.KindInstance), int64(compute.KindNode))
 	var err6 error
 	if len(r.fingerprint) != len(compute.Fingerprint{}) {
 		err6 = errors.New("fingerprint has the wrong length")

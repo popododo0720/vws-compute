@@ -6,9 +6,11 @@ import (
 	"strings"
 )
 
-// InstanceID identifies an instance: "i-" followed by 17 lowercase hex
-// digits. A non-zero InstanceID was validated, because the only
-// constructors are ParseInstanceID and the planner.
+// InstanceID is the instance resource path segment. It uses the
+// vws.common.v1.ResourceId grammar, like ImageID. RunInstance still mints
+// "i-" plus 17 lowercase hex digits, which is one of those ids, and
+// CreateInstance takes the caller's id. A non-zero InstanceID was validated,
+// because the only constructors are ParseInstanceID and the planner.
 type InstanceID struct{ s string }
 
 // ImageID is the image resource path segment. It uses the
@@ -32,9 +34,9 @@ const (
 	operationIDDigits = 20
 )
 
-// ParseInstanceID validates s. It fails with CodeInvalid.
+// ParseInstanceID validates s as a ResourceId. It fails with CodeInvalid.
 func ParseInstanceID(s string) (InstanceID, error) {
-	if !validID(s, "i-", resourceIDDigits) {
+	if !validResourceID(s) {
 		return InstanceID{}, Errorf(CodeInvalid, "invalid instance id %q", s)
 	}
 	return InstanceID{s}, nil

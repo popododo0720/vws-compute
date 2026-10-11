@@ -15,6 +15,7 @@ var migrations = []string{
 	schemaV1,
 	metadataV2,
 	imageSourcesV3,
+	nodesV4,
 }
 
 // schemaV1 is the schema from before user_version was set. Every statement
@@ -171,4 +172,47 @@ FROM images;
 DROP TABLE images;
 ALTER TABLE images_v3 RENAME TO images;
 CREATE INDEX images_unconverged ON images (id) WHERE generation > observed_generation;
+`
+
+// nodesV4 adds node-driven instances and the nodes table. A node-driven
+// instance has node_driven = 1, a project and zone, JSON volumes and
+// interfaces, and an empty image_id. assigned_node is written once, by
+// placement, while it is empty. report is the last accepted node report.
+// instance_volumes holds one row per volume of every live node-driven
+// instance, so a second instance cannot take the same volume. Nodes are
+// keyed by full resource name, in the id column the generic metadata and
+// progress queries use.
+const nodesV4 = `
+ALTER TABLE instances ADD COLUMN node_driven INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE instances ADD COLUMN project TEXT NOT NULL DEFAULT '';
+ALTER TABLE instances ADD COLUMN zone TEXT NOT NULL DEFAULT '';
+ALTER TABLE instances ADD COLUMN user_data TEXT NOT NULL DEFAULT '';
+ALTER TABLE instances ADD COLUMN volumes TEXT NOT NULL DEFAULT '[]';
+ALTER TABLE instances ADD COLUMN nics TEXT NOT NULL DEFAULT '[]';
+ALTER TABLE instances ADD COLUMN assigned_node TEXT NOT NULL DEFAULT '';
+ALTER TABLE instances ADD COLUMN report TEXT NOT NULL DEFAULT '{}';
+
+CREATE INDEX instances_by_zone ON instances (project, zone) WHERE node_driven = 1;
+
+CREATE TABLE instance_volumes (
+  volume      TEXT PRIMARY KEY,
+  instance_id TEXT NOT NULL
+) STRICT;
+
+CREATE TABLE nodes (
+  id              TEXT PRIMARY KEY,
+  uid             TEXT NOT NULL,
+  generation      INTEGER NOT NULL CHECK (generation >= 1),
+  created_at      INTEGER NOT NULL,
+  changed_at      INTEGER NOT NULL,
+  slots           INTEGER NOT NULL CHECK (slots >= 0 AND slots <= 200),
+  state           INTEGER NOT NULL DEFAULT 0,
+  message         TEXT NOT NULL DEFAULT '',
+  last_sync       INTEGER NOT NULL DEFAULT 0,
+  agent_version   TEXT NOT NULL DEFAULT '',
+  labels          TEXT NOT NULL DEFAULT '{}',
+  description     TEXT NOT NULL DEFAULT '',
+  meta_revision   INTEGER NOT NULL DEFAULT 0,
+  meta_changed_at INTEGER NOT NULL DEFAULT 0
+) STRICT;
 `
