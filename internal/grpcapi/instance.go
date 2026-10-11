@@ -2,8 +2,10 @@ package grpcapi
 
 import (
 	"context"
+	"errors"
 
 	longrunningpb "cloud.google.com/go/longrunning/autogen/longrunningpb"
+	"google.golang.org/grpc/codes"
 
 	commonv1 "github.com/popododo0720/vws-proto/gen/go/vws/common/v1"
 	computev1 "github.com/popododo0720/vws-proto/gen/go/vws/compute/v1"
@@ -74,8 +76,100 @@ func (s *server) CreateInstance(ctx context.Context, r *computev1.CreateInstance
 	if err := validateCreateInstance(zone, name, r.GetInstance()); err != nil {
 		return nil, err
 	}
-	vol := r.GetInstance().GetSpec().GetVolumes()[0].GetVolume()
-	return nil, dependencyMissing("volume " + vol + " is not registered in this process")
+	in, err := createInstanceIntent(project, zone, r.GetInstanceId(), r.GetInstance())
+	if err != nil {
+		return nil, err
+	}
+	if r.GetValidateOnly() {
+		if err := s.verifyVolumes(ctx, r.GetInstance().GetSpec().GetVolumes(), name); err != nil {
+			return nil, err
+		}
+		id, perr := compute.ParseInstanceID(r.GetInstanceId())
+		if perr != nil {
+			return nil, toStatus(perr)
+		}
+		if _, err := s.read.Instance(ctx, id); err == nil {
+			return nil, alreadyExists("instance " + name + " already exists")
+		} else if compute.CodeOf(err) != compute.CodeNotFound {
+			return nil, toStatus(err)
+		}
+		return doneOperation(project, name, commonv1.OperationVerb_OPERATION_VERB_CREATE, r.GetRequestId(), nil)
+	}
+	// fresh runs only for a request id the store has not seen. A retry after
+	// the instance was stored, or after a restart, returns the stored
+	// operation without asking the storage service anything.
+	rc, err := s.submit(ctx, r.GetRequestId(), in, nil, func() error {
+		return s.verifyVolumes(ctx, r.GetInstance().GetSpec().GetVolumes(), name)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return s.operationPB(ctx, project, name, rc.Operation)
+}
+
+func createInstanceIntent(project, zone, id string, body *computev1.Instance) (compute.Intent, error) {
+	spec := body.GetSpec()
+	labels, err := compute.ParseLabels(body.GetLabels())
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	p := compute.CreateInstanceParams{
+		ID: id, Project: project, Zone: zone, MachineType: spec.GetMachineType(), UserData: spec.GetUserData(), Labels: labels,
+	}
+	if spec.GetPower() == computev1.InstancePower_INSTANCE_POWER_RUNNING {
+		p.Power = compute.PowerRunning
+	} else {
+		p.Power = compute.PowerStopped
+	}
+	if spec.GetKeyPair() != "" {
+		_, _, kid, err := parseKeyPairName(spec.GetKeyPair())
+		if err != nil {
+			return nil, err
+		}
+		p.KeyPair = kid
+	}
+	for _, v := range spec.GetVolumes() {
+		ref, err := compute.ParseVolumeRef(v.GetVolume())
+		if err != nil {
+			return nil, toStatus(err)
+		}
+		p.Volumes = append(p.Volumes, compute.VolumeAttachment{Volume: ref, DeviceName: v.GetDeviceName(), Boot: v.GetBoot()})
+	}
+	for _, n := range spec.GetNetworkInterfaces() {
+		p.NICs = append(p.NICs, compute.NetworkInterface{
+			DeviceName: n.GetDeviceName(), Subnet: n.GetSubnet(), PrivateIPv4: n.GetPrivateIpv4(),
+			SecurityGroups: append([]string(nil), n.GetSecurityGroups()...),
+		})
+	}
+	in, err := compute.NewCreateInstance(p)
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	return in, nil
+}
+
+// verifyVolumes asks the storage service about each volume: it must exist,
+// must not be going away, and must not be attached to another instance. The
+// store enforces the same one-holder rule atomically with the write, so this
+// check only turns a doomed request into an early, specific error.
+func (s *server) verifyVolumes(ctx context.Context, vols []*computev1.VolumeAttachment, instance string) error {
+	if s.volumes == nil {
+		return dependencyMissing("no storage service is configured, so volume " + vols[0].GetVolume() + " cannot be verified")
+	}
+	for _, v := range vols {
+		info, err := s.volumes.Volume(ctx, v.GetVolume())
+		switch {
+		case errors.Is(err, ErrVolumeNotFound):
+			return dependencyMissing("volume " + v.GetVolume() + " does not exist")
+		case err != nil:
+			return withReason(codes.Unavailable, "DEPENDENCY_UNAVAILABLE", "storage service: "+err.Error())
+		case info.Deleting:
+			return dependencyMissing("volume " + v.GetVolume() + " is being deleted")
+		case info.Instance != "" && info.Instance != instance:
+			return failedPre("VOLUME_IN_USE", "volume "+v.GetVolume()+" is attached to "+info.Instance)
+		}
+	}
+	return nil
 }
 
 func (s *server) UpdateInstance(ctx context.Context, r *computev1.UpdateInstanceRequest) (*longrunningpb.Operation, error) {

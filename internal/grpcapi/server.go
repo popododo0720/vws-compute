@@ -53,6 +53,10 @@ type Option func(*server)
 // the 16MiB agents accept. Tests use it to reach the limit cheaply.
 func WithMaxSyncResponseBytes(n int) Option { return func(s *server) { s.maxSync = n } }
 
+// WithVolumes sets how CreateInstance verifies volumes. Without it,
+// CreateInstance answers DEPENDENCY_MISSING.
+func WithVolumes(v VolumeLookup) Option { return func(s *server) { s.volumes = v } }
+
 // WithClock sets the server clock SyncNode stamps heartbeats with.
 func WithClock(now func() time.Time) Option { return func(s *server) { s.clock = now } }
 
@@ -87,6 +91,7 @@ type server struct {
 	nodes   store.NodeStore
 	clock   func() time.Time
 	maxSync int
+	volumes VolumeLookup
 }
 
 func (s *server) GetOperation(ctx context.Context, r *longrunningpb.GetOperationRequest) (*longrunningpb.Operation, error) {
