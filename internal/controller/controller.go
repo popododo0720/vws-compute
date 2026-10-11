@@ -173,3 +173,11 @@ func (v *recordingView) KeyPairByName(name compute.KeyName) (compute.KeyPair, er
 	}
 	return kp, err
 }
+
+func (v *recordingView) Node(name compute.NodeName) (compute.Node, error) {
+	n, err := v.r.Node(v.ctx, name)
+	if err == nil {
+		v.record(n.Spec.Ref(), n.Spec.Generation, n.Observed())
+	}
+	return n, err
+}

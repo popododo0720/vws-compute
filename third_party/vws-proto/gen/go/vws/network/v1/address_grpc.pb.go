@@ -38,6 +38,25 @@ const (
 // Mutations follow vws.common.v1.OperationMetadata.
 // The instance must be in a zone of this address region, and device_name must
 // match one of that instance's network interfaces.
+//
+// spec.vpc, when set, is the VPC the address is allocated in. That is
+// AllocateAddress with Domain=vpc for this VPC. CreateAddress stores it before
+// returning the operation name. It is part of the create desired-state
+// fingerprint. UpdateAddress with allow_missing creates through those same rules
+// and may set vpc on that create. There is no separate domain field and no
+// AssociateAddress RPC.
+//
+// When spec.vpc is set and the effective association is set, the named instance
+// must exist (FAILED_PRECONDITION / DEPENDENCY_MISSING) and that interface's
+// subnet name must start with spec.vpc + "/subnets/" (INVALID_ARGUMENT /
+// INVALID_SPEC). A VPC with delete_time set does not satisfy the existence check.
+// When spec.vpc is empty, the prefix check does not run. The existence check,
+// the prefix check, and the write are one store for the address region.
+//
+// One address per network interface. In that same store, another address in
+// this region whose association names the same instance and device_name is
+// INVALID_ARGUMENT / INVALID_SPEC. The address being updated is excluded.
+// Rows with delete_time set still count until they are removed.
 type AddressServiceClient interface {
 	// AIP-131: the Get response is the resource.
 	// buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
@@ -135,6 +154,25 @@ func (c *addressServiceClient) ReportAddressStatus(ctx context.Context, in *Repo
 // Mutations follow vws.common.v1.OperationMetadata.
 // The instance must be in a zone of this address region, and device_name must
 // match one of that instance's network interfaces.
+//
+// spec.vpc, when set, is the VPC the address is allocated in. That is
+// AllocateAddress with Domain=vpc for this VPC. CreateAddress stores it before
+// returning the operation name. It is part of the create desired-state
+// fingerprint. UpdateAddress with allow_missing creates through those same rules
+// and may set vpc on that create. There is no separate domain field and no
+// AssociateAddress RPC.
+//
+// When spec.vpc is set and the effective association is set, the named instance
+// must exist (FAILED_PRECONDITION / DEPENDENCY_MISSING) and that interface's
+// subnet name must start with spec.vpc + "/subnets/" (INVALID_ARGUMENT /
+// INVALID_SPEC). A VPC with delete_time set does not satisfy the existence check.
+// When spec.vpc is empty, the prefix check does not run. The existence check,
+// the prefix check, and the write are one store for the address region.
+//
+// One address per network interface. In that same store, another address in
+// this region whose association names the same instance and device_name is
+// INVALID_ARGUMENT / INVALID_SPEC. The address being updated is excluded.
+// Rows with delete_time set still count until they are removed.
 type AddressServiceServer interface {
 	// AIP-131: the Get response is the resource.
 	// buf:lint:ignore RPC_RESPONSE_STANDARD_NAME

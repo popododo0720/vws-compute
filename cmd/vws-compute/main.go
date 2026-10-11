@@ -32,17 +32,18 @@ func main() {
 	listen := flag.String("listen", "127.0.0.1:50051", "address to serve gRPC on")
 	db := flag.String("db", "", "SQLite database path; empty keeps all state in memory")
 	seedImages := flag.String("seed-images", "", "JSON file of disk images to register before serving; empty registers none")
+	storage := flag.String("storage", "", "vws-storage gRPC address CreateInstance verifies volumes against; empty makes CreateInstance answer DEPENDENCY_MISSING")
 	flag.Parse()
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	if err := run(ctx, *listen, *db, *seedImages); err != nil {
+	if err := run(ctx, *listen, *db, *seedImages, *storage); err != nil {
 		fmt.Fprintln(os.Stderr, "vws-compute:", err)
 		os.Exit(1)
 	}
 }
 
-func run(ctx context.Context, listen, db, seedImages string) error {
+func run(ctx context.Context, listen, db, seedImages, storage string) error {
 	seed, err := readSeed(seedImages)
 	if err != nil {
 		return err
@@ -67,8 +68,19 @@ func run(ctx context.Context, listen, db, seedImages string) error {
 	if err != nil {
 		return stopReconciler(cancel, reconciled, err)
 	}
+	var opts []grpcapi.Option
+	if storage != "" {
+		// The connection is lazy: the storage service may come up after this
+		// process, and CreateInstance answers UNAVAILABLE until it does.
+		lookup, closeStorage, err := grpcapi.DialStorage(storage)
+		if err != nil {
+			return stopReconciler(cancel, reconciled, err)
+		}
+		defer closeStorage()
+		opts = append(opts, grpcapi.WithVolumes(lookup))
+	}
 	srv := grpc.NewServer()
-	grpcapi.Register(srv, ctl, repo)
+	grpcapi.Register(srv, ctl, repo, opts...)
 	served := make(chan error, 1)
 	go func() { served <- srv.Serve(lis) }()
 	slog.Info("serving vws.compute.v1", "addr", lis.Addr().String(), "db", db)

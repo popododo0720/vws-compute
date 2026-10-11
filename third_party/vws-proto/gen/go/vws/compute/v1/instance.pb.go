@@ -428,8 +428,12 @@ type InstanceStatus struct {
 	Observed          *v1.ObservedState           `protobuf:"bytes,1,opt,name=observed,proto3" json:"observed,omitempty"`
 	Power             InstancePower               `protobuf:"varint,2,opt,name=power,proto3,enum=vws.compute.v1.InstancePower" json:"power,omitempty"`
 	NetworkInterfaces []*ObservedNetworkInterface `protobuf:"bytes,3,rep,name=network_interfaces,json=networkInterfaces,proto3" json:"network_interfaces,omitempty"`
-	unknownFields     protoimpl.UnknownFields
-	sizeCache         protoimpl.SizeCache
+	// Node that runs this instance. Full resource name of vws.compute/Node.
+	// The server is the only writer. Empty until placement sets it.
+	// Set once, by compare-and-set while empty. See NodeService.
+	AssignedNode  string `protobuf:"bytes,4,opt,name=assigned_node,json=assignedNode,proto3" json:"assigned_node,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *InstanceStatus) Reset() {
@@ -481,6 +485,13 @@ func (x *InstanceStatus) GetNetworkInterfaces() []*ObservedNetworkInterface {
 		return x.NetworkInterfaces
 	}
 	return nil
+}
+
+func (x *InstanceStatus) GetAssignedNode() string {
+	if x != nil {
+		return x.AssignedNode
+	}
+	return ""
 }
 
 type ObservedNetworkInterface struct {
@@ -1085,11 +1096,13 @@ const file_vws_compute_v1_instance_proto_rawDesc = "" +
 	"\x12vws.storage/VolumeR\x06volume\x12$\n" +
 	"\vdevice_name\x18\x02 \x01(\tB\x03\xe0A\x02R\n" +
 	"deviceName\x12\x12\n" +
-	"\x04boot\x18\x03 \x01(\bR\x04boot\"\xd8\x01\n" +
+	"\x04boot\x18\x03 \x01(\bR\x04boot\"\x97\x02\n" +
 	"\x0eInstanceStatus\x128\n" +
 	"\bobserved\x18\x01 \x01(\v2\x1c.vws.common.v1.ObservedStateR\bobserved\x123\n" +
 	"\x05power\x18\x02 \x01(\x0e2\x1d.vws.compute.v1.InstancePowerR\x05power\x12W\n" +
-	"\x12network_interfaces\x18\x03 \x03(\v2(.vws.compute.v1.ObservedNetworkInterfaceR\x11networkInterfaces\"\x97\x01\n" +
+	"\x12network_interfaces\x18\x03 \x03(\v2(.vws.compute.v1.ObservedNetworkInterfaceR\x11networkInterfaces\x12=\n" +
+	"\rassigned_node\x18\x04 \x01(\tB\x18\xe0A\x03\xfaA\x12\n" +
+	"\x10vws.compute/NodeR\fassignedNode\"\x97\x01\n" +
 	"\x18ObservedNetworkInterface\x12\x1f\n" +
 	"\vdevice_name\x18\x01 \x01(\tR\n" +
 	"deviceName\x12\x16\n" +

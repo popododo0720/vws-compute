@@ -2,8 +2,10 @@ package grpcapi
 
 import (
 	"context"
+	"errors"
 
 	longrunningpb "cloud.google.com/go/longrunning/autogen/longrunningpb"
+	"google.golang.org/grpc/codes"
 
 	commonv1 "github.com/popododo0720/vws-proto/gen/go/vws/common/v1"
 	computev1 "github.com/popododo0720/vws-proto/gen/go/vws/compute/v1"
@@ -33,7 +35,10 @@ func (s *server) ListInstances(ctx context.Context, r *computev1.ListInstancesRe
 			return nil, toStatus(err)
 		}
 		for _, inst := range page.Items {
-			if inst.Lifecycle() == compute.InstanceTerminated {
+			if inst.Removed() || inst.Lifecycle() == compute.InstanceTerminated {
+				continue
+			}
+			if inst.Spec.NodeDriven() && (inst.Spec.Project != project || inst.Spec.Zone != zone) {
 				continue
 			}
 			matched = append(matched, inst)
@@ -71,8 +76,100 @@ func (s *server) CreateInstance(ctx context.Context, r *computev1.CreateInstance
 	if err := validateCreateInstance(zone, name, r.GetInstance()); err != nil {
 		return nil, err
 	}
-	vol := r.GetInstance().GetSpec().GetVolumes()[0].GetVolume()
-	return nil, dependencyMissing("volume " + vol + " is not registered in this process")
+	in, err := createInstanceIntent(project, zone, r.GetInstanceId(), r.GetInstance())
+	if err != nil {
+		return nil, err
+	}
+	if r.GetValidateOnly() {
+		if err := s.verifyVolumes(ctx, r.GetInstance().GetSpec().GetVolumes(), name); err != nil {
+			return nil, err
+		}
+		id, perr := compute.ParseInstanceID(r.GetInstanceId())
+		if perr != nil {
+			return nil, toStatus(perr)
+		}
+		if _, err := s.read.Instance(ctx, id); err == nil {
+			return nil, alreadyExists("instance " + name + " already exists")
+		} else if compute.CodeOf(err) != compute.CodeNotFound {
+			return nil, toStatus(err)
+		}
+		return doneOperation(project, name, commonv1.OperationVerb_OPERATION_VERB_CREATE, r.GetRequestId(), nil)
+	}
+	// fresh runs only for a request id the store has not seen. A retry after
+	// the instance was stored, or after a restart, returns the stored
+	// operation without asking the storage service anything.
+	rc, err := s.submit(ctx, r.GetRequestId(), in, nil, func() error {
+		return s.verifyVolumes(ctx, r.GetInstance().GetSpec().GetVolumes(), name)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return s.operationPB(ctx, project, name, rc.Operation)
+}
+
+func createInstanceIntent(project, zone, id string, body *computev1.Instance) (compute.Intent, error) {
+	spec := body.GetSpec()
+	labels, err := compute.ParseLabels(body.GetLabels())
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	p := compute.CreateInstanceParams{
+		ID: id, Project: project, Zone: zone, MachineType: spec.GetMachineType(), UserData: spec.GetUserData(), Labels: labels,
+	}
+	if spec.GetPower() == computev1.InstancePower_INSTANCE_POWER_RUNNING {
+		p.Power = compute.PowerRunning
+	} else {
+		p.Power = compute.PowerStopped
+	}
+	if spec.GetKeyPair() != "" {
+		_, _, kid, err := parseKeyPairName(spec.GetKeyPair())
+		if err != nil {
+			return nil, err
+		}
+		p.KeyPair = kid
+	}
+	for _, v := range spec.GetVolumes() {
+		ref, err := compute.ParseVolumeRef(v.GetVolume())
+		if err != nil {
+			return nil, toStatus(err)
+		}
+		p.Volumes = append(p.Volumes, compute.VolumeAttachment{Volume: ref, DeviceName: v.GetDeviceName(), Boot: v.GetBoot()})
+	}
+	for _, n := range spec.GetNetworkInterfaces() {
+		p.NICs = append(p.NICs, compute.NetworkInterface{
+			DeviceName: n.GetDeviceName(), Subnet: n.GetSubnet(), PrivateIPv4: n.GetPrivateIpv4(),
+			SecurityGroups: append([]string(nil), n.GetSecurityGroups()...),
+		})
+	}
+	in, err := compute.NewCreateInstance(p)
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	return in, nil
+}
+
+// verifyVolumes asks the storage service about each volume: it must exist,
+// must not be going away, and must not be attached to another instance. The
+// store enforces the same one-holder rule atomically with the write, so this
+// check only turns a doomed request into an early, specific error.
+func (s *server) verifyVolumes(ctx context.Context, vols []*computev1.VolumeAttachment, instance string) error {
+	if s.volumes == nil {
+		return dependencyMissing("no storage service is configured, so volume " + vols[0].GetVolume() + " cannot be verified")
+	}
+	for _, v := range vols {
+		info, err := s.volumes.Volume(ctx, v.GetVolume())
+		switch {
+		case errors.Is(err, ErrVolumeNotFound):
+			return dependencyMissing("volume " + v.GetVolume() + " does not exist")
+		case err != nil:
+			return withReason(codes.Unavailable, "DEPENDENCY_UNAVAILABLE", "storage service: "+err.Error())
+		case info.Deleting:
+			return dependencyMissing("volume " + v.GetVolume() + " is being deleted")
+		case info.Instance != "" && info.Instance != instance:
+			return failedPre("VOLUME_IN_USE", "volume "+v.GetVolume()+" is attached to "+info.Instance)
+		}
+	}
+	return nil
 }
 
 func (s *server) UpdateInstance(ctx context.Context, r *computev1.UpdateInstanceRequest) (*longrunningpb.Operation, error) {
@@ -181,35 +278,105 @@ func (s *server) ReportInstanceStatus(ctx context.Context, r *computev1.ReportIn
 	if r.GetStatus() == nil || r.GetStatus().GetObserved() == nil {
 		return nil, invalidSpec("status.observed is required")
 	}
-	inst, name, err := s.liveInstance(ctx, r.GetName())
+	// A converged delete is not a live instance, but its node may still be
+	// retrying the DELETING report that removed it.
+	inst, err := s.storedInstance(ctx, r.GetName())
 	if err != nil {
 		return nil, err
 	}
-	if r.GetStatus().GetObserved().GetGeneration() > inst.Spec.Generation {
+	name := r.GetName()
+	obs := r.GetStatus().GetObserved()
+	if inst.Removed() && (!inst.Spec.NodeDriven() || obs.GetState() != commonv1.ReconciliationState_RECONCILIATION_STATE_DELETING) {
+		return nil, notFound("instance " + name + " not found")
+	}
+	if obs.GetGeneration() > inst.Spec.Generation {
 		return nil, aborted("GENERATION_CONFLICT", "observed generation is ahead of the stored generation")
 	}
-	// The in-process reconciler is the node that commits status. A report that
-	// is not ahead of the stored generation changes nothing.
-	return &computev1.ReportInstanceStatusResponse{Instance: instancePB(inst, name)}, nil
+	if !inst.Spec.NodeDriven() {
+		// The in-process reconciler is the node that commits status for this
+		// instance. A report that is not ahead of the stored generation
+		// changes nothing.
+		return &computev1.ReportInstanceStatusResponse{Instance: instancePB(inst, name)}, nil
+	}
+	rep, err := parseInstanceReport(r.GetStatus())
+	if err != nil {
+		return nil, err
+	}
+	if inst.Removed() {
+		return &computev1.ReportInstanceStatusResponse{Instance: instancePB(inst, name)}, nil
+	}
+	got, err := s.nodes.ReportInstanceStatus(ctx, inst.Spec.ID, rep, s.now())
+	if err != nil {
+		if compute.CodeOf(err) == compute.CodeAborted {
+			return nil, aborted("GENERATION_CONFLICT", err.Error())
+		}
+		return nil, toStatus(err)
+	}
+	return &computev1.ReportInstanceStatusResponse{Instance: instancePB(got, name)}, nil
+}
+
+func parseInstanceReport(st *computev1.InstanceStatus) (compute.InstanceReport, error) {
+	obs := st.GetObserved()
+	rep := compute.InstanceReport{Node: obs.GetNode(), Generation: obs.GetGeneration(), Message: obs.GetMessage()}
+	switch obs.GetState() {
+	case commonv1.ReconciliationState_RECONCILIATION_STATE_PENDING:
+		rep.State = compute.ReportPending
+	case commonv1.ReconciliationState_RECONCILIATION_STATE_RECONCILING:
+		rep.State = compute.ReportReconciling
+	case commonv1.ReconciliationState_RECONCILIATION_STATE_READY:
+		rep.State = compute.ReportReady
+	case commonv1.ReconciliationState_RECONCILIATION_STATE_DELETING:
+		rep.State = compute.ReportDeleting
+	case commonv1.ReconciliationState_RECONCILIATION_STATE_ERROR:
+		rep.State = compute.ReportError
+	default:
+		return compute.InstanceReport{}, invalidSpec("status.observed.state is required")
+	}
+	switch st.GetPower() {
+	case computev1.InstancePower_INSTANCE_POWER_RUNNING:
+		rep.Power = compute.PowerRunning
+	case computev1.InstancePower_INSTANCE_POWER_STOPPED:
+		rep.Power = compute.PowerStopped
+	}
+	for _, n := range st.GetNetworkInterfaces() {
+		rep.Interfaces = append(rep.Interfaces, compute.ObservedInterface{
+			DeviceName: n.GetDeviceName(), Subnet: n.GetSubnet(), PrivateIPv4: n.GetPrivateIpv4(), PublicIPv4: n.GetPublicIpv4(),
+		})
+	}
+	return rep, nil
 }
 
 func (s *server) liveInstance(ctx context.Context, name string) (compute.Instance, string, error) {
-	_, _, id, err := parseInstanceName(name)
+	inst, err := s.storedInstance(ctx, name)
 	if err != nil {
-		return compute.Instance{}, "", err
+		return compute.Instance{}, name, err
 	}
-	iid, err := compute.ParseInstanceID(id)
-	if err != nil {
-		return compute.Instance{}, name, notFound("instance " + name + " not found")
-	}
-	inst, err := s.read.Instance(ctx, iid)
-	if err != nil {
-		return compute.Instance{}, name, toStatus(err)
-	}
-	if inst.Lifecycle() == compute.InstanceTerminated {
+	if inst.Removed() || inst.Lifecycle() == compute.InstanceTerminated {
 		return compute.Instance{}, name, notFound("instance " + name + " not found")
 	}
 	return inst, name, nil
+}
+
+// storedInstance reads the row named name, including one whose delete has
+// converged. A node-driven instance lives in the project and zone it was
+// created in, so the same id under another parent is not found.
+func (s *server) storedInstance(ctx context.Context, name string) (compute.Instance, error) {
+	project, zone, id, err := parseInstanceName(name)
+	if err != nil {
+		return compute.Instance{}, err
+	}
+	iid, err := compute.ParseInstanceID(id)
+	if err != nil {
+		return compute.Instance{}, notFound("instance " + name + " not found")
+	}
+	inst, err := s.read.Instance(ctx, iid)
+	if err != nil {
+		return compute.Instance{}, toStatus(err)
+	}
+	if inst.Spec.NodeDriven() && (inst.Spec.Project != project || inst.Spec.Zone != zone) {
+		return compute.Instance{}, notFound("instance " + name + " not found")
+	}
+	return inst, nil
 }
 
 func validateCreateInstance(zone, name string, inst *computev1.Instance) error {

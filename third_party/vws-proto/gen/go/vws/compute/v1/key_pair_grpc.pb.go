@@ -35,6 +35,11 @@ const (
 // KeyPairService stores a public key. The private key never enters this API.
 // Nodes reconcile spec. Mutations follow vws.common.v1.OperationMetadata.
 // Delete is rejected with DEPENDENCY_MISSING while an Instance spec names this key pair.
+// The server writes status.fingerprint_sha256 in the create store, before the
+// operation name is returned. GetKeyPair returns it before any report.
+// Create, Get, List, and the finished Create operation all return that field.
+// There is no Describe RPC. GetKeyPair is the read. UpdateKeyPair with
+// allow_missing creates through the CreateKeyPair rules, including the fingerprint.
 type KeyPairServiceClient interface {
 	// AIP-131: the Get response is the resource.
 	// buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
@@ -51,6 +56,7 @@ type KeyPairServiceClient interface {
 	// buf:lint:ignore RPC_REQUEST_RESPONSE_UNIQUE
 	DeleteKeyPair(ctx context.Context, in *DeleteKeyPairRequest, opts ...grpc.CallOption) (*longrunningpb.Operation, error)
 	// ReportKeyPairStatus is the node reconcile write.
+	// The server keeps the stored fingerprint_sha256 and ignores the request value.
 	ReportKeyPairStatus(ctx context.Context, in *ReportKeyPairStatusRequest, opts ...grpc.CallOption) (*ReportKeyPairStatusResponse, error)
 }
 
@@ -129,6 +135,11 @@ func (c *keyPairServiceClient) ReportKeyPairStatus(ctx context.Context, in *Repo
 // KeyPairService stores a public key. The private key never enters this API.
 // Nodes reconcile spec. Mutations follow vws.common.v1.OperationMetadata.
 // Delete is rejected with DEPENDENCY_MISSING while an Instance spec names this key pair.
+// The server writes status.fingerprint_sha256 in the create store, before the
+// operation name is returned. GetKeyPair returns it before any report.
+// Create, Get, List, and the finished Create operation all return that field.
+// There is no Describe RPC. GetKeyPair is the read. UpdateKeyPair with
+// allow_missing creates through the CreateKeyPair rules, including the fingerprint.
 type KeyPairServiceServer interface {
 	// AIP-131: the Get response is the resource.
 	// buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
@@ -145,6 +156,7 @@ type KeyPairServiceServer interface {
 	// buf:lint:ignore RPC_REQUEST_RESPONSE_UNIQUE
 	DeleteKeyPair(context.Context, *DeleteKeyPairRequest) (*longrunningpb.Operation, error)
 	// ReportKeyPairStatus is the node reconcile write.
+	// The server keeps the stored fingerprint_sha256 and ignores the request value.
 	ReportKeyPairStatus(context.Context, *ReportKeyPairStatusRequest) (*ReportKeyPairStatusResponse, error)
 	mustEmbedUnimplementedKeyPairServiceServer()
 }

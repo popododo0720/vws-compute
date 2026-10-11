@@ -84,6 +84,7 @@ var selectorRules = []struct {
 	{[]string{"CommitDesired"}, []string{"internal/controller"}, "only the controller writes desired state"},
 	{[]string{"CommitInstanceStatus", "CommitImageStatus"}, []string{"internal/reconciler"}, "only the reconciler writes status"},
 	{[]string{"ConvergeMachine", "ConvergeImage"}, []string{"internal/reconciler"}, "only the reconciler calls the agent"},
+	{[]string{"SyncNode", "ReportInstanceStatus"}, []string{"internal/grpcapi"}, "only the node service writes heartbeats and node-reported status"},
 	{[]string{"RestoreOperation"}, []string{"internal/store/sqlitestore"}, "only storage rehydrates operations"},
 }
 
@@ -197,7 +198,8 @@ func TestArchitectureRules(t *testing.T) {
 		"internal/compute/c.go":             `package compute; import _ "database/sql"`,
 		"internal/hypervisor/h.go":          `package hypervisor; import _ "` + module + `/internal/compute"`,
 		"internal/controller/c.go":          `package controller; import _ "` + module + `/internal/hypervisor"; func f(s S) { s.CommitDesired() }`,
-		"internal/grpcapi/s.go":             `package grpcapi; func f(s S) { g := s.CommitDesired; _ = g }`,
+		"internal/grpcapi/s.go":             `package grpcapi; func f(s S) { g := s.CommitDesired; _ = g; s.SyncNode(); s.ReportInstanceStatus() }`,
+		"internal/reconciler/n.go":          `package reconciler; func g(s S) { s.SyncNode() }`,
 		"internal/reconciler/r.go":          `package reconciler; func f(s S, a A) { s.CommitImageStatus(); a.ConvergeMachine() }`,
 		"internal/widget/w.go":              `package widget; import "testing"; var _ testing.TB`,
 		"internal/store/storetest/s.go":     `package storetest; import "testing"; func f(s S, _ *testing.T) { s.CommitInstanceStatus() }`,
@@ -211,6 +213,7 @@ func TestArchitectureRules(t *testing.T) {
 		"internal/compute imports database/sql: SQL stays in the SQLite store",
 		"internal/controller imports " + module + "/internal/hypervisor: Submit never reaches a hypervisor",
 		"internal/grpcapi uses CommitDesired: only the controller writes desired state",
+		"internal/reconciler uses SyncNode: only the node service writes heartbeats and node-reported status",
 		"internal/hypervisor imports " + module + "/internal/compute: the agent contract imports nothing from this module",
 		"internal/store/sqlitestore exports type InstanceRow: storage rows stay unexported",
 		"internal/widget imports testing: production code does not import testing",

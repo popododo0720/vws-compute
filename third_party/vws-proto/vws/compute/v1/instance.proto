@@ -20,6 +20,16 @@ option java_package = "dev.vws.compute.v1";
 // Nodes reconcile spec. Mutations follow vws.common.v1.OperationMetadata.
 // Delete does not delete volumes, key pairs, subnets, or security groups.
 // Delete is rejected with DEPENDENCY_MISSING while an Address association names this instance.
+// status.assigned_node is server placement. See NodeService.
+// Delete of an instance whose assigned_node is empty removes the row in the
+// accept store and the operation succeeds. No node will report it.
+// Delete of an assigned instance stays RUNNING until ReportInstanceStatus
+// removes the row: delete_time is set, observed.generation equals the instance
+// generation, and observed.state is DELETING.
+// UpdateInstance with allow_missing creates through the CreateInstance rules,
+// including placement.
+// An update that changes or removes a network interface device_name named by
+// an Address association returns INVALID_ARGUMENT / INVALID_SPEC and writes nothing.
 service InstanceService {
   // AIP-131: the Get response is the resource.
   // buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
@@ -70,6 +80,10 @@ service InstanceService {
 
   // ReportInstanceStatus is the node reconcile write.
   // The server applies the idempotency rules on OperationMetadata.
+  // status.assigned_node is OUTPUT_ONLY. The server keeps the stored value.
+  // When assigned_node is empty, a report behaves as it did before placement.
+  // When assigned_node is set, observed.node must equal it. Any other value,
+  // including empty, is INVALID_ARGUMENT / INVALID_SPEC and stores nothing.
   rpc ReportInstanceStatus(ReportInstanceStatusRequest) returns (ReportInstanceStatusResponse) {
     option (google.api.http) = {
       post: "/v1/{name=projects/*/zones/*/instances/*}:reportStatus"
@@ -153,6 +167,13 @@ message InstanceStatus {
   vws.common.v1.ObservedState observed = 1;
   InstancePower power = 2;
   repeated ObservedNetworkInterface network_interfaces = 3;
+  // Node that runs this instance. Full resource name of vws.compute/Node.
+  // The server is the only writer. Empty until placement sets it.
+  // Set once, by compare-and-set while empty. See NodeService.
+  string assigned_node = 4 [
+    (google.api.field_behavior) = OUTPUT_ONLY,
+    (google.api.resource_reference).type = "vws.compute/Node"
+  ];
 }
 
 message ObservedNetworkInterface {

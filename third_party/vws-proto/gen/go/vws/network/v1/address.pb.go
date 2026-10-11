@@ -195,7 +195,20 @@ type AddressSpec struct {
 	// Only IPV4 is valid.
 	IpVersion IpVersion `protobuf:"varint,1,opt,name=ip_version,json=ipVersion,proto3,enum=vws.network.v1.IpVersion" json:"ip_version,omitempty"`
 	// Unset means the address is reserved and not attached.
-	Association   *AddressAssociation `protobuf:"bytes,2,opt,name=association,proto3" json:"association,omitempty"`
+	// This message is the only attach. UpdateAddress with mask spec.association
+	// replaces it. The same mask with association unset clears it.
+	// AssociateAddress maps here: instance is the instance, device_name is the NIC.
+	// The private IPv4 stays on the instance network interface.
+	Association *AddressAssociation `protobuf:"bytes,2,opt,name=association,proto3" json:"association,omitempty"`
+	// VPC this address is allocated in. Full resource name of vws.network/Vpc.
+	// Project and region must equal the address (INVALID_ARGUMENT / INVALID_SPEC).
+	// Empty means not bound to a VPC. Existing rows stay empty.
+	// Immutable after create. On an update of an existing address, empty keeps
+	// the stored value, including when the mask is spec or spec,labels. A
+	// non-empty value that differs from the stored name returns INVALID_ARGUMENT /
+	// INVALID_SPEC and writes nothing. GetAddress and ListAddresses show the
+	// binding here. AddressStatus does not copy it.
+	Vpc           string `protobuf:"bytes,3,opt,name=vpc,proto3" json:"vpc,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -242,6 +255,13 @@ func (x *AddressSpec) GetAssociation() *AddressAssociation {
 		return x.Association
 	}
 	return nil
+}
+
+func (x *AddressSpec) GetVpc() string {
+	if x != nil {
+		return x.Vpc
+	}
+	return ""
 }
 
 type AddressAssociation struct {
@@ -601,8 +621,9 @@ func (x *CreateAddressRequest) GetValidateOnly() bool {
 type UpdateAddressRequest struct {
 	state   protoimpl.MessageState `protogen:"open.v1"`
 	Address *Address               `protobuf:"bytes,1,opt,name=address,proto3" json:"address,omitempty"`
-	// Paths are relative to Address. ip_version is immutable.
+	// Paths are relative to Address. ip_version and vpc are immutable.
 	// Omitted mask is treated as "spec,labels".
+	// An empty spec.vpc on an existing address keeps the stored vpc.
 	UpdateMask    *fieldmaskpb.FieldMask `protobuf:"bytes,2,opt,name=update_mask,json=updateMask,proto3" json:"update_mask,omitempty"`
 	RequestId     string                 `protobuf:"bytes,3,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
 	ValidateOnly  bool                   `protobuf:"varint,4,opt,name=validate_only,json=validateOnly,proto3" json:"validate_only,omitempty"`
@@ -873,11 +894,13 @@ const file_vws_network_v1_address_proto_rawDesc = "" +
 	"\vLabelsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01:e\xeaAb\n" +
-	"\x13vws.network/Address\x127projects/{project}/regions/{region}/addresses/{address}*\taddresses2\aaddress\"\x92\x01\n" +
+	"\x13vws.network/Address\x127projects/{project}/regions/{region}/addresses/{address}*\taddresses2\aaddress\"\xbd\x01\n" +
 	"\vAddressSpec\x12=\n" +
 	"\n" +
 	"ip_version\x18\x01 \x01(\x0e2\x19.vws.network.v1.IpVersionB\x03\xe0A\x02R\tipVersion\x12D\n" +
-	"\vassociation\x18\x02 \x01(\v2\".vws.network.v1.AddressAssociationR\vassociation\"t\n" +
+	"\vassociation\x18\x02 \x01(\v2\".vws.network.v1.AddressAssociationR\vassociation\x12)\n" +
+	"\x03vpc\x18\x03 \x01(\tB\x17\xe0A\x05\xfaA\x11\n" +
+	"\x0fvws.network/VpcR\x03vpc\"t\n" +
 	"\x12AddressAssociation\x128\n" +
 	"\binstance\x18\x01 \x01(\tB\x1c\xe0A\x02\xfaA\x16\n" +
 	"\x14vws.compute/InstanceR\binstance\x12$\n" +

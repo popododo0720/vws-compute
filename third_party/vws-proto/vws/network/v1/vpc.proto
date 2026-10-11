@@ -18,7 +18,8 @@ option java_package = "dev.vws.network.v1";
 
 // VpcService stores desired state for a regional network.
 // Nodes reconcile spec. Mutations follow vws.common.v1.OperationMetadata.
-// Delete is rejected with DEPENDENCY_MISSING while a subnet or security group remains.
+// Delete is rejected with DEPENDENCY_MISSING while a subnet, a security group,
+// or an Address whose spec.vpc names this VPC remains.
 service VpcService {
   // AIP-131: the Get response is the resource.
   // buf:lint:ignore RPC_RESPONSE_STANDARD_NAME

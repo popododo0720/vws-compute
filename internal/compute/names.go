@@ -160,6 +160,26 @@ func ParseInstanceType(s string) (InstanceType, error) {
 	return InstanceType{}, Errorf(CodeInvalid, "unknown instance type %q", s)
 }
 
+// ParseMachineType accepts a catalog entry, and otherwise any name in the
+// proto's machine_type grammar. Nodes own the real machine catalog, so an
+// unlisted name is stored as sent and carries no vCPU or memory figures.
+func ParseMachineType(s string) (InstanceType, error) {
+	if t, err := ParseInstanceType(s); err == nil {
+		return t, nil
+	}
+	if len(s) < 1 || len(s) > 63 || s[0] < 'a' || s[0] > 'z' {
+		return InstanceType{}, Errorf(CodeInvalid, "invalid machine type %q", s)
+	}
+	for i := 1; i < len(s); i++ {
+		c := s[i]
+		ok := c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || (c == '.' || c == '-') && i < len(s)-1
+		if !ok {
+			return InstanceType{}, Errorf(CodeInvalid, "invalid machine type %q", s)
+		}
+	}
+	return InstanceType{name: s}, nil
+}
+
 func (t InstanceType) Name() string   { return t.name }
 func (t InstanceType) VCPUs() int     { return t.vcpus }
 func (t InstanceType) MemoryMiB() int { return t.memoryMiB }

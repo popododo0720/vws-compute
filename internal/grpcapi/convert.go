@@ -95,20 +95,57 @@ func powerPB(p compute.Power) computev1.InstancePower {
 
 func instancePB(i compute.Instance, name string) *computev1.Instance {
 	if name == "" {
-		name = instanceResourceName(placeholderLocation, placeholderLocation, i.Spec.ID.String())
+		project, zone := placeholderLocation, placeholderLocation
+		if i.Spec.NodeDriven() {
+			project, zone = i.Spec.Project, i.Spec.Zone
+		}
+		name = instanceResourceName(project, zone, i.Spec.ID.String())
 	}
 	life := i.Lifecycle()
 	spec := &computev1.InstanceSpec{
 		MachineType: i.Spec.Type.Name(),
 		Power:       powerPB(i.Spec.Power),
+		UserData:    i.Spec.UserData,
 	}
 	if i.Spec.Key != nil {
 		spec.KeyPair = i.Spec.Key.Name.String()
+	}
+	for _, v := range i.Spec.Volumes {
+		spec.Volumes = append(spec.Volumes, &computev1.VolumeAttachment{Volume: v.Volume.String(), DeviceName: v.DeviceName, Boot: v.Boot})
+	}
+	for _, n := range i.Spec.NICs {
+		spec.NetworkInterfaces = append(spec.NetworkInterfaces, &computev1.NetworkInterface{
+			DeviceName: n.DeviceName, Subnet: n.Subnet, PrivateIpv4: n.PrivateIPv4, SecurityGroups: n.SecurityGroups,
+		})
 	}
 	var message string
 	if life == compute.InstanceError && i.Status.Observed.Failure != nil {
 		message = i.Status.Observed.Failure.Message
 	}
+	state := instanceReconciliation(life)
+	status := &computev1.InstanceStatus{
+		Observed: &commonv1.ObservedState{
+			Generation: i.Status.Observed.Generation,
+			Message:    message,
+		},
+		Power:        powerPB(i.Spec.Power),
+		AssignedNode: i.Status.AssignedNode,
+	}
+	if i.Spec.NodeDriven() {
+		state = nodeDrivenReconciliation(i)
+		status.Power = observedPowerPB(i.Status.Report.Power)
+		status.Observed.Node = i.Status.Report.Node
+		if message == "" {
+			message = i.Status.Report.Message
+		}
+		status.Observed.Message = message
+		for _, n := range i.Status.Report.Interfaces {
+			status.NetworkInterfaces = append(status.NetworkInterfaces, &computev1.ObservedNetworkInterface{
+				DeviceName: n.DeviceName, Subnet: n.Subnet, PrivateIpv4: n.PrivateIPv4, PublicIpv4: n.PublicIPv4,
+			})
+		}
+	}
+	status.Observed.State = state
 	out := &computev1.Instance{
 		Name:       name,
 		Uid:        i.Spec.ID.String(),
@@ -116,14 +153,7 @@ func instancePB(i compute.Instance, name string) *computev1.Instance {
 		Etag:       etagOf(i.Spec.Generation, i.Meta.Revision),
 		Labels:     i.Meta.Labels.Map(),
 		Spec:       spec,
-		Status: &computev1.InstanceStatus{
-			Observed: &commonv1.ObservedState{
-				State:      instanceReconciliation(life),
-				Generation: i.Status.Observed.Generation,
-				Message:    message,
-			},
-			Power: powerPB(i.Spec.Power),
-		},
+		Status:     status,
 		CreateTime: timestamppb.New(i.Spec.CreatedAt),
 		UpdateTime: timestamppb.New(latest(i.Spec.ChangedAt, i.Meta.ChangedAt)),
 	}
@@ -131,6 +161,33 @@ func instancePB(i compute.Instance, name string) *computev1.Instance {
 		out.DeleteTime = timestamppb.New(i.Spec.ChangedAt)
 	}
 	return out
+}
+
+// nodeDrivenReconciliation is the state of an instance whose node, not this
+// process, converges it: what the node last said, until the generation it
+// reported catches the spec.
+func nodeDrivenReconciliation(i compute.Instance) commonv1.ReconciliationState {
+	switch {
+	case i.Status.Observed.Parked(i.Spec.Generation):
+		return commonv1.ReconciliationState_RECONCILIATION_STATE_ERROR
+	case i.Spec.Power == compute.PowerTerminated:
+		return commonv1.ReconciliationState_RECONCILIATION_STATE_DELETING
+	case i.Status.Observed.Generation == i.Spec.Generation:
+		return commonv1.ReconciliationState_RECONCILIATION_STATE_READY
+	case i.Status.Report.State == compute.ReportReconciling:
+		return commonv1.ReconciliationState_RECONCILIATION_STATE_RECONCILING
+	}
+	return commonv1.ReconciliationState_RECONCILIATION_STATE_PENDING
+}
+
+func observedPowerPB(p compute.Power) computev1.InstancePower {
+	switch p {
+	case compute.PowerRunning:
+		return computev1.InstancePower_INSTANCE_POWER_RUNNING
+	case compute.PowerStopped:
+		return computev1.InstancePower_INSTANCE_POWER_STOPPED
+	}
+	return computev1.InstancePower_INSTANCE_POWER_UNSPECIFIED
 }
 
 func imagePB(i compute.Image, name string) *computev1.Image {
@@ -209,7 +266,7 @@ func keyPairPB(k compute.KeyPair) (*computev1.KeyPair, error) {
 
 func operationVerb(k compute.OperationKind) commonv1.OperationVerb {
 	switch k {
-	case compute.OpRunInstance, compute.OpRegisterImage, compute.OpCreateImage, compute.OpCopyImage, compute.OpRegisterFile, compute.OpCreateKeyPair, compute.OpImportKeyPair:
+	case compute.OpRunInstance, compute.OpCreateInstance, compute.OpCreateNode, compute.OpRegisterImage, compute.OpCreateImage, compute.OpCopyImage, compute.OpRegisterFile, compute.OpCreateKeyPair, compute.OpImportKeyPair:
 		return commonv1.OperationVerb_OPERATION_VERB_CREATE
 	case compute.OpTerminateInstance, compute.OpDeregisterImage, compute.OpDeleteKeyPair:
 		return commonv1.OperationVerb_OPERATION_VERB_DELETE
@@ -273,9 +330,6 @@ func (s *server) operationResource(ctx context.Context, project, resourceName st
 	switch op.Target.Kind {
 	case compute.KindInstance:
 		name := resourceName
-		if name == "" {
-			name = instanceResourceName(project, placeholderLocation, op.Target.ID)
-		}
 		id, err := compute.ParseInstanceID(op.Target.ID)
 		if err != nil {
 			return name, nil, nil
@@ -283,11 +337,32 @@ func (s *server) operationResource(ctx context.Context, project, resourceName st
 		inst, err := s.read.Instance(ctx, id)
 		if err != nil {
 			if compute.CodeOf(err) == compute.CodeNotFound {
+				if name == "" {
+					name = instanceResourceName(project, placeholderLocation, op.Target.ID)
+				}
 				return name, nil, nil
 			}
 			return "", nil, toStatus(err)
 		}
+		if name == "" {
+			// GetOperation does not know the parent. A node-driven instance
+			// stored its own, and the others use the placeholder.
+			name = instancePB(inst, "").GetName()
+		}
 		return name, instancePB(inst, name), nil
+	case compute.KindNode:
+		name, err := compute.ParseNodeName(op.Target.ID)
+		if err != nil {
+			return "", nil, nil
+		}
+		n, err := s.read.Node(ctx, name)
+		if err != nil {
+			if compute.CodeOf(err) == compute.CodeNotFound {
+				return name.String(), nil, nil
+			}
+			return "", nil, toStatus(err)
+		}
+		return name.String(), nodePB(n), nil
 	case compute.KindImage:
 		name := resourceName
 		if name == "" {

@@ -22,6 +22,7 @@ func TestServicesMatchTheResourceAPI(t *testing.T) {
 		computev1.File_vws_compute_v1_instance_proto,
 		computev1.File_vws_compute_v1_image_proto,
 		computev1.File_vws_compute_v1_key_pair_proto,
+		computev1.File_vws_compute_v1_node_proto,
 	}
 	for _, file := range files {
 		if file.Services().Len() != 1 {
@@ -33,6 +34,12 @@ func TestServicesMatchTheResourceAPI(t *testing.T) {
 			name := string(m.Name())
 			reqID := m.Input().Fields().ByName("request_id")
 			switch {
+			case name == "SyncNode":
+				// A heartbeat: a retry heartbeats again, so it needs no
+				// request id, and it returns the node and its instances.
+				if reqID != nil || m.Output().FullName() == "google.longrunning.Operation" {
+					t.Errorf("SyncNode must take no request_id and return no operation")
+				}
 			case strings.HasPrefix(name, "Get"), strings.HasPrefix(name, "List"):
 				if reqID != nil {
 					t.Errorf("%s is a read but takes request_id", name)
@@ -61,6 +68,7 @@ func TestComputeMessagesCarryNoPrivateKey(t *testing.T) {
 		computev1.File_vws_compute_v1_instance_proto,
 		computev1.File_vws_compute_v1_image_proto,
 		computev1.File_vws_compute_v1_key_pair_proto,
+		computev1.File_vws_compute_v1_node_proto,
 	}
 	var found []string
 	for _, file := range files {
@@ -140,6 +148,9 @@ var classifiedSpecFields = map[string]map[string]bool{
 	"KeyPairSpec": {
 		"public_key": true,
 	},
+	"NodeSpec": {
+		"instance_slots": true,
+	},
 }
 
 func TestMaskClassifiesEverySpecField(t *testing.T) {
@@ -147,6 +158,7 @@ func TestMaskClassifiesEverySpecField(t *testing.T) {
 		(&computev1.InstanceSpec{}).ProtoReflect().Descriptor(),
 		(&computev1.ImageSpec{}).ProtoReflect().Descriptor(),
 		(&computev1.KeyPairSpec{}).ProtoReflect().Descriptor(),
+		(&computev1.NodeSpec{}).ProtoReflect().Descriptor(),
 	} {
 		allowed := classifiedSpecFields[string(msg.Name())]
 		fields := msg.Fields()

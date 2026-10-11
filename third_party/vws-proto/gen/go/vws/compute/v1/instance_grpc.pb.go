@@ -36,6 +36,16 @@ const (
 // Nodes reconcile spec. Mutations follow vws.common.v1.OperationMetadata.
 // Delete does not delete volumes, key pairs, subnets, or security groups.
 // Delete is rejected with DEPENDENCY_MISSING while an Address association names this instance.
+// status.assigned_node is server placement. See NodeService.
+// Delete of an instance whose assigned_node is empty removes the row in the
+// accept store and the operation succeeds. No node will report it.
+// Delete of an assigned instance stays RUNNING until ReportInstanceStatus
+// removes the row: delete_time is set, observed.generation equals the instance
+// generation, and observed.state is DELETING.
+// UpdateInstance with allow_missing creates through the CreateInstance rules,
+// including placement.
+// An update that changes or removes a network interface device_name named by
+// an Address association returns INVALID_ARGUMENT / INVALID_SPEC and writes nothing.
 type InstanceServiceClient interface {
 	// AIP-131: the Get response is the resource.
 	// buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
@@ -53,6 +63,10 @@ type InstanceServiceClient interface {
 	DeleteInstance(ctx context.Context, in *DeleteInstanceRequest, opts ...grpc.CallOption) (*longrunningpb.Operation, error)
 	// ReportInstanceStatus is the node reconcile write.
 	// The server applies the idempotency rules on OperationMetadata.
+	// status.assigned_node is OUTPUT_ONLY. The server keeps the stored value.
+	// When assigned_node is empty, a report behaves as it did before placement.
+	// When assigned_node is set, observed.node must equal it. Any other value,
+	// including empty, is INVALID_ARGUMENT / INVALID_SPEC and stores nothing.
 	ReportInstanceStatus(ctx context.Context, in *ReportInstanceStatusRequest, opts ...grpc.CallOption) (*ReportInstanceStatusResponse, error)
 }
 
@@ -132,6 +146,16 @@ func (c *instanceServiceClient) ReportInstanceStatus(ctx context.Context, in *Re
 // Nodes reconcile spec. Mutations follow vws.common.v1.OperationMetadata.
 // Delete does not delete volumes, key pairs, subnets, or security groups.
 // Delete is rejected with DEPENDENCY_MISSING while an Address association names this instance.
+// status.assigned_node is server placement. See NodeService.
+// Delete of an instance whose assigned_node is empty removes the row in the
+// accept store and the operation succeeds. No node will report it.
+// Delete of an assigned instance stays RUNNING until ReportInstanceStatus
+// removes the row: delete_time is set, observed.generation equals the instance
+// generation, and observed.state is DELETING.
+// UpdateInstance with allow_missing creates through the CreateInstance rules,
+// including placement.
+// An update that changes or removes a network interface device_name named by
+// an Address association returns INVALID_ARGUMENT / INVALID_SPEC and writes nothing.
 type InstanceServiceServer interface {
 	// AIP-131: the Get response is the resource.
 	// buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
@@ -149,6 +173,10 @@ type InstanceServiceServer interface {
 	DeleteInstance(context.Context, *DeleteInstanceRequest) (*longrunningpb.Operation, error)
 	// ReportInstanceStatus is the node reconcile write.
 	// The server applies the idempotency rules on OperationMetadata.
+	// status.assigned_node is OUTPUT_ONLY. The server keeps the stored value.
+	// When assigned_node is empty, a report behaves as it did before placement.
+	// When assigned_node is set, observed.node must equal it. Any other value,
+	// including empty, is INVALID_ARGUMENT / INVALID_SPEC and stores nothing.
 	ReportInstanceStatus(context.Context, *ReportInstanceStatusRequest) (*ReportInstanceStatusResponse, error)
 	mustEmbedUnimplementedInstanceServiceServer()
 }

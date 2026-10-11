@@ -267,6 +267,11 @@ func (s *Store) CommitDesired(ctx context.Context, c store.DesiredChange) (compu
 				return err
 			}
 		}
+		if is, ok := c.Spec.(compute.InstanceSpec); ok && c.Write && is.NodeDriven() {
+			if err := afterNodeDrivenWrite(ctx, tx, is, c.Op.CreatedAt); err != nil {
+				return err
+			}
+		}
 		spec, obs, err := progress(ctx, tx, ref)
 		if err != nil {
 			return err
@@ -316,6 +321,9 @@ func progress(ctx context.Context, q querier, ref compute.Ref) (int64, compute.O
 	case compute.KindKeyPair:
 		err = q.QueryRowContext(ctx, `SELECT generation FROM key_pairs WHERE id = ?`, ref.ID).Scan(&gen)
 		observed = gen
+	case compute.KindNode:
+		err = q.QueryRowContext(ctx, `SELECT generation FROM nodes WHERE id = ?`, ref.ID).Scan(&gen)
+		observed = gen
 	default:
 		return 0, compute.Observed{}, compute.Errorf(compute.CodeInternal, "unknown resource kind %d", ref.Kind)
 	}
@@ -340,11 +348,23 @@ func putSpec(ctx context.Context, tx *sql.Tx, spec compute.Spec, cur int64) erro
 		if s.Key != nil {
 			keyName, keyPublic = nullString(s.Key.Name.String(), true), nullString(s.Key.PublicKey.AuthorizedKey(), true)
 		}
+		volumes, verr := volumesJSON(s.Volumes)
+		nics, nerr := nicsJSON(s.NICs)
+		if err := errors.Join(verr, nerr); err != nil {
+			return err
+		}
+		if cur == 0 && s.NodeDriven() {
+			if err := claimVolumes(ctx, tx, s); err != nil {
+				return err
+			}
+		}
 		if cur == 0 {
 			res, err = tx.ExecContext(ctx, `INSERT INTO instances (id, generation, created_at, changed_at, image_id,
-				instance_type, key_name, key_public, power, reboot_epoch) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				instance_type, key_name, key_public, power, reboot_epoch, node_driven, project, zone, user_data,
+				volumes, nics) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 				s.ID.String(), s.Generation, nanos(s.CreatedAt), nanos(s.ChangedAt), s.Image.String(),
-				s.Type.Name(), keyName, keyPublic, int64(s.Power), int64(s.RebootEpoch))
+				s.Type.Name(), keyName, keyPublic, int64(s.Power), int64(s.RebootEpoch),
+				boolInt(s.NodeDriven()), s.Project, s.Zone, s.UserData, volumes, nics)
 		} else {
 			res, err = tx.ExecContext(ctx, `UPDATE instances SET generation = ?, changed_at = ?, image_id = ?,
 				instance_type = ?, key_name = ?, key_public = ?, power = ?, reboot_epoch = ?,
@@ -352,6 +372,9 @@ func putSpec(ctx context.Context, tx *sql.Tx, spec compute.Spec, cur int64) erro
 				WHERE id = ? AND generation = ?`,
 				s.Generation, nanos(s.ChangedAt), s.Image.String(), s.Type.Name(), keyName, keyPublic,
 				int64(s.Power), int64(s.RebootEpoch), s.ID.String(), cur)
+		}
+		if err == nil && s.NodeDriven() && s.Power == compute.PowerTerminated {
+			_, err = tx.ExecContext(ctx, `DELETE FROM instance_volumes WHERE instance_id = ?`, s.ID.String())
 		}
 	case compute.ImageSpec:
 		srcURL, srcInstance, srcPath, srcVolume, srcSnapshot, srcErr := imageSourceColumns(s.Source)
@@ -371,6 +394,15 @@ func putSpec(ctx context.Context, tx *sql.Tx, spec compute.Spec, cur int64) erro
 				WHERE id = ? AND generation = ?`,
 				s.Generation, nanos(s.ChangedAt), s.Name.String(), srcURL, srcInstance, srcPath, srcVolume, srcSnapshot,
 				boolInt(s.Deregistered), s.ID.String(), cur)
+		}
+	case compute.NodeSpec:
+		if cur == 0 {
+			res, err = tx.ExecContext(ctx, `INSERT INTO nodes (id, uid, generation, created_at, changed_at, slots)
+				VALUES (?, ?, ?, ?, ?, ?)`,
+				s.Name.String(), s.UID, s.Generation, nanos(s.CreatedAt), nanos(s.ChangedAt), s.Slots)
+		} else {
+			res, err = tx.ExecContext(ctx, `UPDATE nodes SET generation = ?, changed_at = ?, slots = ?
+				WHERE id = ? AND generation = ?`, s.Generation, nanos(s.ChangedAt), s.Slots, s.Name.String(), cur)
 		}
 	case compute.KeyPairSpec:
 		if !s.Deleted {
@@ -458,6 +490,8 @@ func tableOf(k compute.Kind) (string, error) {
 		return "images", nil
 	case compute.KindKeyPair:
 		return "key_pairs", nil
+	case compute.KindNode:
+		return "nodes", nil
 	default:
 		return "", compute.Errorf(compute.CodeInternal, "unknown resource kind %d", k)
 	}
@@ -549,7 +583,11 @@ func (s *Store) lagging(ctx context.Context, where string, args ...any) ([]compu
 		table string
 		kind  compute.Kind
 	}{{"instances", compute.KindInstance}, {"images", compute.KindImage}} {
-		ids, err := collect(ctx, s.db, scanID, `SELECT id FROM `+t.table+` WHERE `+where+` ORDER BY id`, args...)
+		extra := ""
+		if t.kind == compute.KindInstance {
+			extra = ` AND node_driven = 0`
+		}
+		ids, err := collect(ctx, s.db, scanID, `SELECT id FROM `+t.table+` WHERE `+where+extra+` ORDER BY id`, args...)
 		if err != nil {
 			return nil, err
 		}

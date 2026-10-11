@@ -18,6 +18,7 @@ type view struct {
 	instances map[compute.InstanceID]compute.Instance
 	images    map[compute.ImageID]compute.Image
 	keys      map[compute.KeyName]compute.KeyPair
+	nodes     map[compute.NodeName]compute.Node
 }
 
 func newView() *view {
@@ -25,6 +26,7 @@ func newView() *view {
 		instances: map[compute.InstanceID]compute.Instance{},
 		images:    map[compute.ImageID]compute.Image{},
 		keys:      map[compute.KeyName]compute.KeyPair{},
+		nodes:     map[compute.NodeName]compute.Node{},
 	}
 }
 
@@ -37,6 +39,8 @@ func (v *view) with(items ...any) *view {
 			v.images[it.Spec.ID] = it
 		case compute.KeyPair:
 			v.keys[it.Spec.Name] = it
+		case compute.Node:
+			v.nodes[it.Spec.Name] = it
 		}
 	}
 	return v
@@ -47,6 +51,13 @@ func (v *view) Instance(id compute.InstanceID) (compute.Instance, error) {
 		return i, nil
 	}
 	return compute.Instance{}, compute.Errorf(compute.CodeNotFound, "instance %s not found", id)
+}
+
+func (v *view) Node(name compute.NodeName) (compute.Node, error) {
+	if n, ok := v.nodes[name]; ok {
+		return n, nil
+	}
+	return compute.Node{}, compute.Errorf(compute.CodeNotFound, "node %s not found", name)
 }
 
 func (v *view) Image(id compute.ImageID) (compute.Image, error) {
