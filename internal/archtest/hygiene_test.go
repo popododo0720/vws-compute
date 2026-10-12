@@ -163,3 +163,29 @@ func writeFile(t *testing.T, path, content string) {
 		t.Fatal(err)
 	}
 }
+
+func TestRBACManifestsAreNamespaced(t *testing.T) {
+	dir := filepath.Join(repoRoot(t), "deploy", "rbac")
+	n := 0
+	err := walkFiles(dir, func(rel string, data []byte) {
+		if !strings.HasSuffix(rel, ".yaml") {
+			return
+		}
+		n++
+		if strings.Contains(string(data), "ClusterRole") {
+			t.Errorf("%s: RBAC is namespaced, no ClusterRole", rel)
+		}
+		for i, line := range strings.Split(string(data), "\n") {
+			code, _, _ := strings.Cut(line, "#")
+			if strings.Contains(code, `"*"`) || strings.Contains(code, "'*'") || strings.Contains(code, "- *") {
+				t.Errorf("%s:%d: no wildcards", rel, i+1)
+			}
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n == 0 {
+		t.Fatal("no RBAC manifests found under deploy/rbac")
+	}
+}

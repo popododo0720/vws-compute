@@ -1,0 +1,36 @@
+# Store namespace. Used by internal/store/kubestore only.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: vws-compute-store
+  namespace: vws-compute
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs:
+      # get: entry.go readEntry, claim.go, index.go lookup by name.
+      - get
+      # list: entry.go list by kind label, index.go operation lookup,
+      # repair.go orphan and claim scans.
+      - list
+      # create: entry.go first write of a resource, claim.go, index.go
+      # create-if-not-exists request index.
+      - create
+      # update: entry.go resourceVersion CAS write, claim.go, index.go.
+      - update
+      # delete: claim.go release, index.go drop, repair.go orphan cleanup.
+      - delete
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: vws-compute-store
+  namespace: vws-compute
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: vws-compute-store
+subjects:
+  - kind: ServiceAccount
+    name: vws-compute
+    namespace: vws-compute

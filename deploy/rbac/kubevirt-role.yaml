@@ -1,0 +1,74 @@
+# VM namespace (-vm-namespace). Used by internal/hypervisor/kubevirt agent.go.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: vws-compute-vms
+  namespace: vws-vms
+rules:
+  - apiGroups: ["kubevirt.io"]
+    resources: ["virtualmachines"]
+    verbs:
+      # get: ConvergeMachine reads the VM. image.go imageSource reads the
+      # source machine of a capture.
+      - get
+      # list: image.go imageUsers finds VMs that clone from an image.
+      - list
+      # create: agent.go create.
+      - create
+      # patch: agent.go update, merge patch for power, size, and keys.
+      - patch
+      # delete: agent.go destroy.
+      - delete
+  - apiGroups: ["kubevirt.io"]
+    resources: ["virtualmachineinstances"]
+    # delete: agent.go update, reboot deletes the VMI so KubeVirt starts a new one.
+    verbs: ["delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: vws-compute-vms
+  namespace: vws-vms
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: vws-compute-vms
+subjects:
+  - kind: ServiceAccount
+    name: vws-compute
+    namespace: vws-compute
+---
+# Image namespace (-image-namespace). Used by internal/hypervisor/kubevirt image.go.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: vws-compute-images
+  namespace: vws-images
+rules:
+  - apiGroups: ["cdi.kubevirt.io"]
+    resources: ["datavolumes", "datasources"]
+    verbs:
+      # get: image.go ensure (compare) and imageSize (DataVolume phase).
+      - get
+      # create: image.go ensure.
+      - create
+      # delete: image.go removeImage.
+      - delete
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    # get: image.go imageSize reads the bound claim capacity.
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: vws-compute-images
+  namespace: vws-images
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: vws-compute-images
+subjects:
+  - kind: ServiceAccount
+    name: vws-compute
+    namespace: vws-compute
