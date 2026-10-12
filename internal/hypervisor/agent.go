@@ -30,7 +30,11 @@ type MachineSpec struct {
 	Name string
 	// Image is the image ID to create the root disk from. It is read only
 	// when the machine does not exist yet.
-	Image          string
+	Image string
+	// BootClaim is the existing PersistentVolumeClaim to boot from when
+	// Image is empty: a controller-driven instance's boot volume. Like
+	// Image, it is fixed when the machine is created.
+	BootClaim      string
 	VCPUs          int
 	MemoryMiB      int
 	AuthorizedKeys []string

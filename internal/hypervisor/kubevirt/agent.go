@@ -122,11 +122,13 @@ func (a *Agent) destroy(ctx context.Context, name string) error {
 }
 
 func (a *Agent) create(ctx context.Context, spec hypervisor.MachineSpec) error {
-	if spec.Image == "" || spec.VCPUs <= 0 || spec.MemoryMiB <= 0 {
-		return hypervisor.Permanent(fmt.Errorf("machine %s: need an image, vcpus, and memory to create", spec.Name))
+	if (spec.Image == "") == (spec.BootClaim == "") || spec.VCPUs <= 0 || spec.MemoryMiB <= 0 {
+		return hypervisor.Permanent(fmt.Errorf("machine %s: need exactly one of an image or a boot claim, and vcpus and memory, to create", spec.Name))
 	}
-	if errs := validation.IsDNS1123Subdomain(spec.Image); len(errs) > 0 {
-		return hypervisor.Permanent(fmt.Errorf("machine %s: image %q is not a valid object name", spec.Name, spec.Image))
+	for _, n := range []string{spec.Image, spec.BootClaim} {
+		if errs := validation.IsDNS1123Subdomain(n); n != "" && len(errs) > 0 {
+			return hypervisor.Permanent(fmt.Errorf("machine %s: root disk source %q is not a valid object name", spec.Name, n))
+		}
 	}
 	run := runHalted
 	if spec.Power == hypervisor.PowerOn {
@@ -135,6 +137,25 @@ func (a *Agent) create(ctx context.Context, spec hypervisor.MachineSpec) error {
 	rootDisk := spec.Name + "-root"
 	disks := []any{map[string]any{"name": "rootdisk", "disk": map[string]any{"bus": "virtio"}}}
 	volumes := []any{map[string]any{"name": "rootdisk", "dataVolume": map[string]any{"name": rootDisk}}}
+	var templates []any
+	if spec.Image != "" {
+		templates = []any{map[string]any{
+			"metadata": map[string]any{"name": rootDisk},
+			"spec": map[string]any{
+				"sourceRef": map[string]any{"kind": "DataSource", "name": spec.Image, "namespace": a.cfg.ImageNamespace},
+				"storage":   map[string]any{},
+			},
+		}}
+	} else {
+		// Boot from the storage service's claim in the VM namespace. It is
+		// not owned by the VirtualMachine, so deleting the machine leaves the
+		// volume to storage. Not hotpluggable: the root disk never changes.
+		if err := a.checkAttachable(ctx, spec.Name, &unstructured.Unstructured{Object: map[string]any{}},
+			[]hypervisor.Volume{{Name: "rootdisk", Claim: spec.BootClaim}}); err != nil {
+			return err
+		}
+		volumes = []any{map[string]any{"name": "rootdisk", "persistentVolumeClaim": map[string]any{"claimName": spec.BootClaim}}}
+	}
 	if len(spec.AuthorizedKeys) > 0 {
 		keys, err := json.Marshal(spec.AuthorizedKeys)
 		if err != nil {
@@ -149,13 +170,6 @@ func (a *Agent) create(ctx context.Context, spec hypervisor.MachineSpec) error {
 	vm := &unstructured.Unstructured{Object: map[string]any{
 		"spec": map[string]any{
 			"runStrategy": run,
-			"dataVolumeTemplates": []any{map[string]any{
-				"metadata": map[string]any{"name": rootDisk},
-				"spec": map[string]any{
-					"sourceRef": map[string]any{"kind": "DataSource", "name": spec.Image, "namespace": a.cfg.ImageNamespace},
-					"storage":   map[string]any{},
-				},
-			}},
 			"template": map[string]any{
 				"metadata": map[string]any{"labels": map[string]any{"vws.io/instance": spec.Name}},
 				"spec": map[string]any{
@@ -169,6 +183,9 @@ func (a *Agent) create(ctx context.Context, spec hypervisor.MachineSpec) error {
 			},
 		},
 	}}
+	if templates != nil {
+		vm.Object["spec"].(map[string]any)["dataVolumeTemplates"] = templates //nolint:errcheck // built above as a map
+	}
 	vm.SetGroupVersionKind(vmGVK)
 	vm.SetNamespace(a.cfg.Namespace)
 	vm.SetName(spec.Name)
@@ -191,6 +208,9 @@ func (a *Agent) update(ctx context.Context, vm *unstructured.Unstructured, spec 
 	}
 	if vm.GetDeletionTimestamp() != nil {
 		return fmt.Errorf("machine %s: previous VirtualMachine is still being deleted", spec.Name)
+	}
+	if have := rootClaim(vm); spec.BootClaim != have && spec.Image == "" {
+		return hypervisor.Permanent(fmt.Errorf("machine %s: boot claim is %q and cannot change to %q", spec.Name, have, spec.BootClaim))
 	}
 	patch := map[string]any{}
 	set := func(path []string, v any) {
@@ -285,4 +305,19 @@ func appliedEpoch(vm *unstructured.Unstructured) uint32 {
 		return 0
 	}
 	return uint32(n)
+}
+
+// rootClaim returns the claim the root disk is a plain PVC volume of, or ""
+// when the root disk is a DataVolume.
+func rootClaim(vm *unstructured.Unstructured) string {
+	for _, v := range templateSlice(vm, "spec", "template", "spec", "volumes") {
+		m, _ := v.(map[string]any) //nolint:errcheck // an entry of another shape is not the root disk
+		if m["name"] != "rootdisk" {
+			continue
+		}
+		pvc, _ := m["persistentVolumeClaim"].(map[string]any) //nolint:errcheck // a DataVolume root has no claim here
+		claim, _ := pvc["claimName"].(string)                 //nolint:errcheck // absent reads as ""
+		return claim
+	}
+	return ""
 }

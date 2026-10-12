@@ -31,20 +31,25 @@ func templateSlice(vm *unstructured.Unstructured, path ...string) []any {
 
 // claimOf returns the claim name of a hot-pluggable volume entry.
 func claimOf(v any) (name, claim string, ok bool) {
+	name, claim, hot, ok := pvcOf(v)
+	return name, claim, ok && hot
+}
+
+// pvcOf returns the claim of any persistentVolumeClaim volume entry, a
+// hot-plugged data volume or a boot-from-claim root disk.
+func pvcOf(v any) (name, claim string, hot, ok bool) {
 	m, isMap := v.(map[string]any)
 	if !isMap {
-		return "", "", false
+		return "", "", false, false
 	}
 	pvc, isMap := m["persistentVolumeClaim"].(map[string]any)
 	if !isMap {
-		return "", "", false
+		return "", "", false, false
 	}
-	if hot, _ := pvc["hotpluggable"].(bool); !hot { //nolint:errcheck // an entry of another shape is not a hotplug volume of ours
-		return "", "", false
-	}
-	name, _ = m["name"].(string)         //nolint:errcheck // an entry of another shape is not a hotplug volume of ours
-	claim, _ = pvc["claimName"].(string) //nolint:errcheck // an entry of another shape is not a hotplug volume of ours
-	return name, claim, true
+	hot, _ = pvc["hotpluggable"].(bool)  //nolint:errcheck // absent or another type is not hot-pluggable
+	name, _ = m["name"].(string)         //nolint:errcheck // an entry of another shape is not a volume of ours
+	claim, _ = pvc["claimName"].(string) //nolint:errcheck // an entry of another shape is not a volume of ours
+	return name, claim, hot, true
 }
 
 func validateVolumes(machine string, vols []hypervisor.Volume) error {
@@ -160,7 +165,9 @@ func (a *Agent) checkAttachable(ctx context.Context, machine string, vm *unstruc
 				continue
 			}
 			for _, ov := range templateSlice(o, "spec", "template", "spec", "volumes") {
-				if _, claim, ok := claimOf(ov); ok && claim == v.Claim {
+				// Any claim volume counts, including another machine's
+				// boot-from-claim root disk.
+				if _, claim, _, ok := pvcOf(ov); ok && claim == v.Claim {
 					return hypervisor.Permanent(fmt.Errorf("machine %s: claim %s is single-writer and already attached to %s", machine, v.Claim, o.GetName()))
 				}
 			}
