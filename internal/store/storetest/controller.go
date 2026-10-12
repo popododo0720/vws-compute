@@ -11,6 +11,9 @@ import (
 
 const volPrefix = "projects/p/zones/z/volumes/"
 
+// controllerSpec stores machine type n1.medium, which is not in the
+// catalog: an instance stored before unknown types were rejected (#45) must
+// still round-trip.
 func controllerSpec(id string, vol string, gen int64, power compute.Power) compute.InstanceSpec {
 	return compute.InstanceSpec{
 		ID: ok(compute.ParseInstanceID(id)), Generation: gen, CreatedAt: t0, ChangedAt: t0,
@@ -23,7 +26,7 @@ func controllerSpec(id string, vol string, gen int64, power compute.Power) compu
 
 func createIntent(id, vol string) compute.Intent {
 	return ok(compute.NewCreateInstance(compute.CreateInstanceParams{
-		ID: id, Project: "p", Zone: "z", MachineType: "n1.medium", Power: compute.PowerRunning, UserData: "#cloud-config",
+		ID: id, Project: "p", Zone: "z", MachineType: "vws.small", Power: compute.PowerRunning, UserData: "#cloud-config",
 		Volumes: []compute.VolumeAttachment{{Volume: ok(compute.ParseVolumeRef(volPrefix + vol)), DeviceName: "vda", Boot: true}},
 		NICs:    []compute.NetworkInterface{{DeviceName: "eth0", Subnet: "projects/p/regions/r/vpcs/v/subnets/s"}},
 	}))

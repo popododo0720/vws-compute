@@ -54,7 +54,7 @@ func createReq(id, req, volume string) *computev1.CreateInstanceRequest {
 		Instance: &computev1.Instance{
 			Labels: map[string]string{"app": "web"},
 			Spec: &computev1.InstanceSpec{
-				MachineType: "n1.medium", Power: computev1.InstancePower_INSTANCE_POWER_RUNNING, UserData: "#cloud-config",
+				MachineType: "vws.small", Power: computev1.InstancePower_INSTANCE_POWER_RUNNING, UserData: "#cloud-config",
 				Volumes: []*computev1.VolumeAttachment{{Volume: volBase + volume, DeviceName: "vda", Boot: true}},
 				NetworkInterfaces: []*computev1.NetworkInterface{{
 					DeviceName: "eth0", Subnet: "projects/demo/regions/r/vpcs/v/subnets/s",

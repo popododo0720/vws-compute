@@ -3,6 +3,7 @@ package grpcapi
 import (
 	"context"
 	"errors"
+	"strconv"
 
 	longrunningpb "cloud.google.com/go/longrunning/autogen/longrunningpb"
 	"google.golang.org/grpc/codes"
@@ -444,6 +445,9 @@ func validateCreateInstance(zone, name string, inst *computev1.Instance) error {
 	if !machineTypePattern.MatchString(spec.GetMachineType()) {
 		return invalidSpec("instance.spec.machine_type is invalid")
 	}
+	if err := knownMachineType(spec.GetMachineType()); err != nil {
+		return err
+	}
 	if spec.GetPower() != computev1.InstancePower_INSTANCE_POWER_RUNNING && spec.GetPower() != computev1.InstancePower_INSTANCE_POWER_STOPPED {
 		return invalidSpec("instance.spec.power must be RUNNING or STOPPED")
 	}
@@ -507,6 +511,9 @@ func validateVolumes(zone string, vols []*computev1.VolumeAttachment) error {
 
 func instanceSpecDelta(spec *computev1.InstanceSpec, cur compute.Instance) error {
 	if spec.GetMachineType() != "" && spec.GetMachineType() != cur.Spec.Type.Name() {
+		if err := knownMachineType(spec.GetMachineType()); err != nil {
+			return err
+		}
 		return invalidSpec("machine_type is immutable")
 	}
 	key := ""
@@ -518,6 +525,15 @@ func instanceSpecDelta(spec *computev1.InstanceSpec, cur compute.Instance) error
 	}
 	if spec.GetUserData() != "" || len(spec.GetNetworkInterfaces()) > 0 {
 		return invalidSpec("network interfaces and user_data are not mutable")
+	}
+	return nil
+}
+
+// knownMachineType rejects a machine type outside the catalog. Storing one
+// would give the machine 0 vCPU and 0 memory, which no agent can create.
+func knownMachineType(name string) error {
+	if _, err := compute.ParseInstanceType(name); err != nil {
+		return invalidSpec("instance.spec.machine_type " + strconv.Quote(name) + " is not a supported machine type")
 	}
 	return nil
 }
