@@ -63,7 +63,7 @@ func serveRepo(t *testing.T, repo store.Repository, opts ...grpcapi.Option) *har
 	ctl := controller.New(repo, controller.WithKick(rec.Kick))
 
 	lis := bufconn.Listen(1 << 20)
-	srv := grpc.NewServer()
+	srv := grpc.NewServer(grpc.WaitForHandlers(true))
 	grpcapi.Register(srv, ctl, repo, opts...)
 	ctx, cancel := context.WithCancel(context.Background())
 	stopped := make(chan struct{})

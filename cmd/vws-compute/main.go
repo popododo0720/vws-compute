@@ -79,7 +79,7 @@ func run(ctx context.Context, listen, db, seedImages, storage string) error {
 		defer closeStorage()
 		opts = append(opts, grpcapi.WithVolumes(lookup))
 	}
-	srv := grpc.NewServer()
+	srv := grpc.NewServer(grpc.WaitForHandlers(true))
 	grpcapi.Register(srv, ctl, repo, opts...)
 	served := make(chan error, 1)
 	go func() { served <- srv.Serve(lis) }()
