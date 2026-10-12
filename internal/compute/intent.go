@@ -3,6 +3,7 @@ package compute
 import (
 	"crypto/sha256"
 	"encoding/binary"
+	"fmt"
 	"hash"
 )
 
@@ -36,6 +37,11 @@ type setPower struct {
 	instance InstanceID
 	want     Power
 	patch    MetadataPatch
+	// volumes, when setVolumes is true, replaces a controller-driven
+	// instance's attachments: AttachVolume and DetachVolume through
+	// UpdateInstance.
+	setVolumes bool
+	volumes    []VolumeAttachment
 }
 
 type rebootInstance struct{ instance InstanceID }
@@ -137,6 +143,20 @@ func NewSetPower(instanceID string, power Power, patch MetadataPatch) (Intent, e
 		return nil, Errorf(CodeInvalid, "power must be running or stopped")
 	}
 	return newSetPower(instanceID, power, patch)
+}
+
+// NewUpdateInstanceSpec is NewSetPower that also replaces the volume
+// attachments of a controller-driven instance. The boot entry cannot change;
+// data volumes are attached and detached on a running machine.
+func NewUpdateInstanceSpec(instanceID string, power Power, volumes []VolumeAttachment, patch MetadataPatch) (Intent, error) {
+	in, err := NewSetPower(instanceID, power, patch)
+	if err != nil {
+		return nil, err
+	}
+	sp := in.(setPower)
+	sp.setVolumes = true
+	sp.volumes = append([]VolumeAttachment(nil), volumes...)
+	return sp, nil
 }
 
 func newSetPower(instanceID string, want Power, patch MetadataPatch) (Intent, error) {
@@ -371,9 +391,20 @@ func (in runInstance) encode(e *encoder) {
 	e.field(in.key.s)
 }
 
+// encode adds the volumes only when the intent sets them, so start, stop,
+// and terminate keep their persisted fingerprints.
 func (in setPower) encode(e *encoder) {
 	e.field(in.instance.s)
 	in.patch.encode(e)
+	if in.setVolumes {
+		e.field("volumes=")
+		e.field(fmt.Sprint(len(in.volumes)))
+		for _, a := range in.volumes {
+			e.field(a.Volume.s)
+			e.field(a.DeviceName)
+			e.field(fmt.Sprint(a.Boot))
+		}
+	}
 }
 func (in rebootInstance) encode(e *encoder) { e.field(in.instance.s) }
 

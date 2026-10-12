@@ -166,13 +166,13 @@ func (s *server) UpdateImage(ctx context.Context, r *computev1.UpdateImageReques
 		}
 		return doneOperation(project, name, commonv1.OperationVerb_OPERATION_VERB_UPDATE, r.GetRequestId(), nil)
 	}
-	rc, err := s.submit(ctx, r.GetRequestId(), in, err, func() error {
+	rc, err := s.submit(ctx, r.GetRequestId(), in, err, check(func() error {
 		cur, _, err := s.liveImage(ctx, body.GetName())
 		if err != nil {
 			return err
 		}
 		return checkEtag(body.GetEtag(), etagOf(cur.Spec.Generation, cur.Meta.Revision))
-	})
+	}))
 	if err != nil {
 		return nil, err
 	}
@@ -194,13 +194,13 @@ func (s *server) DeleteImage(ctx context.Context, r *computev1.DeleteImageReques
 		return nil, err
 	}
 	in, err := compute.NewDeregisterImage(id)
-	rc, err := s.submit(ctx, r.GetRequestId(), in, err, func() error {
+	rc, err := s.submit(ctx, r.GetRequestId(), in, err, check(func() error {
 		cur, _, err := s.liveImage(ctx, r.GetName())
 		if err != nil {
 			return err
 		}
 		return checkEtag(r.GetEtag(), etagOf(cur.Spec.Generation, cur.Meta.Revision))
-	})
+	}))
 	if err != nil {
 		return nil, err
 	}

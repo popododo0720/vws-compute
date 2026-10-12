@@ -247,7 +247,7 @@ func (s *Store) put(spec compute.Spec) error {
 	switch spec := spec.(type) {
 	case compute.InstanceSpec:
 		row, ok := s.instances[spec.ID.String()]
-		if !ok && spec.ControllerDriven() {
+		if spec.ControllerDriven() && spec.Power != compute.PowerTerminated {
 			if err := s.checkVolumes(spec); err != nil {
 				return err
 			}

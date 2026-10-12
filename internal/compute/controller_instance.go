@@ -11,6 +11,39 @@ type VolumeAttachment struct {
 	Volume     VolumeRef
 	DeviceName string
 	Boot       bool
+	// Claim is the PersistentVolumeClaim that backs the volume, as the
+	// storage service reports it in VolumeStatus.claim_name. The edge fills
+	// it from that answer; it is not part of the request, so it takes no
+	// part in fingerprints or in request matching.
+	Claim string
+}
+
+// sameAttachment compares what a caller asked for, not the claim.
+func sameAttachment(a, b VolumeAttachment) bool {
+	return a.Volume == b.Volume && a.DeviceName == b.DeviceName && a.Boot == b.Boot
+}
+
+// checkAttachments applies the instance.proto volume rules: device names
+// unique and non-empty, every volume in zone, exactly one boot entry.
+func checkAttachments(zone string, vols []VolumeAttachment) error {
+	devices := map[string]bool{}
+	boot := 0
+	for _, a := range vols {
+		if a.DeviceName == "" || devices[a.DeviceName] {
+			return Errorf(CodeInvalid, "volume device names must be unique and non-empty")
+		}
+		devices[a.DeviceName] = true
+		if segment(a.Volume.s, 3) != zone {
+			return Errorf(CodeInvalid, "volume %s is not in the instance zone", a.Volume)
+		}
+		if a.Boot {
+			boot++
+		}
+	}
+	if boot != 1 {
+		return Errorf(CodeInvalid, "volumes must include exactly one boot entry")
+	}
+	return nil
 }
 
 // NetworkInterface is one requested interface of a controller-driven instance.
@@ -179,22 +212,8 @@ func NewCreateInstance(p CreateInstanceParams) (Intent, error) {
 	if len(p.UserData) > MaxUserDataBytes {
 		return nil, Errorf(CodeInvalid, "user_data exceeds %d bytes", MaxUserDataBytes)
 	}
-	devices := map[string]bool{}
-	boot := 0
-	for _, a := range p.Volumes {
-		if a.DeviceName == "" || devices[a.DeviceName] {
-			return nil, Errorf(CodeInvalid, "volume device names must be unique and non-empty")
-		}
-		devices[a.DeviceName] = true
-		if segment(a.Volume.s, 3) != p.Zone {
-			return nil, Errorf(CodeInvalid, "volume %s is not in the instance zone", a.Volume)
-		}
-		if a.Boot {
-			boot++
-		}
-	}
-	if boot != 1 {
-		return nil, Errorf(CodeInvalid, "volumes must include exactly one boot entry")
+	if err := checkAttachments(p.Zone, p.Volumes); err != nil {
+		return nil, err
 	}
 	nics := map[string]bool{}
 	for _, n := range p.NICs {
@@ -306,7 +325,7 @@ func (in createInstance) matches(cur Instance) bool {
 		return false
 	}
 	for i, a := range s.Volumes {
-		if a != in.volumes[i] {
+		if !sameAttachment(a, in.volumes[i]) {
 			return false
 		}
 	}

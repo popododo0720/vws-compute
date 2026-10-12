@@ -23,6 +23,9 @@ type VolumeInfo struct {
 	Instance string
 	// Deleting is true once the volume is being removed.
 	Deleting bool
+	// ClaimName is the PersistentVolumeClaim behind the volume, from
+	// VolumeStatus.claim_name. Empty until storage has provisioned it.
+	ClaimName string
 }
 
 // VolumeLookup reads volumes from the storage service. Any error other than
@@ -48,6 +51,7 @@ func (s storageVolumes) Volume(ctx context.Context, name string) (VolumeInfo, er
 		Instance: v.GetStatus().GetInstance(),
 		Deleting: v.GetDeleteTime() != nil ||
 			v.GetStatus().GetObserved().GetState() == commonv1.ReconciliationState_RECONCILIATION_STATE_DELETING,
+		ClaimName: v.GetStatus().GetClaimName(),
 	}, nil
 }
 

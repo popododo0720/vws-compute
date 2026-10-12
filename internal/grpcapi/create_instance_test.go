@@ -13,6 +13,7 @@ import (
 	commonv1 "github.com/popododo0720/vws-proto/gen/go/vws/common/v1"
 	computev1 "github.com/popododo0720/vws-proto/gen/go/vws/compute/v1"
 
+	"github.com/popododo0720/vws-compute/internal/compute"
 	"github.com/popododo0720/vws-compute/internal/grpcapi"
 	"github.com/popododo0720/vws-compute/internal/store/memstore"
 )
@@ -67,7 +68,7 @@ func createReq(id, req, volume string) *computev1.CreateInstanceRequest {
 func TestCreateInstanceIsIdempotent(t *testing.T) {
 	ctx := context.Background()
 	repo := memstore.New()
-	st := &fakeStorage{vols: map[string]grpcapi.VolumeInfo{volBase + "root-1": {}, volBase + "root-2": {}}}
+	st := &fakeStorage{vols: map[string]grpcapi.VolumeInfo{volBase + "root-1": {ClaimName: "pvc-root-1"}, volBase + "root-2": {ClaimName: "pvc-root-2"}}}
 	h := serveRepo(t, repo, grpcapi.WithVolumes(st))
 
 	const req = "31313131-3131-4131-8131-313131313131"
@@ -148,11 +149,12 @@ func TestCreateInstanceIsIdempotent(t *testing.T) {
 func TestCreateInstanceVerifiesVolumes(t *testing.T) {
 	ctx := context.Background()
 	st := &fakeStorage{vols: map[string]grpcapi.VolumeInfo{
-		volBase + "ok":       {},
-		volBase + "going":    {Deleting: true},
-		volBase + "held":     {Instance: zoneParent + "/instances/other"},
-		volBase + "mine":     {Instance: zoneParent + "/instances/web"},
-		volBase + "no-owner": {},
+		volBase + "ok":       {ClaimName: "pvc-ok"},
+		volBase + "going":    {Deleting: true, ClaimName: "pvc-going"},
+		volBase + "held":     {Instance: zoneParent + "/instances/other", ClaimName: "pvc-held"},
+		volBase + "mine":     {Instance: zoneParent + "/instances/web", ClaimName: "pvc-mine"},
+		volBase + "no-owner": {ClaimName: "pvc-no-owner"},
+		volBase + "pending":  {},
 	}}
 	h := serveRepo(t, memstore.New(), grpcapi.WithVolumes(st))
 	n := 0
@@ -167,6 +169,7 @@ func TestCreateInstanceVerifiesVolumes(t *testing.T) {
 		"missing": {codes.FailedPrecondition, "DEPENDENCY_MISSING"},
 		"going":   {codes.FailedPrecondition, "DEPENDENCY_MISSING"},
 		"held":    {codes.FailedPrecondition, "VOLUME_IN_USE"},
+		"pending": {codes.FailedPrecondition, "VOLUME_NOT_PROVISIONED"},
 	} {
 		_, err := h.inst.CreateInstance(ctx, createReq("web", req(), vol))
 		wantCode(t, err, want.code)
@@ -202,4 +205,67 @@ func TestCreateInstanceNeedsStorage(t *testing.T) {
 	_, err := h.inst.CreateInstance(context.Background(), createReq("web", "", "root"))
 	wantCode(t, err, codes.FailedPrecondition)
 	wantReason(t, err, "DEPENDENCY_MISSING")
+}
+
+// TestUpdateInstanceAttachesAndDetachesVolumes: volumes are mutable through
+// UpdateInstance, carry the claim storage reports, and keep the boot entry.
+func TestUpdateInstanceAttachesAndDetachesVolumes(t *testing.T) {
+	ctx := context.Background()
+	repo := memstore.New()
+	st := &fakeStorage{vols: map[string]grpcapi.VolumeInfo{
+		volBase + "root-1":  {ClaimName: "pvc-root-1"},
+		volBase + "root-2":  {ClaimName: "pvc-root-2"},
+		volBase + "data":    {ClaimName: "pvc-data"},
+		volBase + "held":    {Instance: zoneParent + "/instances/other", ClaimName: "pvc-held"},
+		volBase + "pending": {},
+	}}
+	h := serveRepo(t, repo, grpcapi.WithVolumes(st))
+	if _, err := h.inst.CreateInstance(ctx, createReq("web-1", "51515151-5151-4151-8151-515151515151", "root-1")); err != nil {
+		t.Fatal(err)
+	}
+	name := zoneParent + "/instances/web-1"
+	id, _ := compute.ParseInstanceID("web-1")
+	if got, err := repo.Instance(ctx, id); err != nil || got.Spec.Volumes[0].Claim != "pvc-root-1" {
+		t.Fatalf("create stored %+v, %v; want claim pvc-root-1", got.Spec.Volumes, err)
+	}
+	n := 0
+	update := func(vols ...*computev1.VolumeAttachment) error {
+		n++
+		_, err := h.inst.UpdateInstance(ctx, &computev1.UpdateInstanceRequest{
+			RequestId: "6161616" + string(rune('0'+n)) + "-6161-4161-8161-616161616161",
+			Instance: &computev1.Instance{Name: name, Spec: &computev1.InstanceSpec{
+				Power: computev1.InstancePower_INSTANCE_POWER_RUNNING, Volumes: vols,
+			}},
+		})
+		return err
+	}
+	root := &computev1.VolumeAttachment{Volume: volBase + "root-1", DeviceName: "vda", Boot: true}
+	att := func(vol string) *computev1.VolumeAttachment {
+		return &computev1.VolumeAttachment{Volume: volBase + vol, DeviceName: "vdb"}
+	}
+
+	if err := update(root, att("data")); err != nil {
+		t.Fatalf("attach: %v", err)
+	}
+	got, _ := repo.Instance(ctx, id)
+	if got.Spec.Generation != 2 || len(got.Spec.Volumes) != 2 || got.Spec.Volumes[1].Claim != "pvc-data" {
+		t.Fatalf("after attach = gen %d %+v", got.Spec.Generation, got.Spec.Volumes)
+	}
+	if err := update(root); err != nil {
+		t.Fatalf("detach: %v", err)
+	}
+	if got, _ := repo.Instance(ctx, id); got.Spec.Generation != 3 || len(got.Spec.Volumes) != 1 {
+		t.Fatalf("after detach = gen %d %+v", got.Spec.Generation, got.Spec.Volumes)
+	}
+
+	err := update(root, att("held"))
+	wantCode(t, err, codes.FailedPrecondition)
+	wantReason(t, err, "VOLUME_IN_USE")
+	err = update(root, att("pending"))
+	wantReason(t, err, "VOLUME_NOT_PROVISIONED")
+	err = update(&computev1.VolumeAttachment{Volume: volBase + "root-2", DeviceName: "vda", Boot: true})
+	wantCode(t, err, codes.InvalidArgument)
+	if got, _ := repo.Instance(ctx, id); got.Spec.Generation != 3 {
+		t.Fatalf("a refused update wrote generation %d", got.Spec.Generation)
+	}
 }

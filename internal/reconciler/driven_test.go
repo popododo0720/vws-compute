@@ -109,3 +109,31 @@ func TestDrivenRestartRebuildsTheAgent(t *testing.T) {
 		}
 	})
 }
+
+// TestDrivenVolumesReachTheAgent: attached data volumes reach the agent by
+// device name and storage claim, a detach removes them, and the boot entry
+// is never a data volume.
+func TestDrivenVolumesReachTheAgent(t *testing.T) {
+	eachStore(t, func(h *harness) {
+		drivenHarness(h)
+		h.submit("create", createInstance("web"))
+		h.sweep()
+		boot := compute.VolumeAttachment{Volume: ok(compute.ParseVolumeRef(bootVolume)), DeviceName: "vda", Boot: true}
+		data := compute.VolumeAttachment{Volume: ok(compute.ParseVolumeRef("projects/p/zones/z/volumes/data")), DeviceName: "vdb", Claim: "pvc-data"}
+
+		attach := h.submit("attach", ok(compute.NewUpdateInstanceSpec("web", compute.PowerRunning, []compute.VolumeAttachment{boot, data}, compute.MetadataPatch{})))
+		h.sweep()
+		h.wantStates(compute.OperationSucceeded, attach)
+		m, _ := h.agent.Machine("web")
+		if len(m.Volumes) != 1 || m.Volumes[0] != (hypervisor.Volume{Name: "vdb", Claim: "pvc-data"}) {
+			h.t.Fatalf("agent volumes after attach = %+v", m.Volumes)
+		}
+
+		detach := h.submit("detach", ok(compute.NewUpdateInstanceSpec("web", compute.PowerRunning, []compute.VolumeAttachment{boot}, compute.MetadataPatch{})))
+		h.sweep()
+		h.wantStates(compute.OperationSucceeded, detach)
+		if m, _ := h.agent.Machine("web"); len(m.Volumes) != 0 {
+			h.t.Fatalf("agent volumes after detach = %+v", m.Volumes)
+		}
+	})
+}
