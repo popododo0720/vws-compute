@@ -149,14 +149,15 @@ func NewSetPower(instanceID string, power Power, patch MetadataPatch) (Intent, e
 // attachments of a controller-driven instance. The boot entry cannot change;
 // data volumes are attached and detached on a running machine.
 func NewUpdateInstanceSpec(instanceID string, power Power, volumes []VolumeAttachment, patch MetadataPatch) (Intent, error) {
-	in, err := NewSetPower(instanceID, power, patch)
+	if power != PowerRunning && power != PowerStopped {
+		return nil, Errorf(CodeInvalid, "power must be running or stopped")
+	}
+	id, err := ParseInstanceID(instanceID)
 	if err != nil {
 		return nil, err
 	}
-	sp := in.(setPower)
-	sp.setVolumes = true
-	sp.volumes = append([]VolumeAttachment(nil), volumes...)
-	return sp, nil
+	return setPower{instance: id, want: power, patch: patch, setVolumes: true,
+		volumes: append([]VolumeAttachment(nil), volumes...)}, nil
 }
 
 func newSetPower(instanceID string, want Power, patch MetadataPatch) (Intent, error) {
