@@ -11,7 +11,7 @@ Rules for anyone changing this repository, human or agent. A rule with an enforc
 | `internal/store/memstore`, `internal/store/sqlitestore` | The two repositories. |
 | `internal/controller` | `Submit`, the only mutation path. |
 | `internal/reconciler` | The loop that converges the agent toward desired state. |
-| `internal/hypervisor` | The agent contract. `fakeagent` implements it in memory. |
+| `internal/hypervisor` | The agent contract. `fakeagent` implements it in memory. `kubevirt` implements it with KubeVirt `VirtualMachine` objects. |
 | `internal/grpcapi` | The gRPC edge. Wire stubs come from `github.com/popododo0720/vws-proto`. |
 | `cmd/vws-compute` | Wiring, flags (`-storage` is the vws-storage address), and the `-seed-images` loader. |
 
@@ -22,7 +22,9 @@ Rules for anyone changing this repository, human or agent. A rule with an enforc
 | Only `internal/controller` calls `CommitDesired`, and it never imports `internal/hypervisor`. | `TestArchitectureRules` in `internal/archtest` |
 | Only `internal/reconciler` calls `CommitInstanceStatus`, `CommitImageStatus`, `ConvergeMachine`, and `ConvergeImage`. | `TestArchitectureRules` |
 | `internal/compute` imports nothing from this module and no gRPC, protobuf, `database/sql`, or SQLite package. | `TestArchitectureRules` |
-| `internal/hypervisor` imports nothing from this module. `fakeagent` imports only `internal/hypervisor`. | `TestArchitectureRules` |
+| `internal/hypervisor` imports nothing from this module. `fakeagent` and `kubevirt` import only `internal/hypervisor`. | `TestArchitectureRules` |
+| Kubernetes client packages (`k8s.io`, `sigs.k8s.io`) stay in `internal/hypervisor/kubevirt`. | `TestArchitectureRules` |
+| Converging a machine twice, or from a fresh agent, writes the Kubernetes API once. A power flip is one patch. | `TestConvergeTwiceMakesOneObject`, `TestNewAgentDoesNotDuplicate`, `TestPowerFlipsWithOnePatch` (envtest) |
 | Wire types stay under `internal/grpcapi`. | Go `internal/` visibility and `TestArchitectureRules` |
 | `database/sql` and the SQLite driver stay in `sqlitestore`, and its row structs stay unexported. | `TestArchitectureRules` |
 | Production packages do not import `testing`. `storetest` is the one declared exception. | `TestArchitectureRules` |
@@ -47,7 +49,7 @@ Rules for anyone changing this repository, human or agent. A rule with an enforc
 | No rights or mark notices outside `LICENSE`. | `TestNoTrademarkNotices` |
 | No container or chart deploy manifests. | `TestNoDeployManifests` |
 | Code is gofmt and goimports clean and passes vet, staticcheck, errcheck, ineffassign, unused, and misspell. `third_party` is excluded. | `golangci-lint` v2.14.0 in CI |
-| `go test ./...` passes. | CI |
+| `go test ./...` passes. The envtest tests skip unless `KUBEBUILDER_ASSETS` points at `kube-apiserver` and `etcd`. | CI |
 | Work on a feature branch. Never commit to `main`. | Judgment |
 | Each commit is one logical change and leaves `go test ./...` passing. | Judgment |
 | Use pstack. Run `architect` before code that crosses a package boundary, `interrogate` on a contested design, and `correct` when the same mistake comes back. | Judgment |
