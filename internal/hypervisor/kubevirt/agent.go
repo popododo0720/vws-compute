@@ -178,6 +178,7 @@ func memory(mib int) string { return strconv.Itoa(mib) + "Mi" }
 
 // update brings an existing VirtualMachine to spec with at most one patch.
 // Image, root disk, and authorized keys are fixed at creation, as on EC2.
+// Data volumes are not: they attach and detach while the machine runs.
 func (a *Agent) update(ctx context.Context, vm *unstructured.Unstructured, spec hypervisor.MachineSpec) error {
 	if vm.GetLabels()[LabelManaged] != "true" {
 		return hypervisor.Permanent(fmt.Errorf("machine %s: a VirtualMachine with that name exists and is not managed here", spec.Name))
@@ -229,6 +230,20 @@ func (a *Agent) update(ctx context.Context, vm *unstructured.Unstructured, spec 
 		if q, err := resource.ParseQuantity(have); err != nil || q.Cmp(resource.MustParse(memory(spec.MemoryMiB))) != 0 {
 			set([]string{"spec", "template", "spec", "domain", "memory", "guest"}, memory(spec.MemoryMiB))
 		}
+	}
+
+	if err := validateVolumes(spec.Name, spec.Volumes); err != nil {
+		return err
+	}
+	if volumes, disks, changed := volumeChange(vm, spec.Volumes); changed {
+		if err := a.checkAttachable(ctx, spec.Name, vm, spec.Volumes); err != nil {
+			return err
+		}
+		set([]string{"spec", "template", "spec", "volumes"}, volumes)
+		set([]string{"spec", "template", "spec", "domain", "devices", "disks"}, disks)
+		// A merge patch replaces both lists whole, so it must not land on a
+		// VirtualMachine that changed after we read it.
+		set([]string{"metadata", "resourceVersion"}, vm.GetResourceVersion())
 	}
 
 	if reboot {

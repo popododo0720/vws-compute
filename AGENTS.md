@@ -26,6 +26,7 @@ Rules for anyone changing this repository, human or agent. A rule with an enforc
 | Kubernetes client packages (`k8s.io`, `sigs.k8s.io`) stay in `internal/hypervisor/kubevirt` and `internal/store/kubestore`. | `TestArchitectureRules` |
 | Converging a machine twice, or from a fresh agent, writes the Kubernetes API once. A power flip is one patch. | `TestConvergeTwiceMakesOneObject`, `TestNewAgentDoesNotDuplicate`, `TestPowerFlipsWithOnePatch` (envtest) |
 | An image is a CDI `DataVolume` and `DataSource` named by the image ID. Its size is the bound claim's capacity once the `DataVolume` succeeded. Removal fails while a `VirtualMachine` clones from it. | `TestImageIsCreatedOnceAndSizedByTheClaim` and `TestRemoveImageRefusedWhileAMachineClonesIt` (envtest) |
+| Data volumes attach and detach as hot-pluggable PVC volumes with one patch each. A repeat writes nothing. A single-writer claim already attached to another machine is refused permanently. | `TestVolumesAttachAndDetachOnARunningMachine`, `TestAttachPatchesOnceAndKeepsCloudInit`, `TestSingleWriterClaimIsRefusedWhileAttachedElsewhere` (envtest) |
 | Wire types stay under `internal/grpcapi`. | Go `internal/` visibility and `TestArchitectureRules` |
 | No `database/sql` or SQLite driver. `kubestore` exports only `Store`, `Repaired`, and `Open`/`New`, and its record structs stay unexported. | `TestArchitectureRules` |
 | Production packages do not import `testing`. `storetest` is the one declared exception. | `TestArchitectureRules` |
