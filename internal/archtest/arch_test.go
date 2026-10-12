@@ -54,6 +54,8 @@ var packageRules = []struct {
 	{"internal/hypervisor", isModule, "the agent contract imports nothing from this module"},
 	{"internal/hypervisor/fakeagent", func(imp string) bool { return isModule(imp) && imp != module+"/internal/hypervisor" },
 		"the fake agent sees only the agent contract"},
+	{"internal/hypervisor/kubevirt", func(imp string) bool { return isModule(imp) && imp != module+"/internal/hypervisor" },
+		"the KubeVirt agent sees only the agent contract"},
 	{"internal/compute", func(imp string) bool {
 		return isModule(imp) || hasPrefix("google.golang.org/grpc", "google.golang.org/protobuf",
 			"google.golang.org/genproto", "database/sql", "modernc.org/sqlite")(imp)
@@ -71,6 +73,7 @@ var ownerRules = []struct {
 	{hasPrefix("google.golang.org/protobuf", "google.golang.org/genproto", "github.com/popododo0720/vws-proto", "cloud.google.com/go/longrunning"),
 		[]string{"internal/grpcapi"}, "wire types stay in grpcapi"},
 	{hasPrefix("google.golang.org/grpc"), []string{"internal/grpcapi", "cmd/vws-compute"}, "gRPC stays at the edge"},
+	{hasPrefix("k8s.io", "sigs.k8s.io"), []string{"internal/hypervisor/kubevirt"}, "Kubernetes client types stay in the KubeVirt agent"},
 	{func(imp string) bool { return imp == "testing" }, testSupport, "production code does not import testing"},
 }
 
@@ -201,6 +204,8 @@ func TestArchitectureRules(t *testing.T) {
 		"internal/grpcapi/s.go":             `package grpcapi; func f(s S) { g := s.CommitDesired; _ = g; s.SyncNode(); s.ReportInstanceStatus() }`,
 		"internal/reconciler/n.go":          `package reconciler; func g(s S) { s.SyncNode() }`,
 		"internal/reconciler/r.go":          `package reconciler; func f(s S, a A) { s.CommitImageStatus(); a.ConvergeMachine() }`,
+		"internal/widget/k.go":              `package widget; import _ "k8s.io/apimachinery/pkg/types"`,
+		"internal/hypervisor/kubevirt/k.go": `package kubevirt; import _ "` + module + `/internal/compute"`,
 		"internal/widget/w.go":              `package widget; import "testing"; var _ testing.TB`,
 		"internal/store/storetest/s.go":     `package storetest; import "testing"; func f(s S, _ *testing.T) { s.CommitInstanceStatus() }`,
 		"internal/store/sqlitestore/r.go":   `package sqlitestore; type Store struct{}; type InstanceRow struct{}`,
@@ -216,6 +221,8 @@ func TestArchitectureRules(t *testing.T) {
 		"internal/reconciler uses SyncNode: only the node service writes heartbeats and node-reported status",
 		"internal/hypervisor imports " + module + "/internal/compute: the agent contract imports nothing from this module",
 		"internal/store/sqlitestore exports type InstanceRow: storage rows stay unexported",
+		"internal/widget imports k8s.io/apimachinery/pkg/types: Kubernetes client types stay in the KubeVirt agent",
+		"internal/hypervisor/kubevirt imports " + module + "/internal/compute: the KubeVirt agent sees only the agent contract",
 		"internal/widget imports testing: production code does not import testing",
 	}
 	sort.Strings(want)

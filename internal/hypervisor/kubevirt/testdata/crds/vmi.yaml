@@ -1,0 +1,24 @@
+# A stand-in for the KubeVirt CRD. It declares the kind and keeps every field,
+# so envtest exercises the API machinery but not KubeVirt's own validation.
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: virtualmachineinstances.kubevirt.io
+spec:
+  group: kubevirt.io
+  scope: Namespaced
+  names:
+    kind: VirtualMachineInstance
+    listKind: VirtualMachineInstanceList
+    plural: virtualmachineinstances
+    singular: virtualmachineinstance
+  versions:
+    - name: v1
+      served: true
+      storage: true
+      subresources:
+        status: {}
+      schema:
+        openAPIV3Schema:
+          type: object
+          x-kubernetes-preserve-unknown-fields: true

@@ -1,0 +1,264 @@
+// Package kubevirt is a hypervisor.Agent that runs machines as KubeVirt
+// VirtualMachine objects.
+//
+// The Kubernetes API is the only store. A machine is one VirtualMachine named
+// by its instance ID. Power is spec.runStrategy: Always for on, Halted for
+// off. Placement, restart after a node loss, and the guest lifecycle belong
+// to kube-scheduler, kubelet, and KubeVirt, so this package keeps no state
+// and calling it again with the same spec changes nothing.
+//
+// Objects are unstructured on purpose. The package needs five fields of a
+// type it does not own, and the KubeVirt Go API would pull in its whole tree.
+package kubevirt
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"strconv"
+
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/validation"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	"github.com/popododo0720/vws-compute/internal/hypervisor"
+)
+
+var _ hypervisor.Agent = (*Agent)(nil)
+
+var (
+	vmGVK  = schema.GroupVersionKind{Group: "kubevirt.io", Version: "v1", Kind: "VirtualMachine"}
+	vmiGVK = schema.GroupVersionKind{Group: "kubevirt.io", Version: "v1", Kind: "VirtualMachineInstance"}
+)
+
+const (
+	// LabelManaged marks a VirtualMachine this package owns.
+	LabelManaged = "vws.io/managed"
+	// AnnotationRebootEpoch holds the last reboot epoch applied to a machine.
+	AnnotationRebootEpoch = "vws.io/reboot-epoch"
+
+	runAlways = "Always"
+	runHalted = "Halted"
+)
+
+// Config says where objects live.
+type Config struct {
+	// Namespace holds VirtualMachines.
+	Namespace string
+	// ImageNamespace holds the CDI DataSources that root disks clone from.
+	// Empty means Namespace.
+	ImageNamespace string
+}
+
+// Agent converges machines through the Kubernetes API. It is safe for
+// concurrent use.
+type Agent struct {
+	c   client.Client
+	cfg Config
+}
+
+func New(c client.Client, cfg Config) *Agent {
+	if cfg.ImageNamespace == "" {
+		cfg.ImageNamespace = cfg.Namespace
+	}
+	return &Agent{c: c, cfg: cfg}
+}
+
+func (a *Agent) ConvergeMachine(ctx context.Context, spec hypervisor.MachineSpec) error {
+	if errs := validation.IsDNS1123Label(spec.Name); len(errs) > 0 {
+		return hypervisor.Permanent(fmt.Errorf("machine %q: not a valid object name: %s", spec.Name, errs[0]))
+	}
+	switch spec.Power {
+	case hypervisor.PowerAbsent:
+		return a.destroy(ctx, spec.Name)
+	case hypervisor.PowerOff, hypervisor.PowerOn:
+	default:
+		return hypervisor.Permanent(fmt.Errorf("machine %s: invalid power %d", spec.Name, spec.Power))
+	}
+
+	// A create racing another writer loses with AlreadyExists. One more pass
+	// reads the winner and converges it.
+	for range 2 {
+		vm := new(unstructured.Unstructured)
+		vm.SetGroupVersionKind(vmGVK)
+		err := a.c.Get(ctx, client.ObjectKey{Namespace: a.cfg.Namespace, Name: spec.Name}, vm)
+		if apierrors.IsNotFound(err) {
+			err := a.create(ctx, spec)
+			if apierrors.IsAlreadyExists(err) {
+				continue
+			}
+			return err
+		}
+		if err != nil {
+			return err
+		}
+		return a.update(ctx, vm, spec)
+	}
+	return fmt.Errorf("machine %s: lost a create race twice", spec.Name)
+}
+
+func (a *Agent) ConvergeImage(context.Context, hypervisor.ImageSpec) (int64, error) {
+	return 0, hypervisor.Permanent(errors.New("kubevirt agent: images are not implemented yet"))
+}
+
+func (a *Agent) destroy(ctx context.Context, name string) error {
+	vm := new(unstructured.Unstructured)
+	vm.SetGroupVersionKind(vmGVK)
+	vm.SetNamespace(a.cfg.Namespace)
+	vm.SetName(name)
+	// Background deletion lets the garbage collector remove the owned root
+	// disk after the VirtualMachine is gone.
+	err := a.c.Delete(ctx, vm, client.PropagationPolicy(metav1.DeletePropagationBackground))
+	return client.IgnoreNotFound(err)
+}
+
+func (a *Agent) create(ctx context.Context, spec hypervisor.MachineSpec) error {
+	if spec.Image == "" || spec.VCPUs <= 0 || spec.MemoryMiB <= 0 {
+		return hypervisor.Permanent(fmt.Errorf("machine %s: need an image, vcpus, and memory to create", spec.Name))
+	}
+	if errs := validation.IsDNS1123Subdomain(spec.Image); len(errs) > 0 {
+		return hypervisor.Permanent(fmt.Errorf("machine %s: image %q is not a valid object name", spec.Name, spec.Image))
+	}
+	run := runHalted
+	if spec.Power == hypervisor.PowerOn {
+		run = runAlways
+	}
+	rootDisk := spec.Name + "-root"
+	disks := []any{map[string]any{"name": "rootdisk", "disk": map[string]any{"bus": "virtio"}}}
+	volumes := []any{map[string]any{"name": "rootdisk", "dataVolume": map[string]any{"name": rootDisk}}}
+	if len(spec.AuthorizedKeys) > 0 {
+		keys, err := json.Marshal(spec.AuthorizedKeys)
+		if err != nil {
+			return hypervisor.Permanent(err)
+		}
+		disks = append(disks, map[string]any{"name": "cloudinitdisk", "disk": map[string]any{"bus": "virtio"}})
+		volumes = append(volumes, map[string]any{
+			"name":             "cloudinitdisk",
+			"cloudInitNoCloud": map[string]any{"userData": "#cloud-config\nssh_authorized_keys: " + string(keys) + "\n"},
+		})
+	}
+	vm := &unstructured.Unstructured{Object: map[string]any{
+		"spec": map[string]any{
+			"runStrategy": run,
+			"dataVolumeTemplates": []any{map[string]any{
+				"metadata": map[string]any{"name": rootDisk},
+				"spec": map[string]any{
+					"sourceRef": map[string]any{"kind": "DataSource", "name": spec.Image, "namespace": a.cfg.ImageNamespace},
+					"storage":   map[string]any{},
+				},
+			}},
+			"template": map[string]any{
+				"metadata": map[string]any{"labels": map[string]any{"vws.io/instance": spec.Name}},
+				"spec": map[string]any{
+					"domain": map[string]any{
+						"cpu":     map[string]any{"cores": int64(spec.VCPUs)},
+						"memory":  map[string]any{"guest": memory(spec.MemoryMiB)},
+						"devices": map[string]any{"disks": disks},
+					},
+					"volumes": volumes,
+				},
+			},
+		},
+	}}
+	vm.SetGroupVersionKind(vmGVK)
+	vm.SetNamespace(a.cfg.Namespace)
+	vm.SetName(spec.Name)
+	vm.SetLabels(map[string]string{LabelManaged: "true"})
+	vm.SetAnnotations(map[string]string{AnnotationRebootEpoch: strconv.FormatUint(uint64(spec.RebootEpoch), 10)})
+	return a.c.Create(ctx, vm)
+}
+
+func memory(mib int) string { return strconv.Itoa(mib) + "Mi" }
+
+// update brings an existing VirtualMachine to spec with at most one patch.
+// Image, root disk, and authorized keys are fixed at creation, as on EC2.
+func (a *Agent) update(ctx context.Context, vm *unstructured.Unstructured, spec hypervisor.MachineSpec) error {
+	if vm.GetLabels()[LabelManaged] != "true" {
+		return hypervisor.Permanent(fmt.Errorf("machine %s: a VirtualMachine with that name exists and is not managed here", spec.Name))
+	}
+	if vm.GetDeletionTimestamp() != nil {
+		return fmt.Errorf("machine %s: previous VirtualMachine is still being deleted", spec.Name)
+	}
+	patch := map[string]any{}
+	set := func(path []string, v any) {
+		m := patch
+		for _, k := range path[:len(path)-1] {
+			next, ok := m[k].(map[string]any)
+			if !ok {
+				next = map[string]any{}
+				m[k] = next
+			}
+			m = next
+		}
+		m[path[len(path)-1]] = v
+	}
+
+	wantRun := runHalted
+	if spec.Power == hypervisor.PowerOn {
+		wantRun = runAlways
+	}
+	haveRun, _, _ := unstructured.NestedString(vm.Object, "spec", "runStrategy")
+	applied := appliedEpoch(vm)
+	reboot := false
+	switch {
+	case haveRun != wantRun:
+		set([]string{"spec", "runStrategy"}, wantRun)
+		if wantRun == runAlways {
+			// Booting applies the epoch without an extra reboot.
+			set([]string{"metadata", "annotations", AnnotationRebootEpoch}, epoch(spec.RebootEpoch))
+		}
+	case wantRun == runAlways && applied < spec.RebootEpoch:
+		reboot = true
+		set([]string{"metadata", "annotations", AnnotationRebootEpoch}, epoch(spec.RebootEpoch))
+	}
+
+	if spec.VCPUs > 0 {
+		have, _, _ := unstructured.NestedInt64(vm.Object, "spec", "template", "spec", "domain", "cpu", "cores")
+		if have != int64(spec.VCPUs) {
+			set([]string{"spec", "template", "spec", "domain", "cpu", "cores"}, int64(spec.VCPUs))
+		}
+	}
+	if spec.MemoryMiB > 0 {
+		have, _, _ := unstructured.NestedString(vm.Object, "spec", "template", "spec", "domain", "memory", "guest")
+		if q, err := resource.ParseQuantity(have); err != nil || q.Cmp(resource.MustParse(memory(spec.MemoryMiB))) != 0 {
+			set([]string{"spec", "template", "spec", "domain", "memory", "guest"}, memory(spec.MemoryMiB))
+		}
+	}
+
+	if reboot {
+		// The VirtualMachine stays Always, so KubeVirt starts a fresh
+		// instance. A crash between this delete and the patch below repeats
+		// the reboot once, which is the cheaper failure than losing it.
+		vmi := new(unstructured.Unstructured)
+		vmi.SetGroupVersionKind(vmiGVK)
+		vmi.SetNamespace(a.cfg.Namespace)
+		vmi.SetName(spec.Name)
+		if err := client.IgnoreNotFound(a.c.Delete(ctx, vmi)); err != nil {
+			return err
+		}
+	}
+	if len(patch) == 0 {
+		return nil
+	}
+	raw, err := json.Marshal(patch)
+	if err != nil {
+		return hypervisor.Permanent(err)
+	}
+	return a.c.Patch(ctx, vm, client.RawPatch(types.MergePatchType, raw))
+}
+
+func epoch(n uint32) string { return strconv.FormatUint(uint64(n), 10) }
+
+func appliedEpoch(vm *unstructured.Unstructured) uint32 {
+	n, err := strconv.ParseUint(vm.GetAnnotations()[AnnotationRebootEpoch], 10, 32)
+	if err != nil {
+		return 0
+	}
+	return uint32(n)
+}
