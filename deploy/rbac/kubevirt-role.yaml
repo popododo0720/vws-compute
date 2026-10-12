@@ -23,6 +23,12 @@ rules:
     resources: ["virtualmachineinstances"]
     # delete: agent.go update, reboot deletes the VMI so KubeVirt starts a new one.
     verbs: ["delete"]
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    # get: volumes.go checkAttachable (Get of the claim, about line 139) reads
+    # the claim access modes before a volume is attached. A missing claim is
+    # reported as transient, so a denied get would fail every attach.
+    verbs: ["get"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

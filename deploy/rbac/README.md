@@ -11,6 +11,9 @@ Change the `namespace` fields together with the flags. The service account is
 
 Apply: `kubectl apply -f deploy/rbac/`.
 
+Granted in the VM namespace: `get` on PVCs, because `volumes.go`
+`checkAttachable` reads the claim access modes before an attach. vws-storage
+creates the volume PVCs; vws-compute only reads them.
+
 Not granted, because no code calls it: secrets, network-attachment-definitions,
-`virtualmachines/addvolume` (hotplug, PR #22), and PVCs in the VM namespace.
-vws-storage creates the volume PVCs and owns that permission.
+`virtualmachines/addvolume` (hotplug), and `create`, `list`, `delete` on PVCs.
