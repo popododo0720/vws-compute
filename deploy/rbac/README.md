@@ -15,5 +15,10 @@ Granted in the VM namespace: `get` on PVCs, because `volumes.go`
 `checkAttachable` reads the claim access modes before an attach. vws-storage
 creates the volume PVCs; vws-compute only reads them.
 
+Cross-namespace clone: VMs clone from a DataSource in `vws-images`, so the VM
+namespace `default` service account gets `create` on `datavolumes/source` in
+`vws-images` (`vws-compute-image-clone`). CDI `doc/RBAC.md` (PVC Cloning) and
+KubeVirt PR #2509 describe the check. Not verified on a real cluster.
+
 Not granted, because no code calls it: secrets, network-attachment-definitions,
 `virtualmachines/addvolume` (hotplug), and `create`, `list`, `delete` on PVCs.

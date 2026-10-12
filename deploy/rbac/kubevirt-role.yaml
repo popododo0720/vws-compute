@@ -78,3 +78,37 @@ subjects:
   - kind: ServiceAccount
     name: vws-compute
     namespace: vws-compute
+---
+# Cross-namespace clone authorization for VMs created by agent.go create with
+# a dataVolumeTemplates sourceRef to a DataSource in the image namespace.
+# KubeVirt's VM webhook and virt-controller check that the VM's service account
+# (the "default" account of the VM namespace unless a volume names another) may
+# create datavolumes/source in the clone source namespace. The subject is
+# therefore the VM namespace account, not vws-compute.
+# Sources: CDI doc/RBAC.md "PVC Cloning"; KubeVirt PR #2509 and
+# pkg/virt-controller/watch/vm authorizeDataVolume.
+# Unverified on a cluster: whether CDI also requires a DataSource-specific
+# permission when it resolves a sourceRef.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: vws-compute-image-clone
+  namespace: vws-images
+rules:
+  - apiGroups: ["cdi.kubevirt.io"]
+    resources: ["datavolumes/source"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: vws-compute-image-clone
+  namespace: vws-images
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: vws-compute-image-clone
+subjects:
+  - kind: ServiceAccount
+    name: default
+    namespace: vws-vms
