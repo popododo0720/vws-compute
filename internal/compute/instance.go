@@ -28,7 +28,7 @@ type InstanceSpec struct {
 	// Deleting the key pair later does not change it. Nil means no key.
 	Key   *AuthorizedKey
 	Power Power
-	// Project, Zone, Volumes, NICs, and UserData describe a node-driven
+	// Project, Zone, Volumes, NICs, and UserData describe a controller-driven
 	// instance, one created by CreateInstance. Zone is empty for a
 	// RunInstance instance, which has an Image and no volumes. The slices
 	// are never shared: stores copy them in and out.
@@ -74,12 +74,8 @@ type InstanceStatus struct {
 	RebootEpoch uint32
 	Retry       Retry
 	UpdatedAt   time.Time
-	// AssignedNode is the node placement chose, a full node resource name.
-	// Placement is its only writer. It is set once, while empty, and no
-	// status commit changes it. Only node-driven instances are placed.
-	AssignedNode string
-	// Report is the last accepted node report. Only ApplyReport sets it.
-	Report NodeReport
+	// Report is the last accepted controller report. Only ApplyReport sets it.
+	Report Report
 }
 
 // Instance is the merged read model: desired spec plus observed status.

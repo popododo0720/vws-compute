@@ -91,14 +91,6 @@ type KeyPairQuery struct {
 	After    string
 }
 
-// NodeQuery selects nodes whose name starts with Prefix and is greater than
-// After. An empty Prefix means every node.
-type NodeQuery struct {
-	Prefix   string
-	PageSize int
-	After    string
-}
-
 // Reader reads merged desired and observed state. Every returned value is a
 // copy that shares no memory with the store. Missing resources fail with
 // compute.CodeNotFound.
@@ -112,8 +104,6 @@ type Reader interface {
 	// live, the most recently changed tombstone with that name.
 	KeyPairByName(ctx context.Context, name compute.KeyName) (compute.KeyPair, error)
 	KeyPairs(ctx context.Context, q KeyPairQuery) (Page[compute.KeyPair], error)
-	Node(ctx context.Context, name compute.NodeName) (compute.Node, error)
-	Nodes(ctx context.Context, q NodeQuery) (Page[compute.Node], error)
 	Operation(ctx context.Context, id compute.OperationID) (compute.Operation, error)
 	OperationByRequest(ctx context.Context, req compute.RequestID) (compute.Operation, error)
 }
@@ -155,13 +145,10 @@ type DesiredStore interface {
 	//     compute.Settle(c.Op, specGen, observed, c.Op.CreatedAt) and return
 	//     it. A MetadataOnly operation comes back Succeeded.
 	//
-	// A node-driven instance is also checked and placed here. Creating one
-	// fails with compute.CodeFailedPrecondition when a live instance already
-	// holds one of its volumes, and then, in the same transaction, runs
-	// placement for its project and zone at c.Op.CreatedAt. Accepting a
-	// terminate for a node-driven instance that has no assigned node marks
-	// that generation observed, so its operation settles at once. Nothing
-	// will report it.
+	// A controller-driven instance is also checked here. Creating one fails
+	// with compute.CodeFailedPrecondition when a live instance already holds
+	// one of its volumes. Its terminate settles when the controller reports
+	// DELETING.
 	//
 	// Step 3's Settle is what lets a no-op on a converged resource, and every
 	// key pair operation, come back already Succeeded, and what supersedes
@@ -178,14 +165,14 @@ type StatusStore interface {
 	// It fails with ErrStale if st.Observed.Generation is below the stored
 	// one, and with compute.CodeInternal if it is above the spec's generation
 	// or st.UpdatedAt is zero. Writing the same generation again is allowed:
-	// that is how retry state lands. It leaves the assigned node and the
-	// node report as stored.
+	// that is how retry state lands. It leaves the controller's
+	// report as stored.
 	CommitInstanceStatus(ctx context.Context, id compute.InstanceID, st compute.InstanceStatus) error
 	// CommitImageStatus is CommitInstanceStatus for images.
 	CommitImageStatus(ctx context.Context, id compute.ImageID, st compute.ImageStatus) error
 
 	// Unconverged lists, instances first and each kind by ID, every instance
-	// and image, other than node-driven instances, whose spec generation is ahead of its observed generation
+	// and image, other than controller-driven instances, whose spec generation is ahead of its observed generation
 	// and whose retry time is not after now.
 	Unconverged(ctx context.Context, now time.Time) ([]compute.Ref, error)
 	// Lagging is Unconverged without the retry-time filter. The reconciler
@@ -194,25 +181,15 @@ type StatusStore interface {
 	Lagging(ctx context.Context) ([]compute.Ref, error)
 }
 
-// NodeStore is the NodeService's view of the repository: the one writer of
-// heartbeats, placement from a sync, and node-reported instance status.
-type NodeStore interface {
+// ReportStore is the report path's view of the repository: the one writer of
+// controller-reported instance status.
+type ReportStore interface {
 	Reader
 
-	// SyncNode records hb on the node and runs placement for the node's
-	// project and zone, all in one transaction, then returns the node and
-	// the instances assigned to it, ordered by ID, including those with a
-	// delete in flight and excluding those already removed. accept runs
-	// before anything is written, on the node and instances that would be
-	// returned. If it fails, nothing is written and SyncNode returns its
-	// error. A missing node is compute.CodeNotFound.
-	SyncNode(ctx context.Context, name compute.NodeName, hb compute.Heartbeat, now time.Time,
-		accept func(compute.Node, []compute.Instance) error) (compute.Node, []compute.Instance, error)
-
-	// ReportInstanceStatus applies compute.ApplyReport to a node-driven
+	// ReportInstanceStatus applies compute.ApplyReport to a controller-driven
 	// instance and, when the status changed, writes it and settles every
-	// Pending operation on the instance in the same transaction. It never
-	// writes the assigned node. It returns the instance as stored.
+	// Pending operation on the instance in the same transaction. It returns
+	// the instance as stored.
 	ReportInstanceStatus(ctx context.Context, id compute.InstanceID, rep compute.InstanceReport, now time.Time) (compute.Instance, error)
 }
 
@@ -253,6 +230,6 @@ func CheckObservation(next, stored compute.Observed, spec int64, at time.Time) e
 type Repository interface {
 	DesiredStore
 	StatusStore
-	NodeStore
+	ReportStore
 	Close() error
 }

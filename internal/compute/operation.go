@@ -27,7 +27,6 @@ const (
 	OpCopyImage
 	OpRegisterFile
 	OpCreateInstance
-	OpCreateNode
 )
 
 var operationKindNames = [...]string{
@@ -48,7 +47,6 @@ var operationKindNames = [...]string{
 	OpCopyImage:              "CopyImage",
 	OpRegisterFile:           "RegisterFile",
 	OpCreateInstance:         "CreateInstance",
-	OpCreateNode:             "CreateNode",
 }
 
 // OperationKinds returns every kind in declaration order.

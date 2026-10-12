@@ -13,7 +13,6 @@ import (
 type View interface {
 	Instance(InstanceID) (Instance, error)
 	Image(ImageID) (Image, error)
-	Node(NodeName) (Node, error)
 	// KeyPairByName returns the live key pair holding name, or, when none
 	// is live, the most recently deleted one.
 	KeyPairByName(KeyName) (KeyPair, error)

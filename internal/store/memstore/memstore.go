@@ -27,7 +27,6 @@ type Store struct {
 	instances map[string]*instanceRow
 	images    map[string]*imageRow
 	keyPairs  map[string]keyPairRow
-	nodes     map[string]*nodeRow
 
 	ops         map[compute.OperationID]compute.Operation
 	opByRequest map[compute.RequestID]compute.OperationID
@@ -46,12 +45,6 @@ type imageRow struct {
 	meta   compute.Metadata
 }
 
-type nodeRow struct {
-	spec   compute.NodeSpec
-	status compute.NodeStatus
-	meta   compute.Metadata
-}
-
 type keyPairRow struct {
 	spec compute.KeyPairSpec
 	meta compute.Metadata
@@ -63,7 +56,6 @@ func New() *Store {
 		instances:   map[string]*instanceRow{},
 		images:      map[string]*imageRow{},
 		keyPairs:    map[string]keyPairRow{},
-		nodes:       map[string]*nodeRow{},
 		ops:         map[compute.OperationID]compute.Operation{},
 		opByRequest: map[compute.RequestID]compute.OperationID{},
 		pending:     map[compute.Ref]map[compute.OperationID]struct{}{},
@@ -235,9 +227,6 @@ func (s *Store) CommitDesired(_ context.Context, c store.DesiredChange) (compute
 			return compute.Operation{}, err
 		}
 	}
-	if is, ok := c.Spec.(compute.InstanceSpec); ok && c.Write && is.NodeDriven() {
-		s.afterNodeDrivenWrite(is, c.Op.CreatedAt)
-	}
 	spec, obs, _ := s.progress(ref)
 	if c.Write {
 		s.settlePending(ref, spec, obs, c.Op.CreatedAt)
@@ -258,7 +247,7 @@ func (s *Store) put(spec compute.Spec) error {
 	switch spec := spec.(type) {
 	case compute.InstanceSpec:
 		row, ok := s.instances[spec.ID.String()]
-		if !ok && spec.NodeDriven() {
+		if !ok && spec.ControllerDriven() {
 			if err := s.checkVolumes(spec); err != nil {
 				return err
 			}
@@ -277,13 +266,6 @@ func (s *Store) put(spec compute.Spec) error {
 			s.images[spec.ID.String()] = row
 		} else if spec.Generation > row.spec.Generation {
 			row.status.Retry = compute.Retry{}
-		}
-		row.spec = spec
-	case compute.NodeSpec:
-		row, ok := s.nodes[spec.Name.String()]
-		if !ok {
-			row = &nodeRow{}
-			s.nodes[spec.Name.String()] = row
 		}
 		row.spec = spec
 	case compute.KeyPairSpec:
@@ -319,10 +301,6 @@ func (s *Store) progress(ref compute.Ref) (int64, compute.Observed, bool) {
 		if row, ok := s.keyPairs[ref.ID]; ok {
 			return row.spec.Generation, compute.KeyPair{Spec: row.spec}.Observed(), true
 		}
-	case compute.KindNode:
-		if row, ok := s.nodes[ref.ID]; ok {
-			return row.spec.Generation, compute.Node{Spec: row.spec}.Observed(), true
-		}
 	}
 	return 0, compute.Observed{}, false
 }
@@ -350,7 +328,7 @@ func (s *Store) CommitInstanceStatus(_ context.Context, id compute.InstanceID, s
 	if err := store.CheckObservation(st.Observed, row.status.Observed, row.spec.Generation, st.UpdatedAt); err != nil {
 		return err
 	}
-	st.AssignedNode, st.Report = row.status.AssignedNode, row.status.Report
+	st.Report = row.status.Report
 	row.status = cloneInstanceStatus(st)
 	s.settlePending(id.Ref(), row.spec.Generation, row.status.Observed, st.UpdatedAt)
 	return nil
@@ -386,7 +364,7 @@ func (s *Store) Lagging(context.Context) ([]compute.Ref, error) {
 func (s *Store) laggingLocked(include func(compute.Retry) bool) []compute.Ref {
 	var inst, img []string
 	for id, row := range s.instances {
-		if !row.spec.NodeDriven() && row.spec.Generation > row.status.Observed.Generation && include(row.status.Retry) {
+		if !row.spec.ControllerDriven() && row.spec.Generation > row.status.Observed.Generation && include(row.status.Retry) {
 			inst = append(inst, id)
 		}
 	}
@@ -433,10 +411,6 @@ func (s *Store) revision(ref compute.Ref) int64 {
 		if row, ok := s.keyPairs[ref.ID]; ok {
 			return row.meta.Revision
 		}
-	case compute.KindNode:
-		if row, ok := s.nodes[ref.ID]; ok {
-			return row.meta.Revision
-		}
 	}
 	return 0
 }
@@ -462,12 +436,6 @@ func (s *Store) putMeta(ref compute.Ref, m compute.Metadata) error {
 		}
 		row.meta = m
 		s.keyPairs[ref.ID] = row
-	case compute.KindNode:
-		row, ok := s.nodes[ref.ID]
-		if !ok {
-			return store.ErrConflict
-		}
-		row.meta = m
 	default:
 		return compute.Errorf(compute.CodeInternal, "unknown resource kind %d", ref.Kind)
 	}

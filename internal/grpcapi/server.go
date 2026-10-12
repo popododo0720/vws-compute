@@ -49,28 +49,23 @@ const (
 // Option configures Register.
 type Option func(*server)
 
-// WithMaxSyncResponseBytes lowers the SyncNode response limit. The default is
-// the 16MiB agents accept. Tests use it to reach the limit cheaply.
-func WithMaxSyncResponseBytes(n int) Option { return func(s *server) { s.maxSync = n } }
-
 // WithVolumes sets how CreateInstance verifies volumes. Without it,
 // CreateInstance answers DEPENDENCY_MISSING.
 func WithVolumes(v VolumeLookup) Option { return func(s *server) { s.volumes = v } }
 
-// WithClock sets the server clock SyncNode stamps heartbeats with.
+// WithClock sets the server clock ReportInstanceStatus stamps reports with.
 func WithClock(now func() time.Time) Option { return func(s *server) { s.clock = now } }
 
-// Register adds InstanceService, ImageService, KeyPairService, NodeService,
+// Register adds InstanceService, ImageService, KeyPairService,
 // and google.longrunning.Operations to s. ctl is the only desired-state
-// write path, r the read path, and r's node methods the only write path for
-// heartbeats, placement from a sync, and node-reported instance status.
-func Register(s grpc.ServiceRegistrar, ctl *controller.Controller, r store.NodeStore, opts ...Option) {
-	srv := &server{ctl: ctl, read: r, nodes: r, clock: time.Now, maxSync: maxSyncResponseBytes}
+// write path, r the read path, and r's report method the only write path for
+// controller-reported instance status.
+func Register(s grpc.ServiceRegistrar, ctl *controller.Controller, r store.ReportStore, opts ...Option) {
+	srv := &server{ctl: ctl, read: r, reports: r, clock: time.Now}
 	for _, o := range opts {
 		o(srv)
 	}
 	computev1.RegisterInstanceServiceServer(s, srv)
-	computev1.RegisterNodeServiceServer(s, srv)
 	computev1.RegisterImageServiceServer(s, srv)
 	computev1.RegisterKeyPairServiceServer(s, srv)
 	longrunningpb.RegisterOperationsServer(s, srv)
@@ -84,13 +79,11 @@ type server struct {
 	computev1.UnsafeInstanceServiceServer
 	computev1.UnsafeImageServiceServer
 	computev1.UnsafeKeyPairServiceServer
-	computev1.UnsafeNodeServiceServer
 	longrunningpb.UnimplementedOperationsServer
 	ctl     *controller.Controller
 	read    store.Reader
-	nodes   store.NodeStore
+	reports store.ReportStore
 	clock   func() time.Time
-	maxSync int
 	volumes VolumeLookup
 }
 
@@ -226,3 +219,5 @@ func doneOperation(project, resource string, verb commonv1.OperationVerb, reques
 	}
 	return out, nil
 }
+
+func (s *server) now() time.Time { return s.clock().UTC() }

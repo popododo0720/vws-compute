@@ -309,9 +309,9 @@ func TestSecondOpenFails(t *testing.T) {
 	}
 }
 
-// TestNodeDrivenStateSurvivesRestart reopens the file between every step and
-// checks that placement, the node report, and volume ownership are on disk.
-func TestNodeDrivenStateSurvivesRestart(t *testing.T) {
+// TestControllerDrivenStateSurvivesRestart reopens the file between every step and
+// checks that the controller's report and volume ownership are on disk.
+func TestControllerDrivenStateSurvivesRestart(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "state.db")
 	now := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
@@ -327,30 +327,6 @@ func TestNodeDrivenStateSurvivesRestart(t *testing.T) {
 	}
 
 	s := reopen(nil)
-	const node = "projects/p/zones/z/nodes/a"
-	nin, err := compute.NewCreateNode(node, 1, compute.Labels{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	nch, err := compute.Plan(viewOf{s}, env, nin)
-	if err != nil {
-		t.Fatal(err)
-	}
-	nop, err := compute.NewOperation(env, mustRequest(t, "node-1"), nin, nch)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.CommitDesired(ctx, store.DesiredChange{Op: nop, Spec: nch.Spec, Write: nch.Write, Meta: nch.Meta}); err != nil {
-		t.Fatal(err)
-	}
-	name, _ := compute.ParseNodeName(node)
-	s = reopen(s)
-	if _, _, err := s.SyncNode(ctx, name, compute.Heartbeat{State: compute.NodeReady, AgentVersion: "agent-1"}, now,
-		func(compute.Node, []compute.Instance) error { return nil }); err != nil {
-		t.Fatal(err)
-	}
-
-	s = reopen(s)
 	vol, _ := compute.ParseVolumeRef("projects/p/zones/z/volumes/root")
 	in, err := compute.NewCreateInstance(compute.CreateInstanceParams{
 		ID: "web-1", Project: "p", Zone: "z", MachineType: "n1.medium", Power: compute.PowerRunning,
@@ -375,21 +351,18 @@ func TestNodeDrivenStateSurvivesRestart(t *testing.T) {
 	s = reopen(s)
 	id, _ := compute.ParseInstanceID("web-1")
 	got, err := s.Instance(ctx, id)
-	if err != nil || got.Status.AssignedNode != node || len(got.Spec.Volumes) != 1 {
+	if err != nil || len(got.Spec.Volumes) != 1 {
 		t.Fatalf("after restart: %+v, %v", got, err)
 	}
-	if _, err := s.ReportInstanceStatus(ctx, id, compute.InstanceReport{Node: node, Generation: 1, State: compute.ReportReady, Power: compute.PowerRunning}, now); err != nil {
+	if _, err := s.ReportInstanceStatus(ctx, id, compute.InstanceReport{Node: "host-a", Generation: 1, State: compute.ReportReady, Power: compute.PowerRunning}, now); err != nil {
 		t.Fatal(err)
 	}
 
 	s = reopen(s)
 	defer s.Close()
 	got, err = s.Instance(ctx, id)
-	if err != nil || got.Status.Observed.Generation != 1 || got.Status.Report.State != compute.ReportReady || got.Status.AssignedNode != node {
+	if err != nil || got.Status.Observed.Generation != 1 || got.Status.Report.State != compute.ReportReady || got.Status.Report.Node != "host-a" {
 		t.Fatalf("report after restart: %+v, %v", got.Status, err)
-	}
-	if n, err := s.Node(ctx, name); err != nil || n.Status.AgentVersion != "agent-1" || !n.Status.LastSync.Equal(now) {
-		t.Fatalf("node after restart: %+v, %v", n.Status, err)
 	}
 	if done, err := s.Operation(ctx, op.ID); err != nil || done.State() != compute.OperationSucceeded {
 		t.Fatalf("create operation after report: %v, %v", done.State(), err)
@@ -410,9 +383,49 @@ func (v viewOf) Instance(id compute.InstanceID) (compute.Instance, error) {
 func (v viewOf) Image(id compute.ImageID) (compute.Image, error) {
 	return v.s.Image(context.Background(), id)
 }
-func (v viewOf) Node(n compute.NodeName) (compute.Node, error) {
-	return v.s.Node(context.Background(), n)
-}
 func (v viewOf) KeyPairByName(n compute.KeyName) (compute.KeyPair, error) {
 	return v.s.KeyPairByName(context.Background(), n)
+}
+
+// TestMigrationDropsNodesAndKeepsInstances builds a file at schema version 4,
+// the last one with nodes, and opens it with this binary.
+func TestMigrationDropsNodesAndKeepsInstances(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "state.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, m := range migrations[:4] {
+		if _, err := db.ExecContext(ctx, m); err != nil {
+			t.Fatalf("migration %d: %v", i+1, err)
+		}
+	}
+	for _, q := range []string{
+		`INSERT INTO nodes (id, uid, generation, created_at, changed_at, slots) VALUES ('projects/p/zones/z/nodes/a', 'u', 1, 1, 1, 1)`,
+		`INSERT INTO instances (id, generation, created_at, changed_at, image_id, instance_type, power, reboot_epoch, node_driven, project, zone,
+			assigned_node, report) VALUES ('web-1', 1, 1, 1, '', 'n1.medium', 1, 0, 1, 'p', 'z', 'projects/p/zones/z/nodes/a',
+			'{"node":"host-a","state":3}')`,
+		`PRAGMA user_version = 4`,
+	} {
+		if _, err := db.ExecContext(ctx, q); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	s := open(t, path)
+	defer s.Close()
+	id, _ := compute.ParseInstanceID("web-1")
+	got, err := s.Instance(ctx, id)
+	if err != nil || !got.Spec.ControllerDriven() || got.Status.Report.Node != "host-a" {
+		t.Fatalf("instance after migration = %+v, %v", got, err)
+	}
+	var n int
+	err = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE name = 'nodes'`).Scan(&n)
+	if err != nil || n != 0 {
+		t.Fatalf("nodes table still exists: %d, %v", n, err)
+	}
 }

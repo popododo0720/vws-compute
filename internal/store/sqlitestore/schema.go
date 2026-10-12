@@ -16,6 +16,7 @@ var migrations = []string{
 	metadataV2,
 	imageSourcesV3,
 	nodesV4,
+	controllerV5,
 }
 
 // schemaV1 is the schema from before user_version was set. Every statement
@@ -215,4 +216,12 @@ CREATE TABLE nodes (
   meta_revision   INTEGER NOT NULL DEFAULT 0,
   meta_changed_at INTEGER NOT NULL DEFAULT 0
 ) STRICT;
+`
+
+// controllerV5 removes the nodes table and node placement. A node-driven
+// instance is now a controller-driven one, and nothing assigns a node.
+const controllerV5 = `
+DROP TABLE nodes;
+ALTER TABLE instances DROP COLUMN assigned_node;
+ALTER TABLE instances RENAME COLUMN node_driven TO controller_driven;
 `

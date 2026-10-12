@@ -45,7 +45,6 @@ type harness struct {
 	inst  computev1.InstanceServiceClient
 	img   computev1.ImageServiceClient
 	keys  computev1.KeyPairServiceClient
-	nodes computev1.NodeServiceClient
 	ops   longrunningpb.OperationsClient
 	agent *fakeagent.Agent
 	ctl   *controller.Controller
@@ -84,7 +83,6 @@ func serveRepo(t *testing.T, repo store.Repository, opts ...grpcapi.Option) *har
 		inst:  computev1.NewInstanceServiceClient(conn),
 		img:   computev1.NewImageServiceClient(conn),
 		keys:  computev1.NewKeyPairServiceClient(conn),
-		nodes: computev1.NewNodeServiceClient(conn),
 		ops:   longrunningpb.NewOperationsClient(conn),
 		agent: agent,
 		ctl:   ctl,

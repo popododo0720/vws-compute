@@ -96,7 +96,7 @@ func powerPB(p compute.Power) computev1.InstancePower {
 func instancePB(i compute.Instance, name string) *computev1.Instance {
 	if name == "" {
 		project, zone := placeholderLocation, placeholderLocation
-		if i.Spec.NodeDriven() {
+		if i.Spec.ControllerDriven() {
 			project, zone = i.Spec.Project, i.Spec.Zone
 		}
 		name = instanceResourceName(project, zone, i.Spec.ID.String())
@@ -128,11 +128,10 @@ func instancePB(i compute.Instance, name string) *computev1.Instance {
 			Generation: i.Status.Observed.Generation,
 			Message:    message,
 		},
-		Power:        powerPB(i.Spec.Power),
-		AssignedNode: i.Status.AssignedNode,
+		Power: powerPB(i.Spec.Power),
 	}
-	if i.Spec.NodeDriven() {
-		state = nodeDrivenReconciliation(i)
+	if i.Spec.ControllerDriven() {
+		state = controllerDrivenReconciliation(i)
 		status.Power = observedPowerPB(i.Status.Report.Power)
 		status.Observed.Node = i.Status.Report.Node
 		if message == "" {
@@ -163,10 +162,10 @@ func instancePB(i compute.Instance, name string) *computev1.Instance {
 	return out
 }
 
-// nodeDrivenReconciliation is the state of an instance whose node, not this
-// process, converges it: what the node last said, until the generation it
+// controllerDrivenReconciliation is the state of an instance whose controller, not this
+// process, converges it: what the controller last said, until the generation it
 // reported catches the spec.
-func nodeDrivenReconciliation(i compute.Instance) commonv1.ReconciliationState {
+func controllerDrivenReconciliation(i compute.Instance) commonv1.ReconciliationState {
 	switch {
 	case i.Status.Observed.Parked(i.Spec.Generation):
 		return commonv1.ReconciliationState_RECONCILIATION_STATE_ERROR
@@ -266,7 +265,7 @@ func keyPairPB(k compute.KeyPair) (*computev1.KeyPair, error) {
 
 func operationVerb(k compute.OperationKind) commonv1.OperationVerb {
 	switch k {
-	case compute.OpRunInstance, compute.OpCreateInstance, compute.OpCreateNode, compute.OpRegisterImage, compute.OpCreateImage, compute.OpCopyImage, compute.OpRegisterFile, compute.OpCreateKeyPair, compute.OpImportKeyPair:
+	case compute.OpRunInstance, compute.OpCreateInstance, compute.OpRegisterImage, compute.OpCreateImage, compute.OpCopyImage, compute.OpRegisterFile, compute.OpCreateKeyPair, compute.OpImportKeyPair:
 		return commonv1.OperationVerb_OPERATION_VERB_CREATE
 	case compute.OpTerminateInstance, compute.OpDeregisterImage, compute.OpDeleteKeyPair:
 		return commonv1.OperationVerb_OPERATION_VERB_DELETE
@@ -345,24 +344,11 @@ func (s *server) operationResource(ctx context.Context, project, resourceName st
 			return "", nil, toStatus(err)
 		}
 		if name == "" {
-			// GetOperation does not know the parent. A node-driven instance
+			// GetOperation does not know the parent. A controller-driven instance
 			// stored its own, and the others use the placeholder.
 			name = instancePB(inst, "").GetName()
 		}
 		return name, instancePB(inst, name), nil
-	case compute.KindNode:
-		name, err := compute.ParseNodeName(op.Target.ID)
-		if err != nil {
-			return "", nil, nil
-		}
-		n, err := s.read.Node(ctx, name)
-		if err != nil {
-			if compute.CodeOf(err) == compute.CodeNotFound {
-				return name.String(), nil, nil
-			}
-			return "", nil, toStatus(err)
-		}
-		return name.String(), nodePB(n), nil
 	case compute.KindImage:
 		name := resourceName
 		if name == "" {
