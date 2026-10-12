@@ -2,27 +2,75 @@ version: "2"
 linters:
   default: none
   enable:
+    - bodyclose
+    - contextcheck
     - errcheck
+    - errname
+    - errorlint
     - govet
     - ineffassign
     - misspell
+    - nilerr
+    - nilnil
+    - noctx
+    - sloglint
     - staticcheck
     - unused
+    - wrapcheck
   settings:
     misspell:
       locale: US
+    errcheck:
+      check-type-assertions: true
+      check-blank: true
+    errorlint:
+      errorf: true
+      asserts: true
+      comparison: true
+    wrapcheck:
+      # Errors from this module already carry context; wrap at the edge
+      # where a foreign error enters.
+      ignore-package-globs:
+        - github.com/popododo0720/vws-compute/internal/*
+      # The defaults, plus gRPC status constructors (a wrapped status loses
+      # its code on the wire) and Err() (context cancellation and
+      # status.Err pass through as they are).
+      ignore-sigs:
+        - .Errorf(
+        - errors.New(
+        - errors.Unwrap(
+        - errors.Join(
+        - .Wrap(
+        - .Wrapf(
+        - .WithMessage(
+        - .WithMessagef(
+        - .WithStack(
+        - status.Error(
+        - .Err()
+    sloglint:
+      no-mixed-args: true
+      attr-only: true
+      context: all
+      static-msg: true
+      key-naming-case: snake
   exclusions:
     generated: lax
     presets:
       - comments
       - common-false-positives
       - legacy
-      - std-error-handling
     paths:
       - third_party
       - third_party$
       - builtin$
       - examples$
+    rules:
+      # A test that ignores an error or asserts a type fails loudly on the
+      # next line or panics; wrapping adds nothing to a test failure.
+      - path: _test\.go
+        linters:
+          - errcheck
+          - wrapcheck
 issues:
   max-issues-per-linter: 0
   max-same-issues: 0

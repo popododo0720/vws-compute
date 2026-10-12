@@ -178,7 +178,7 @@ func failureTo(f *compute.Failure) *failureJSON {
 
 func failureFrom(f *failureJSON) (*compute.Failure, error) {
 	if f == nil {
-		return nil, nil
+		return nil, nil //nolint:nilnil // a nil failure is "no failure", the zero value of the field
 	}
 	if err := inRange("failure code", int64(f.Code), int64(compute.CodeInvalid), int64(compute.CodeInternal)); err != nil {
 		return nil, err

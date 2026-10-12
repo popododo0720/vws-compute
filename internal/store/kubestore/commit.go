@@ -69,7 +69,7 @@ func (s *Store) CommitDesired(ctx context.Context, c store.DesiredChange) (compu
 	if err != nil {
 		// Give the claim back. A failed release is harmless: Repair, or the
 		// next attempt with this request id, takes over a stale index.
-		_ = s.releaseIndex(ctx, c.Op.Request, c.Op.ID)
+		_ = s.releaseIndex(ctx, c.Op.Request, c.Op.ID) //nolint:errcheck // best effort: Repair, or the next attempt with this request id, takes over what is left
 		return compute.Operation{}, err
 	}
 	if op.ID != c.Op.ID {
@@ -77,7 +77,7 @@ func (s *Store) CommitDesired(ctx context.Context, c store.DesiredChange) (compu
 		if x, err := s.index(ctx, c.Op.Request); err == nil && x != nil && x.op != op.ID {
 			next := *x
 			next.op = op.ID
-			_ = s.repoint(ctx, &next)
+			_ = s.repoint(ctx, &next) //nolint:errcheck // best effort: Repair, or the next attempt with this request id, takes over what is left
 		}
 	}
 	return op, nil
@@ -88,7 +88,7 @@ func (s *Store) finish(ctx context.Context, c store.DesiredChange, ref compute.R
 	var taken []claim
 	giveBack := func() {
 		for _, cl := range taken {
-			_ = s.release(ctx, cl)
+			_ = s.release(ctx, cl) //nolint:errcheck // best effort: a stale claim is taken over once its holder no longer qualifies
 		}
 	}
 	claims, qualifies, err := s.claimsFor(ctx, c)

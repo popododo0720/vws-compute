@@ -71,13 +71,16 @@ func (a *Agent) ensure(ctx context.Context, gvk schema.GroupVersionKind, name st
 		}
 		return nil
 	case !apierrors.IsNotFound(err):
-		return err
+		return fmt.Errorf("image %s: get %s: %w", name, gvk.Kind, err)
 	}
 	want := a.object(gvk, name)
 	want.Object["spec"] = spec
 	want.SetLabels(map[string]string{LabelManaged: "true"})
 	// Losing a create race means another caller made the same object.
-	return client.IgnoreAlreadyExists(a.c.Create(ctx, want))
+	if err := client.IgnoreAlreadyExists(a.c.Create(ctx, want)); err != nil {
+		return fmt.Errorf("image %s: create %s: %w", name, gvk.Kind, err)
+	}
+	return nil
 }
 
 // imageSource maps exactly one ImageSpec source to a DataVolume source.
@@ -107,7 +110,7 @@ func (a *Agent) imageSource(ctx context.Context, spec hypervisor.ImageSpec) (map
 			if apierrors.IsNotFound(err) {
 				return nil, fmt.Errorf("image %s: source machine %s does not exist yet", spec.Name, spec.SourceMachine)
 			}
-			return nil, err
+			return nil, fmt.Errorf("image %s: get source machine %s: %w", spec.Name, spec.SourceMachine, err)
 		}
 		return map[string]any{"pvc": map[string]any{"namespace": ns, "name": spec.SourceMachine + "-root"}}, nil
 	case spec.SourceVolume != "":
@@ -129,17 +132,23 @@ func (a *Agent) imageStorage(spec hypervisor.ImageSpec) map[string]any {
 func (a *Agent) imageSize(ctx context.Context, name string) (int64, error) {
 	dv := a.object(dvGVK, name)
 	if err := a.c.Get(ctx, client.ObjectKeyFromObject(dv), dv); err != nil {
-		return 0, err
+		return 0, fmt.Errorf("image %s: get DataVolume: %w", name, err)
 	}
-	phase, _, _ := unstructured.NestedString(dv.Object, "status", "phase")
+	phase, _, err := unstructured.NestedString(dv.Object, "status", "phase")
+	if err != nil {
+		return 0, hypervisor.Permanent(fmt.Errorf("image %s: DataVolume status.phase: %w", name, err))
+	}
 	if phase != "Succeeded" {
 		return 0, fmt.Errorf("image %s: DataVolume is %q, not Succeeded", name, phase)
 	}
 	pvc := a.object(pvcGVK, name)
 	if err := a.c.Get(ctx, client.ObjectKeyFromObject(pvc), pvc); err != nil {
-		return 0, err
+		return 0, fmt.Errorf("image %s: get claim: %w", name, err)
 	}
-	have, found, _ := unstructured.NestedString(pvc.Object, "status", "capacity", "storage")
+	have, found, err := unstructured.NestedString(pvc.Object, "status", "capacity", "storage")
+	if err != nil {
+		return 0, hypervisor.Permanent(fmt.Errorf("image %s: claim capacity: %w", name, err))
+	}
 	if !found {
 		return 0, fmt.Errorf("image %s: claim has no capacity yet", name)
 	}
@@ -163,7 +172,7 @@ func (a *Agent) removeImage(ctx context.Context, name string) error {
 	for _, gvk := range []schema.GroupVersionKind{dsGVK, dvGVK} {
 		obj := a.object(gvk, name)
 		if err := client.IgnoreNotFound(a.c.Delete(ctx, obj, client.PropagationPolicy(metav1.DeletePropagationBackground))); err != nil {
-			return err
+			return fmt.Errorf("image %s: delete %s: %w", name, gvk.Kind, err)
 		}
 	}
 	return nil
@@ -174,14 +183,14 @@ func (a *Agent) imageUsers(ctx context.Context, name string) ([]string, error) {
 	vms := &unstructured.UnstructuredList{}
 	vms.SetGroupVersionKind(vmGVK.GroupVersion().WithKind("VirtualMachineList"))
 	if err := a.c.List(ctx, vms, client.InNamespace(a.cfg.Namespace)); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("list VirtualMachines: %w", err)
 	}
 	var users []string
 	for _, vm := range vms.Items {
-		templates, _, _ := unstructured.NestedSlice(vm.Object, "spec", "dataVolumeTemplates")
+		templates, _, _ := unstructured.NestedSlice(vm.Object, "spec", "dataVolumeTemplates") //nolint:errcheck // a template of another shape is not one of ours, so it does not use the image
 		for _, t := range templates {
-			tmpl, _ := t.(map[string]any)
-			ref, _, _ := unstructured.NestedMap(tmpl, "spec", "sourceRef")
+			tmpl, _ := t.(map[string]any)                                  //nolint:errcheck // a template of another shape is not one of ours, so it does not use the image
+			ref, _, _ := unstructured.NestedMap(tmpl, "spec", "sourceRef") //nolint:errcheck // a template of another shape is not one of ours, so it does not use the image
 			if ref["kind"] == "DataSource" && ref["name"] == name && ref["namespace"] == a.cfg.ImageNamespace {
 				users = append(users, vm.GetName())
 				break

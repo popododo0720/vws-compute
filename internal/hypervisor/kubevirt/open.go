@@ -1,6 +1,8 @@
 package kubevirt
 
 import (
+	"fmt"
+
 	"k8s.io/client-go/tools/clientcmd"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -13,11 +15,11 @@ func Open(kubeconfig string, cfg Config) (*Agent, error) {
 	rules.ExplicitPath = kubeconfig
 	rc, err := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(rules, nil).ClientConfig()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("kubeconfig: %w", err)
 	}
 	c, err := client.New(rc, client.Options{})
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("kubernetes client: %w", err)
 	}
 	return New(c, cfg), nil
 }

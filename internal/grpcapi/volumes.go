@@ -3,6 +3,7 @@ package grpcapi
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -45,7 +46,7 @@ func (s storageVolumes) Volume(ctx context.Context, name string) (VolumeInfo, er
 		return VolumeInfo{}, ErrVolumeNotFound
 	}
 	if err != nil {
-		return VolumeInfo{}, err
+		return VolumeInfo{}, fmt.Errorf("get volume %s: %w", name, err)
 	}
 	return VolumeInfo{
 		Instance: v.GetStatus().GetInstance(),
@@ -57,10 +58,10 @@ func (s storageVolumes) Volume(ctx context.Context, name string) (VolumeInfo, er
 
 // DialStorage connects lazily to the storage service at addr and returns a
 // lookup over it and a function that closes the connection.
-func DialStorage(addr string) (VolumeLookup, func(), error) {
+func DialStorage(addr string) (VolumeLookup, func() error, error) {
 	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, fmt.Errorf("dial storage %s: %w", addr, err)
 	}
-	return NewStorageVolumes(storagev1.NewVolumeServiceClient(conn)), func() { _ = conn.Close() }, nil
+	return NewStorageVolumes(storagev1.NewVolumeServiceClient(conn)), conn.Close, nil
 }

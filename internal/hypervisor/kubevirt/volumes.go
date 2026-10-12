@@ -25,7 +25,7 @@ import (
 var reservedDisks = []string{"rootdisk", "cloudinitdisk"}
 
 func templateSlice(vm *unstructured.Unstructured, path ...string) []any {
-	s, _, _ := unstructured.NestedSlice(vm.Object, path...)
+	s, _, _ := unstructured.NestedSlice(vm.Object, path...) //nolint:errcheck // a field of another type reads as empty and is rewritten
 	return s
 }
 
@@ -39,11 +39,11 @@ func claimOf(v any) (name, claim string, ok bool) {
 	if !isMap {
 		return "", "", false
 	}
-	if hot, _ := pvc["hotpluggable"].(bool); !hot {
+	if hot, _ := pvc["hotpluggable"].(bool); !hot { //nolint:errcheck // an entry of another shape is not a hotplug volume of ours
 		return "", "", false
 	}
-	name, _ = m["name"].(string)
-	claim, _ = pvc["claimName"].(string)
+	name, _ = m["name"].(string)         //nolint:errcheck // an entry of another shape is not a hotplug volume of ours
+	claim, _ = pvc["claimName"].(string) //nolint:errcheck // an entry of another shape is not a hotplug volume of ours
 	return name, claim, true
 }
 
@@ -95,7 +95,7 @@ func volumeChange(vm *unstructured.Unstructured, want []hypervisor.Volume) (volu
 		}
 	}
 	for _, d := range templateSlice(vm, "spec", "template", "spec", "domain", "devices", "disks") {
-		name, _ := d.(map[string]any)["name"].(string)
+		name, _ := d.(map[string]any)["name"].(string) //nolint:errcheck // a disk of another shape is not a hotplug disk of ours
 		if _, hot := have[name]; !hot {
 			disks = append(disks, d)
 		}
@@ -142,7 +142,7 @@ func (a *Agent) checkAttachable(ctx context.Context, machine string, vm *unstruc
 			return fmt.Errorf("machine %s: claim %s for volume %s does not exist yet", machine, v.Claim, v.Name)
 		}
 		if err != nil {
-			return err
+			return fmt.Errorf("machine %s: get claim %s: %w", machine, v.Claim, err)
 		}
 		if !singleWriter(pvc.Spec.AccessModes) {
 			continue
@@ -151,7 +151,7 @@ func (a *Agent) checkAttachable(ctx context.Context, machine string, vm *unstruc
 			others = new(unstructured.UnstructuredList)
 			others.SetGroupVersionKind(vmGVK.GroupVersion().WithKind("VirtualMachineList"))
 			if err := a.c.List(ctx, others, client.InNamespace(a.cfg.Namespace)); err != nil {
-				return err
+				return fmt.Errorf("machine %s: list VirtualMachines: %w", machine, err)
 			}
 		}
 		for i := range others.Items {

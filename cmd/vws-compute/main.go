@@ -16,6 +16,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"runtime/debug"
 	"syscall"
 	"time"
 
@@ -59,7 +60,11 @@ func run(ctx context.Context, cfg config) error {
 	if err != nil {
 		return err
 	}
-	defer repo.Close()
+	defer func() {
+		if err := repo.Close(); err != nil {
+			slog.WarnContext(ctx, "close store", slog.Any("err", err))
+		}
+	}()
 
 	agent, err := newAgent(cfg)
 	if err != nil {
@@ -70,12 +75,12 @@ func run(ctx context.Context, cfg config) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	reconciled := make(chan error, 1)
-	go func() { reconciled <- rec.Run(ctx) }()
+	go func() { reconciled <- recovered(func() error { return rec.Run(ctx) }) }()
 	if err := applySeed(ctx, ctl, repo, seed); err != nil {
 		return stopReconciler(cancel, reconciled, err)
 	}
 
-	lis, err := net.Listen("tcp", listen)
+	lis, err := (&net.ListenConfig{}).Listen(ctx, "tcp", listen)
 	if err != nil {
 		return stopReconciler(cancel, reconciled, err)
 	}
@@ -87,16 +92,20 @@ func run(ctx context.Context, cfg config) error {
 		if err != nil {
 			return stopReconciler(cancel, reconciled, err)
 		}
-		defer closeStorage()
+		defer func() {
+			if err := closeStorage(); err != nil {
+				slog.WarnContext(ctx, "close storage connection", slog.Any("err", err))
+			}
+		}()
 		opts = append(opts, grpcapi.WithVolumes(lookup))
 	}
-	srv := grpc.NewServer(grpc.WaitForHandlers(true))
+	srv := grpc.NewServer(append(grpcapi.Recovery(), grpc.WaitForHandlers(true))...)
 	grpcapi.Register(srv, ctl, repo, opts...)
 	hl := grpcapi.NewHealth(srv, healthInterval, healthChecks(repo, agent)...)
 	go hl.Run(ctx)
 	served := make(chan error, 1)
 	go func() { served <- srv.Serve(lis) }()
-	slog.Info("serving vws.compute.v1", "addr", lis.Addr().String(), "namespace", namespace)
+	slog.InfoContext(ctx, "serving vws.compute.v1", slog.String("addr", lis.Addr().String()), slog.String("namespace", namespace))
 
 	select {
 	case <-ctx.Done():
@@ -112,6 +121,18 @@ func run(ctx context.Context, cfg config) error {
 		err = errors.Join(err, rerr)
 	}
 	return err
+}
+
+// recovered runs f and turns a panic into an error, so a reconciler bug
+// stops the process through the normal shutdown path with the cause
+// reported, instead of crashing past deferred cleanup.
+func recovered(f func() error) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("panic: %v\n%s", r, debug.Stack())
+		}
+	}()
+	return f()
 }
 
 // shutdownGrace is how long Stop waits for in-flight RPCs before it cancels
@@ -180,6 +201,6 @@ func open(ctx context.Context, namespace, kubeconfig string) (store.Repository, 
 	if err != nil {
 		return nil, err
 	}
-	slog.Info("opened store", "namespace", namespace, "repaired", repaired)
+	slog.InfoContext(ctx, "opened store", slog.String("namespace", namespace), slog.Any("repaired", repaired))
 	return repo, nil
 }

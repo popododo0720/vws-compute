@@ -100,7 +100,7 @@ func (a *Agent) ConvergeMachine(ctx context.Context, spec hypervisor.MachineSpec
 			return err
 		}
 		if err != nil {
-			return err
+			return fmt.Errorf("machine %s: get VirtualMachine: %w", spec.Name, err)
 		}
 		return a.update(ctx, vm, spec)
 	}
@@ -115,7 +115,10 @@ func (a *Agent) destroy(ctx context.Context, name string) error {
 	// Background deletion lets the garbage collector remove the owned root
 	// disk after the VirtualMachine is gone.
 	err := a.c.Delete(ctx, vm, client.PropagationPolicy(metav1.DeletePropagationBackground))
-	return client.IgnoreNotFound(err)
+	if err := client.IgnoreNotFound(err); err != nil {
+		return fmt.Errorf("machine %s: delete VirtualMachine: %w", vm.GetName(), err)
+	}
+	return nil
 }
 
 func (a *Agent) create(ctx context.Context, spec hypervisor.MachineSpec) error {
@@ -171,7 +174,10 @@ func (a *Agent) create(ctx context.Context, spec hypervisor.MachineSpec) error {
 	vm.SetName(spec.Name)
 	vm.SetLabels(map[string]string{LabelManaged: "true"})
 	vm.SetAnnotations(map[string]string{AnnotationRebootEpoch: strconv.FormatUint(uint64(spec.RebootEpoch), 10)})
-	return a.c.Create(ctx, vm)
+	if err := a.c.Create(ctx, vm); err != nil {
+		return fmt.Errorf("machine %s: create VirtualMachine: %w", spec.Name, err)
+	}
+	return nil
 }
 
 func memory(mib int) string { return strconv.Itoa(mib) + "Mi" }
@@ -204,7 +210,7 @@ func (a *Agent) update(ctx context.Context, vm *unstructured.Unstructured, spec 
 	if spec.Power == hypervisor.PowerOn {
 		wantRun = runAlways
 	}
-	haveRun, _, _ := unstructured.NestedString(vm.Object, "spec", "runStrategy")
+	haveRun, _, _ := unstructured.NestedString(vm.Object, "spec", "runStrategy") //nolint:errcheck // a value of another type is overwritten below like a missing one
 	applied := appliedEpoch(vm)
 	reboot := false
 	switch {
@@ -220,13 +226,13 @@ func (a *Agent) update(ctx context.Context, vm *unstructured.Unstructured, spec 
 	}
 
 	if spec.VCPUs > 0 {
-		have, _, _ := unstructured.NestedInt64(vm.Object, "spec", "template", "spec", "domain", "cpu", "cores")
+		have, _, _ := unstructured.NestedInt64(vm.Object, "spec", "template", "spec", "domain", "cpu", "cores") //nolint:errcheck // a value of another type is overwritten below like a missing one
 		if have != int64(spec.VCPUs) {
 			set([]string{"spec", "template", "spec", "domain", "cpu", "cores"}, int64(spec.VCPUs))
 		}
 	}
 	if spec.MemoryMiB > 0 {
-		have, _, _ := unstructured.NestedString(vm.Object, "spec", "template", "spec", "domain", "memory", "guest")
+		have, _, _ := unstructured.NestedString(vm.Object, "spec", "template", "spec", "domain", "memory", "guest") //nolint:errcheck // a value of another type is overwritten below like a missing one
 		if q, err := resource.ParseQuantity(have); err != nil || q.Cmp(resource.MustParse(memory(spec.MemoryMiB))) != 0 {
 			set([]string{"spec", "template", "spec", "domain", "memory", "guest"}, memory(spec.MemoryMiB))
 		}
@@ -255,7 +261,7 @@ func (a *Agent) update(ctx context.Context, vm *unstructured.Unstructured, spec 
 		vmi.SetNamespace(a.cfg.Namespace)
 		vmi.SetName(spec.Name)
 		if err := client.IgnoreNotFound(a.c.Delete(ctx, vmi)); err != nil {
-			return err
+			return fmt.Errorf("machine %s: delete VirtualMachineInstance: %w", spec.Name, err)
 		}
 	}
 	if len(patch) == 0 {
@@ -265,7 +271,10 @@ func (a *Agent) update(ctx context.Context, vm *unstructured.Unstructured, spec 
 	if err != nil {
 		return hypervisor.Permanent(err)
 	}
-	return a.c.Patch(ctx, vm, client.RawPatch(types.MergePatchType, raw))
+	if err := a.c.Patch(ctx, vm, client.RawPatch(types.MergePatchType, raw)); err != nil {
+		return fmt.Errorf("machine %s: patch VirtualMachine: %w", spec.Name, err)
+	}
+	return nil
 }
 
 func epoch(n uint32) string { return strconv.FormatUint(uint64(n), 10) }

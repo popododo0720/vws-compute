@@ -71,3 +71,36 @@ func TestNewAgentSelectsTheHypervisor(t *testing.T) {
 		t.Fatal("kubevirt agent opened without a kubeconfig")
 	}
 }
+
+// TestParseConfigRejectsMalformedValues feeds hostile flag and environment
+// values; each must fail before anything listens or calls Kubernetes.
+func TestParseConfigRejectsMalformedValues(t *testing.T) {
+	for name, tc := range map[string]struct {
+		args []string
+		env  map[string]string
+	}{
+		"listen without port":   {args: []string{"-listen", "localhost"}},
+		"namespace traversal":   {args: []string{"-namespace", "../kube-system"}},
+		"namespace upper":       {args: []string{"-namespace", "Store"}},
+		"namespace too long":    {args: []string{"-namespace", strings.Repeat("a", 64)}},
+		"namespace NUL":         {args: []string{"-namespace", "ns\x00x"}},
+		"vm namespace from env": {args: []string{"-hypervisor", "kubevirt", "-namespace", "s"}, env: map[string]string{"VWS_VM_NAMESPACE": "vms/../x"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			getenv := func(k string) string { return tc.env[k] }
+			if _, err := parseConfig(tc.args, getenv, io.Discard); err == nil {
+				t.Fatalf("parseConfig(%q) accepted a malformed value", tc.args)
+			}
+		})
+	}
+}
+
+func TestRecoveredTurnsAPanicIntoAnError(t *testing.T) {
+	err := recovered(func() error { panic("boom") })
+	if err == nil || !strings.Contains(err.Error(), "panic: boom") {
+		t.Fatalf("recovered = %v", err)
+	}
+	if err := recovered(func() error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+}

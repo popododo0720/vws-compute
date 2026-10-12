@@ -49,7 +49,7 @@ func readSeed(path string) ([]seedEntry, error) {
 	if err != nil {
 		return nil, fmt.Errorf("seed images: %w", err)
 	}
-	defer f.Close()
+	defer f.Close() //nolint:errcheck // read-only file: Close reports nothing the read did not
 	entries, err := parseSeed(f)
 	if err != nil {
 		return nil, fmt.Errorf("seed images %s: %w", path, err)
@@ -73,13 +73,13 @@ func parseSeed(r io.Reader) ([]seedEntry, error) {
 	dec.DisallowUnknownFields()
 	var doc seedDoc
 	if err := dec.Decode(&doc); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("decode seed: %w", err)
 	}
 	if err := dec.Decode(new(json.RawMessage)); !errors.Is(err, io.EOF) {
 		if err == nil {
 			return nil, errors.New("trailing data after the document")
 		}
-		return nil, err
+		return nil, fmt.Errorf("decode seed: %w", err)
 	}
 	seen := map[compute.ImageID]bool{}
 	entries := make([]seedEntry, 0, len(doc.Images))
@@ -152,7 +152,7 @@ func applySeed(ctx context.Context, ctl *controller.Controller, r store.Reader, 
 		if !img.Available() {
 			return fmt.Errorf("seed image %s is not available", e.id)
 		}
-		slog.Info("seed image ready", "id", e.id)
+		slog.InfoContext(ctx, "seed image ready", slog.String("id", e.id.String()))
 	}
 	return nil
 }
