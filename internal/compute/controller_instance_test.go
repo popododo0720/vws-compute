@@ -79,7 +79,7 @@ func TestApplyReport(t *testing.T) {
 
 func createParams() compute.CreateInstanceParams {
 	return compute.CreateInstanceParams{
-		ID: "web-1", Project: "p", Zone: "z", MachineType: "n1.medium", Power: compute.PowerRunning,
+		ID: "web-1", Project: "p", Zone: "z", MachineType: "vws.small", Power: compute.PowerRunning,
 		Volumes: []compute.VolumeAttachment{{Volume: ok(compute.ParseVolumeRef("projects/p/zones/z/volumes/root")), DeviceName: "vda", Boot: true}},
 		NICs:    []compute.NetworkInterface{{DeviceName: "eth0", Subnet: "projects/p/regions/r/vpcs/v/subnets/s"}},
 	}
@@ -126,7 +126,7 @@ func TestCreateInstancePlan(t *testing.T) {
 		t.Fatalf("%+v %v", ch, err)
 	}
 	spec := ch.Spec.(compute.InstanceSpec)
-	if spec.Generation != 1 || !spec.ControllerDriven() || spec.Image.String() != "" || spec.Type.Name() != "n1.medium" {
+	if spec.Generation != 1 || !spec.ControllerDriven() || spec.Image.String() != "" || spec.Type.Name() != "vws.small" {
 		t.Fatalf("spec %+v", spec)
 	}
 	existing := compute.Instance{Spec: spec}

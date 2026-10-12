@@ -196,7 +196,7 @@ func NewCreateInstance(p CreateInstanceParams) (Intent, error) {
 	if err != nil {
 		return nil, err
 	}
-	typ, err := ParseMachineType(p.MachineType)
+	typ, err := ParseInstanceType(p.MachineType)
 	if err != nil {
 		return nil, err
 	}

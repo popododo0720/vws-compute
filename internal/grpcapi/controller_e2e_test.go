@@ -21,7 +21,7 @@ const zoneParent = "projects/demo/zones/z1"
 func (h *harness) seedControllerDriven(t *testing.T, req, id, volume string) compute.Operation {
 	t.Helper()
 	in, err := compute.NewCreateInstance(compute.CreateInstanceParams{
-		ID: id, Project: "demo", Zone: "z1", MachineType: "n1.medium", Power: compute.PowerRunning,
+		ID: id, Project: "demo", Zone: "z1", MachineType: "vws.small", Power: compute.PowerRunning,
 		Volumes: []compute.VolumeAttachment{{Volume: mustVolume(t, "projects/demo/zones/z1/volumes/"+volume), DeviceName: "vda", Boot: true}},
 	})
 	if err != nil {
