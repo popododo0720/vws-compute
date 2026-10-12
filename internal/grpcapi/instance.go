@@ -76,12 +76,12 @@ func (s *server) CreateInstance(ctx context.Context, r *computev1.CreateInstance
 	if err := validateCreateInstance(zone, name, r.GetInstance()); err != nil {
 		return nil, err
 	}
-	in, err := createInstanceIntent(project, zone, r.GetInstanceId(), r.GetInstance())
+	in, err := createInstanceIntent(project, zone, r.GetInstanceId(), r.GetInstance(), nil)
 	if err != nil {
 		return nil, err
 	}
 	if r.GetValidateOnly() {
-		if err := s.verifyVolumes(ctx, r.GetInstance().GetSpec().GetVolumes(), name); err != nil {
+		if _, err := s.verifyVolumes(ctx, r.GetInstance().GetSpec().GetVolumes(), name); err != nil {
 			return nil, err
 		}
 		id, perr := compute.ParseInstanceID(r.GetInstanceId())
@@ -98,8 +98,12 @@ func (s *server) CreateInstance(ctx context.Context, r *computev1.CreateInstance
 	// fresh runs only for a request id the store has not seen. A retry after
 	// the instance was stored, or after a restart, returns the stored
 	// operation without asking the storage service anything.
-	rc, err := s.submit(ctx, r.GetRequestId(), in, nil, func() error {
-		return s.verifyVolumes(ctx, r.GetInstance().GetSpec().GetVolumes(), name)
+	rc, err := s.submit(ctx, r.GetRequestId(), in, nil, func() (compute.Intent, error) {
+		claims, err := s.verifyVolumes(ctx, r.GetInstance().GetSpec().GetVolumes(), name)
+		if err != nil {
+			return nil, err
+		}
+		return createInstanceIntent(project, zone, r.GetInstanceId(), r.GetInstance(), claims)
 	})
 	if err != nil {
 		return nil, err
@@ -107,7 +111,10 @@ func (s *server) CreateInstance(ctx context.Context, r *computev1.CreateInstance
 	return s.operationPB(ctx, project, name, rc.Operation)
 }
 
-func createInstanceIntent(project, zone, id string, body *computev1.Instance) (compute.Intent, error) {
+// createInstanceIntent builds the intent. claims maps volume names to the
+// claim names storage reported; nil leaves them empty, which does not
+// change the fingerprint.
+func createInstanceIntent(project, zone, id string, body *computev1.Instance, claims map[string]string) (compute.Intent, error) {
 	spec := body.GetSpec()
 	labels, err := compute.ParseLabels(body.GetLabels())
 	if err != nil {
@@ -128,12 +135,8 @@ func createInstanceIntent(project, zone, id string, body *computev1.Instance) (c
 		}
 		p.KeyPair = kid
 	}
-	for _, v := range spec.GetVolumes() {
-		ref, err := compute.ParseVolumeRef(v.GetVolume())
-		if err != nil {
-			return nil, toStatus(err)
-		}
-		p.Volumes = append(p.Volumes, compute.VolumeAttachment{Volume: ref, DeviceName: v.GetDeviceName(), Boot: v.GetBoot()})
+	if p.Volumes, err = attachments(spec.GetVolumes(), claims); err != nil {
+		return nil, err
 	}
 	for _, n := range spec.GetNetworkInterfaces() {
 		p.NICs = append(p.NICs, compute.NetworkInterface{
@@ -148,28 +151,45 @@ func createInstanceIntent(project, zone, id string, body *computev1.Instance) (c
 	return in, nil
 }
 
+func attachments(vols []*computev1.VolumeAttachment, claims map[string]string) ([]compute.VolumeAttachment, error) {
+	var out []compute.VolumeAttachment
+	for _, v := range vols {
+		ref, err := compute.ParseVolumeRef(v.GetVolume())
+		if err != nil {
+			return nil, toStatus(err)
+		}
+		out = append(out, compute.VolumeAttachment{Volume: ref, DeviceName: v.GetDeviceName(), Boot: v.GetBoot(), Claim: claims[v.GetVolume()]})
+	}
+	return out, nil
+}
+
 // verifyVolumes asks the storage service about each volume: it must exist,
-// must not be going away, and must not be attached to another instance. The
+// must not be going away, must not be attached to another instance, and
+// must report the claim that backs it. It returns the claim name per volume. The
 // store enforces the same one-holder rule atomically with the write, so this
 // check only turns a doomed request into an early, specific error.
-func (s *server) verifyVolumes(ctx context.Context, vols []*computev1.VolumeAttachment, instance string) error {
+func (s *server) verifyVolumes(ctx context.Context, vols []*computev1.VolumeAttachment, instance string) (map[string]string, error) {
 	if s.volumes == nil {
-		return dependencyMissing("no storage service is configured, so volume " + vols[0].GetVolume() + " cannot be verified")
+		return nil, dependencyMissing("no storage service is configured, so volume " + vols[0].GetVolume() + " cannot be verified")
 	}
+	claims := make(map[string]string, len(vols))
 	for _, v := range vols {
 		info, err := s.volumes.Volume(ctx, v.GetVolume())
 		switch {
 		case errors.Is(err, ErrVolumeNotFound):
-			return dependencyMissing("volume " + v.GetVolume() + " does not exist")
+			return nil, dependencyMissing("volume " + v.GetVolume() + " does not exist")
 		case err != nil:
-			return withReason(codes.Unavailable, "DEPENDENCY_UNAVAILABLE", "storage service: "+err.Error())
+			return nil, withReason(codes.Unavailable, "DEPENDENCY_UNAVAILABLE", "storage service: "+err.Error())
 		case info.Deleting:
-			return dependencyMissing("volume " + v.GetVolume() + " is being deleted")
+			return nil, dependencyMissing("volume " + v.GetVolume() + " is being deleted")
 		case info.Instance != "" && info.Instance != instance:
-			return failedPre("VOLUME_IN_USE", "volume "+v.GetVolume()+" is attached to "+info.Instance)
+			return nil, failedPre("VOLUME_IN_USE", "volume "+v.GetVolume()+" is attached to "+info.Instance)
+		case info.ClaimName == "":
+			return nil, failedPre("VOLUME_NOT_PROVISIONED", "volume "+v.GetVolume()+" has no claim yet")
 		}
+		claims[v.GetVolume()] = info.ClaimName
 	}
-	return nil
+	return claims, nil
 }
 
 func (s *server) UpdateInstance(ctx context.Context, r *computev1.UpdateInstanceRequest) (*longrunningpb.Operation, error) {
@@ -199,6 +219,14 @@ func (s *server) UpdateInstance(ctx context.Context, r *computev1.UpdateInstance
 		}
 		return nil, err
 	}
+	etagCheck := func() error {
+		cur, _, err := s.liveInstance(ctx, body.GetName())
+		if err != nil {
+			return err
+		}
+		return checkEtag(body.GetEtag(), etagOf(cur.Spec.Generation, cur.Meta.Revision))
+	}
+	fresh := check(etagCheck)
 	var in compute.Intent
 	if maskIncludes(paths, "spec") {
 		spec := body.GetSpec()
@@ -217,7 +245,32 @@ func (s *server) UpdateInstance(ctx context.Context, r *computev1.UpdateInstance
 		default:
 			return nil, invalidSpec("instance.spec.power must be RUNNING or STOPPED")
 		}
-		in, err = compute.NewSetPower(id, power, patch)
+		if vols := spec.GetVolumes(); len(vols) > 0 {
+			if err := validateVolumes(existing.Spec.Zone, vols); err != nil {
+				return nil, err
+			}
+			atts, aerr := attachments(vols, nil)
+			if aerr != nil {
+				return nil, aerr
+			}
+			in, err = compute.NewUpdateInstanceSpec(id, power, atts, patch)
+			fresh = func() (compute.Intent, error) {
+				if ferr := etagCheck(); ferr != nil {
+					return nil, ferr
+				}
+				claims, verr := s.verifyVolumes(ctx, vols, body.GetName())
+				if verr != nil {
+					return nil, verr
+				}
+				atts, aerr := attachments(vols, claims)
+				if aerr != nil {
+					return nil, aerr
+				}
+				return compute.NewUpdateInstanceSpec(id, power, atts, patch)
+			}
+		} else {
+			in, err = compute.NewSetPower(id, power, patch)
+		}
 	} else {
 		in, err = compute.NewUpdateInstanceMetadata(id, patch)
 	}
@@ -230,13 +283,7 @@ func (s *server) UpdateInstance(ctx context.Context, r *computev1.UpdateInstance
 		}
 		return doneOperation(project, name, commonv1.OperationVerb_OPERATION_VERB_UPDATE, r.GetRequestId(), nil)
 	}
-	rc, err := s.submit(ctx, r.GetRequestId(), in, err, func() error {
-		cur, _, err := s.liveInstance(ctx, body.GetName())
-		if err != nil {
-			return err
-		}
-		return checkEtag(body.GetEtag(), etagOf(cur.Spec.Generation, cur.Meta.Revision))
-	})
+	rc, err := s.submit(ctx, r.GetRequestId(), in, err, fresh)
 	if err != nil {
 		return nil, err
 	}
@@ -258,13 +305,13 @@ func (s *server) DeleteInstance(ctx context.Context, r *computev1.DeleteInstance
 		return nil, err
 	}
 	in, err := compute.NewTerminateInstance(id)
-	rc, err := s.submit(ctx, r.GetRequestId(), in, err, func() error {
+	rc, err := s.submit(ctx, r.GetRequestId(), in, err, check(func() error {
 		cur, _, err := s.liveInstance(ctx, r.GetName())
 		if err != nil {
 			return err
 		}
 		return checkEtag(r.GetEtag(), etagOf(cur.Spec.Generation, cur.Meta.Revision))
-	})
+	}))
 	if err != nil {
 		return nil, err
 	}
@@ -469,8 +516,8 @@ func instanceSpecDelta(spec *computev1.InstanceSpec, cur compute.Instance) error
 	if spec.GetKeyPair() != key && spec.GetKeyPair() != "" {
 		return invalidSpec("key_pair is immutable")
 	}
-	if spec.GetUserData() != "" || len(spec.GetNetworkInterfaces()) > 0 || len(spec.GetVolumes()) > 0 {
-		return invalidSpec("network interfaces, volumes, and user_data are not mutable")
+	if spec.GetUserData() != "" || len(spec.GetNetworkInterfaces()) > 0 {
+		return invalidSpec("network interfaces and user_data are not mutable")
 	}
 	return nil
 }

@@ -138,13 +138,13 @@ func (s *server) UpdateKeyPair(ctx context.Context, r *computev1.UpdateKeyPairRe
 		}
 		return doneOperation(project, name, commonv1.OperationVerb_OPERATION_VERB_UPDATE, r.GetRequestId(), nil)
 	}
-	rc, err := s.submit(ctx, r.GetRequestId(), in, err, func() error {
+	rc, err := s.submit(ctx, r.GetRequestId(), in, err, check(func() error {
 		cur, _, err := s.liveKeyPair(ctx, kp.GetName())
 		if err != nil {
 			return err
 		}
 		return checkEtag(kp.GetEtag(), etagOf(cur.Spec.Generation, cur.Meta.Revision))
-	})
+	}))
 	if err != nil {
 		return nil, err
 	}
@@ -167,13 +167,13 @@ func (s *server) DeleteKeyPair(ctx context.Context, r *computev1.DeleteKeyPairRe
 		return nil, err
 	}
 	in, err := compute.NewDeleteKeyPair(name)
-	rc, err := s.submit(ctx, r.GetRequestId(), in, err, func() error {
+	rc, err := s.submit(ctx, r.GetRequestId(), in, err, check(func() error {
 		cur, _, err := s.liveKeyPair(ctx, r.GetName())
 		if err != nil {
 			return err
 		}
 		return checkEtag(r.GetEtag(), etagOf(cur.Spec.Generation, cur.Meta.Revision))
-	})
+	}))
 	if err != nil {
 		return nil, err
 	}
