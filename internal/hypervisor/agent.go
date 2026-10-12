@@ -39,6 +39,19 @@ type MachineSpec struct {
 	// behind it reboots once and records it. Booting a machine applies the
 	// epoch without an extra reboot.
 	RebootEpoch uint32
+	// Volumes is the full set of data volumes attached to the machine, on top
+	// of its root disk. The agent attaches the ones that are missing and
+	// detaches the ones that are no longer listed, on a running machine too.
+	Volumes []Volume
+}
+
+// Volume is one attached data volume.
+type Volume struct {
+	// Name is the disk name inside the machine. It is unique per machine and
+	// is a DNS-1123 label.
+	Name string
+	// Claim is the name of the PersistentVolumeClaim that backs the volume.
+	Claim string
 }
 
 // ImageSpec is the full desired state of one image artifact.

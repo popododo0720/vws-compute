@@ -30,6 +30,7 @@ type Machine struct {
 	// Power is PowerOff or PowerOn. Destroyed machines are not returned.
 	Power        hypervisor.Power
 	AppliedEpoch uint32
+	Volumes      []hypervisor.Volume
 }
 
 // Agent is safe for concurrent use. The zero value is not usable. Call New.
@@ -110,6 +111,7 @@ func (a *Agent) Machine(name string) (Machine, bool) {
 	defer a.mu.Unlock()
 	m, ok := a.machines[name]
 	m.AuthorizedKeys = append([]string(nil), m.AuthorizedKeys...)
+	m.Volumes = append([]hypervisor.Volume(nil), m.Volumes...)
 	return m, ok
 }
 
@@ -167,6 +169,7 @@ func (a *Agent) ConvergeMachine(ctx context.Context, spec hypervisor.MachineSpec
 	}
 	m.VCPUs, m.MemoryMiB = spec.VCPUs, spec.MemoryMiB
 	m.AuthorizedKeys = append([]string(nil), spec.AuthorizedKeys...)
+	m.Volumes = append([]hypervisor.Volume(nil), spec.Volumes...)
 	switch {
 	case spec.Power == hypervisor.PowerOff:
 		m.Power = hypervisor.PowerOff
