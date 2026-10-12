@@ -16,6 +16,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"runtime/debug"
 	"syscall"
 	"time"
 
@@ -70,7 +71,7 @@ func run(ctx context.Context, cfg config) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	reconciled := make(chan error, 1)
-	go func() { reconciled <- rec.Run(ctx) }()
+	go func() { reconciled <- recovered(func() error { return rec.Run(ctx) }) }()
 	if err := applySeed(ctx, ctl, repo, seed); err != nil {
 		return stopReconciler(cancel, reconciled, err)
 	}
@@ -94,7 +95,7 @@ func run(ctx context.Context, cfg config) error {
 		}()
 		opts = append(opts, grpcapi.WithVolumes(lookup))
 	}
-	srv := grpc.NewServer(grpc.WaitForHandlers(true))
+	srv := grpc.NewServer(append(grpcapi.Recovery(), grpc.WaitForHandlers(true))...)
 	grpcapi.Register(srv, ctl, repo, opts...)
 	served := make(chan error, 1)
 	go func() { served <- srv.Serve(lis) }()
@@ -111,6 +112,18 @@ func run(ctx context.Context, cfg config) error {
 		err = errors.Join(err, rerr)
 	}
 	return err
+}
+
+// recovered runs f and turns a panic into an error, so a reconciler bug
+// stops the process through the normal shutdown path with the cause
+// reported, instead of crashing past deferred cleanup.
+func recovered(f func() error) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("panic: %v\n%s", r, debug.Stack())
+		}
+	}()
+	return f()
 }
 
 // shutdownGrace is how long Stop waits for in-flight RPCs before it cancels
