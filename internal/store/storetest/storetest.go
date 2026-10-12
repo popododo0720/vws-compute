@@ -45,6 +45,7 @@ func Run(t *testing.T, open func(t *testing.T) store.Repository) {
 		{"ControllerDrivenInstancesAreNotUnconverged", controllerNotUnconverged},
 		{"ReportSettlesAndKeepsTheReport", reportSettles},
 		{"DeleteWaitsForTheControllersReport", deleteWaitsForTheController},
+		{"AttachClaimsAndDetachReleasesVolumes", attachClaimsVolumes},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) { c.fn(fixture{t: t, s: open(t)}) })

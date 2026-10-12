@@ -56,6 +56,7 @@ type volumeJSON struct {
 	Volume string `json:"volume"`
 	Device string `json:"device"`
 	Boot   bool   `json:"boot,omitempty"`
+	Claim  string `json:"claim,omitempty"`
 }
 
 type nicJSON struct {
@@ -265,7 +266,7 @@ func instanceTo(in compute.Instance) *instanceJSON {
 		j.KeyName, j.KeyPublic = s.Key.Name.String(), s.Key.PublicKey.AuthorizedKey()
 	}
 	for _, v := range s.Volumes {
-		j.Volumes = append(j.Volumes, volumeJSON{Volume: v.Volume.String(), Device: v.DeviceName, Boot: v.Boot})
+		j.Volumes = append(j.Volumes, volumeJSON{Volume: v.Volume.String(), Device: v.DeviceName, Boot: v.Boot, Claim: v.Claim})
 	}
 	for _, n := range s.NICs {
 		j.NICs = append(j.NICs, nicJSON{Device: n.DeviceName, Subnet: n.Subnet, PrivateIPv4: n.PrivateIPv4, SecurityGroups: n.SecurityGroups})
@@ -300,7 +301,7 @@ func instanceFrom(j *instanceJSON) (compute.Instance, error) {
 	for _, v := range j.Volumes {
 		ref, err := compute.ParseVolumeRef(v.Volume)
 		errs = append(errs, err)
-		vols = append(vols, compute.VolumeAttachment{Volume: ref, DeviceName: v.Device, Boot: v.Boot})
+		vols = append(vols, compute.VolumeAttachment{Volume: ref, DeviceName: v.Device, Boot: v.Boot, Claim: v.Claim})
 	}
 	var nics []compute.NetworkInterface
 	for _, n := range j.NICs {

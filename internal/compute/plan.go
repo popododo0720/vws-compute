@@ -113,14 +113,61 @@ func (in setPower) plan(v View, env Env) (Change, error) {
 	if err != nil {
 		return Change{}, err
 	}
-	if cur.Power == in.want && !inst.Status.Observed.Parked(cur.Generation) {
+	volumes, changed, err := in.nextVolumes(cur)
+	if err != nil {
+		return Change{}, err
+	}
+	if cur.Power == in.want && !changed && !inst.Status.Observed.Parked(cur.Generation) {
 		return Change{Spec: cur, Meta: meta}, nil
 	}
 	next := cur
 	next.Power = in.want
+	next.Volumes = volumes
 	next.Generation++
 	next.ChangedAt = env.Now
 	return Change{Spec: next, Write: true, Meta: meta}, nil
+}
+
+// nextVolumes returns the attachments after in and whether they differ from
+// cur's. Only a controller-driven, non-terminated instance takes volumes,
+// and its boot entry is fixed at create.
+func (in setPower) nextVolumes(cur InstanceSpec) ([]VolumeAttachment, bool, error) {
+	if !in.setVolumes {
+		return cur.Volumes, false, nil
+	}
+	if !cur.ControllerDriven() {
+		return nil, false, Errorf(CodeFailedPrecondition, "instance %s has no volumes to change", in.instance)
+	}
+	if err := checkAttachments(cur.Zone, in.volumes); err != nil {
+		return nil, false, err
+	}
+	for _, a := range in.volumes {
+		if a.Boot && !hasAttachment(cur.Volumes, a) {
+			return nil, false, Errorf(CodeInvalid, "the boot volume cannot be changed")
+		}
+	}
+	if len(in.volumes) == len(cur.Volumes) {
+		same := true
+		for i := range in.volumes {
+			same = same && sameAttachment(in.volumes[i], cur.Volumes[i])
+		}
+		if same {
+			return cur.Volumes, false, nil
+		}
+	}
+	if cur.Power == PowerTerminated {
+		return nil, false, Errorf(CodeFailedPrecondition, "instance %s is terminated", in.instance)
+	}
+	return append([]VolumeAttachment(nil), in.volumes...), true, nil
+}
+
+func hasAttachment(vols []VolumeAttachment, a VolumeAttachment) bool {
+	for _, v := range vols {
+		if sameAttachment(v, a) {
+			return true
+		}
+	}
+	return false
 }
 
 // plan requires desired power Running. Every accepted reboot advances the

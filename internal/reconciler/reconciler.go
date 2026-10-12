@@ -439,6 +439,13 @@ func machineSpec(s compute.InstanceSpec) hypervisor.MachineSpec {
 	if s.Key != nil {
 		m.AuthorizedKeys = []string{s.Key.PublicKey.AuthorizedKey()}
 	}
+	// Data volumes go to the agent by device name and the claim storage
+	// reported. The boot entry is the root disk, not a data volume.
+	for _, v := range s.Volumes {
+		if !v.Boot {
+			m.Volumes = append(m.Volumes, hypervisor.Volume{Name: v.DeviceName, Claim: v.Claim})
+		}
+	}
 	switch s.Power {
 	case compute.PowerRunning:
 		m.Power = hypervisor.PowerOn
