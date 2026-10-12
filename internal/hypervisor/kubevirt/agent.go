@@ -86,6 +86,65 @@ func (a *Agent) ConvergeMachine(ctx context.Context, spec hypervisor.MachineSpec
 		return hypervisor.Permanent(fmt.Errorf("machine %s: invalid power %d", spec.Name, spec.Power))
 	}
 
+	if err := a.converge(ctx, spec); err != nil {
+		return err
+	}
+	if spec.Power == hypervisor.PowerOn {
+		return a.running(ctx, spec.Name)
+	}
+	return nil
+}
+
+// running reports whether KubeVirt has the guest up: the VirtualMachineInstance
+// exists, its phase is Running, and its Ready condition is True. Anything else
+// is a transient error, so the reconciler reports the instance as reconciling
+// and checks again on the next sweep instead of reporting it ready. It only
+// reads, so a converged machine is never written again.
+func (a *Agent) running(ctx context.Context, name string) error {
+	vmi := new(unstructured.Unstructured)
+	vmi.SetGroupVersionKind(vmiGVK)
+	err := a.c.Get(ctx, client.ObjectKey{Namespace: a.cfg.Namespace, Name: name}, vmi)
+	if apierrors.IsNotFound(err) {
+		return fmt.Errorf("machine %s: no virtual machine instance yet", name)
+	}
+	if err != nil {
+		return fmt.Errorf("machine %s: get virtual machine instance: %w", name, err)
+	}
+	phase, _, err := unstructured.NestedString(vmi.Object, "status", "phase")
+	if err != nil {
+		return fmt.Errorf("machine %s: read instance phase: %w", name, err)
+	}
+	if phase != "Running" {
+		return fmt.Errorf("machine %s: instance phase is %q, not Running", name, phase)
+	}
+	if ready := readyCondition(vmi); ready != "True" {
+		return fmt.Errorf("machine %s: instance is Running but its Ready condition is %q", name, ready)
+	}
+	return nil
+}
+
+// readyCondition is the status of the VMI's Ready condition, or "" when it has none.
+func readyCondition(vmi *unstructured.Unstructured) string {
+	conds, _, err := unstructured.NestedSlice(vmi.Object, "status", "conditions")
+	if err != nil {
+		return ""
+	}
+	for _, c := range conds {
+		m, ok := c.(map[string]any)
+		if !ok || m["type"] != "Ready" {
+			continue
+		}
+		s, ok := m["status"].(string)
+		if !ok {
+			return ""
+		}
+		return s
+	}
+	return ""
+}
+
+// converge creates or patches the VirtualMachine so it matches spec.
+func (a *Agent) converge(ctx context.Context, spec hypervisor.MachineSpec) error {
 	// A create racing another writer loses with AlreadyExists. One more pass
 	// reads the winner and converges it.
 	for range 2 {

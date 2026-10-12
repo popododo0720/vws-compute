@@ -141,10 +141,15 @@ func TestConcurrentConvergeMakesOneObject(t *testing.T) {
 	}
 	wg.Wait()
 	close(errs)
+	// A loser of the create race can look for the instance before the
+	// stand-in controller has made it; that is the transient not-ready error.
 	for err := range errs {
-		if err != nil {
+		if err != nil && hypervisor.IsPermanent(err) {
 			t.Fatal(err)
 		}
+	}
+	if err := New(c, Config{Namespace: ns}).ConvergeMachine(context.Background(), s); err != nil {
+		t.Fatal(err)
 	}
 	if n := count(t, c, ns); n != 1 {
 		t.Fatalf("%d VirtualMachines, want 1", n)
@@ -174,31 +179,28 @@ func TestResizeIsOnePatch(t *testing.T) {
 	}
 }
 
+// newInstance stands in for the instance KubeVirt starts: Running and Ready.
 func newInstance(t *testing.T, c client.Client, ns, name string) {
 	t.Helper()
-	vmi := &unstructured.Unstructured{Object: map[string]any{"spec": map[string]any{}}}
-	vmi.SetGroupVersionKind(vmiGVK)
-	vmi.SetNamespace(ns)
-	vmi.SetName(name)
-	if err := c.Create(context.Background(), vmi); err != nil {
-		t.Fatal(err)
-	}
+	setVMI(context.Background(), t, c, ns, name, "Running", "True")
 }
 
 func TestRebootOncePerEpoch(t *testing.T) {
-	c, ns, w := newClient(t)
+	c, ns, w := newBareClient(t)
 	a := New(c, Config{Namespace: ns})
 	ctx := context.Background()
 	name := "i-0123456789abcdef5"
 	s := spec(name, hypervisor.PowerOn)
+	newInstance(t, c, ns, name)
 	if err := a.ConvergeMachine(ctx, s); err != nil {
 		t.Fatal(err)
 	}
-	newInstance(t, c, ns, name)
 
+	// The reboot deletes the instance, so the machine is not ready until
+	// KubeVirt starts a new one.
 	s.RebootEpoch = 1
-	if err := a.ConvergeMachine(ctx, s); err != nil {
-		t.Fatal(err)
+	if err := a.ConvergeMachine(ctx, s); err == nil || hypervisor.IsPermanent(err) {
+		t.Fatalf("reboot: got %v, want a transient not-ready error", err)
 	}
 	if _, err := get(t, c, "VirtualMachineInstance", ns, name); !apierrors.IsNotFound(err) {
 		t.Fatalf("running instance survived the reboot: %v", err)
@@ -218,7 +220,7 @@ func TestRebootOncePerEpoch(t *testing.T) {
 }
 
 func TestBootAppliesEpochWithoutReboot(t *testing.T) {
-	c, ns, w := newClient(t)
+	c, ns, w := newBareClient(t)
 	a := New(c, Config{Namespace: ns})
 	ctx := context.Background()
 	name := "i-0123456789abcdef6"
