@@ -24,6 +24,7 @@ const ImageSize int64 = 2 << 30
 // Machine is a snapshot of one fake machine.
 type Machine struct {
 	Image          string
+	BootClaim      string
 	VCPUs          int
 	MemoryMiB      int
 	AuthorizedKeys []string
@@ -165,7 +166,7 @@ func (a *Agent) ConvergeMachine(ctx context.Context, spec hypervisor.MachineSpec
 		if _, ok := a.images[spec.Image]; !ok && spec.Image != "" {
 			return hypervisor.Permanent(fmt.Errorf("machine %s: image artifact %s not found", spec.Name, spec.Image))
 		}
-		m = Machine{Image: spec.Image, Power: hypervisor.PowerOff}
+		m = Machine{Image: spec.Image, BootClaim: spec.BootClaim, Power: hypervisor.PowerOff}
 		a.creations[spec.Name]++
 	}
 	m.VCPUs, m.MemoryMiB = spec.VCPUs, spec.MemoryMiB
