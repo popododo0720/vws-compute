@@ -3,7 +3,9 @@ package grpcapi
 import (
 	"context"
 	"errors"
+	"slices"
 	"strconv"
+	"strings"
 
 	longrunningpb "cloud.google.com/go/longrunning/autogen/longrunningpb"
 	"google.golang.org/grpc/codes"
@@ -234,19 +236,38 @@ func (s *server) UpdateInstance(ctx context.Context, r *computev1.UpdateInstance
 		if spec == nil {
 			return nil, invalidSpec("instance.spec is required")
 		}
-		if err := instanceSpecDelta(spec, existing); err != nil {
-			return nil, err
+		// A bare "spec" replaces the mutable spec as a whole. "spec.power" and
+		// "spec.volumes" touch only that field and ignore the rest of the body,
+		// so a client may send its full spec with a narrow mask.
+		whole := slices.Contains(paths, "spec")
+		setPower, setVolumes := whole, whole
+		for _, p := range paths {
+			switch {
+			case p == "spec.power":
+				setPower = true
+			case p == "spec.volumes":
+				setVolumes = true
+			case p != "spec" && strings.HasPrefix(p, "spec."):
+				return nil, invalidSpec("field " + p + " cannot be updated")
+			}
 		}
-		var power compute.Power
-		switch spec.GetPower() {
-		case computev1.InstancePower_INSTANCE_POWER_RUNNING:
-			power = compute.PowerRunning
-		case computev1.InstancePower_INSTANCE_POWER_STOPPED:
-			power = compute.PowerStopped
-		default:
-			return nil, invalidSpec("instance.spec.power must be RUNNING or STOPPED")
+		if whole {
+			if err := instanceSpecDelta(spec, existing); err != nil {
+				return nil, err
+			}
 		}
-		if vols := spec.GetVolumes(); len(vols) > 0 {
+		power := existing.Spec.Power
+		if setPower {
+			switch spec.GetPower() {
+			case computev1.InstancePower_INSTANCE_POWER_RUNNING:
+				power = compute.PowerRunning
+			case computev1.InstancePower_INSTANCE_POWER_STOPPED:
+				power = compute.PowerStopped
+			default:
+				return nil, invalidSpec("instance.spec.power must be RUNNING or STOPPED")
+			}
+		}
+		if vols := spec.GetVolumes(); setVolumes && (len(vols) > 0 || !whole) {
 			if err := validateVolumes(existing.Spec.Zone, vols); err != nil {
 				return nil, err
 			}
@@ -266,6 +287,16 @@ func (s *server) UpdateInstance(ctx context.Context, r *computev1.UpdateInstance
 				atts, aerr := attachments(vols, claims)
 				if aerr != nil {
 					return nil, aerr
+				}
+				power := power
+				if !setPower {
+					// The mask leaves power alone: keep what is stored now,
+					// not what was stored when the request arrived.
+					cur, _, lerr := s.liveInstance(ctx, body.GetName())
+					if lerr != nil {
+						return nil, lerr
+					}
+					power = cur.Spec.Power
 				}
 				return compute.NewUpdateInstanceSpec(id, power, atts, patch)
 			}
