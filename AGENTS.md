@@ -13,7 +13,7 @@ Rules for anyone changing this repository, human or agent. A rule with an enforc
 | `internal/reconciler` | The loop that converges the agent toward desired state. |
 | `internal/hypervisor` | The agent contract. `fakeagent` implements it in memory. `kubevirt` implements it with KubeVirt `VirtualMachine` objects. |
 | `internal/grpcapi` | The gRPC edge. Wire stubs come from `github.com/popododo0720/vws-proto`. |
-| `cmd/vws-compute` | Wiring, flags (`-storage` is the vws-storage address), and the `-seed-images` loader. |
+| `cmd/vws-compute` | Wiring, flags (`-hypervisor`, `-vm-namespace`, `-image-namespace`, `-storage` is the vws-storage address), and the `-seed-images` loader. |
 
 ## Rules
 
@@ -51,7 +51,7 @@ Rules for anyone changing this repository, human or agent. A rule with an enforc
 | Create, Update, and Delete take `request_id` and return an `Operation`. Reads do not. A report takes `request_id` and returns the resource. | `TestServicesMatchTheResourceAPI` |
 | Wire protos come from `github.com/popododo0720/vws-proto`, vendored at `third_party/vws-proto` until that module is public. | `TestVendoredProtoModule` |
 | No rights or mark notices outside `LICENSE`. | `TestNoTrademarkNotices` |
-| No container or chart deploy manifests. | `TestNoDeployManifests` |
+| No container or chart deploy manifests. RBAC `Role` manifests under `deploy/rbac` are allowed, namespaced and without wildcards. | `TestNoDeployManifests`, `TestRBACManifestsAreNamespaced` |
 | Code is gofmt and goimports clean and passes vet, staticcheck, errcheck, ineffassign, unused, and misspell. `third_party` is excluded. | `golangci-lint` v2.14.0 in CI |
 | `go test ./...` passes. The envtest tests skip unless `KUBEBUILDER_ASSETS` points at `kube-apiserver` and `etcd`. | CI |
 | Work on a feature branch. Never commit to `main`. | Judgment |
