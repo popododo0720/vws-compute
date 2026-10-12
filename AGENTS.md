@@ -8,7 +8,7 @@ Rules for anyone changing this repository, human or agent. A rule with an enforc
 | --- | --- |
 | `internal/compute` | Domain types, `Plan`, `Settle`, and request fingerprints. Pure functions only. |
 | `internal/store` | Repository interfaces, split by writer. `storetest` is the suite every repository passes. |
-| `internal/store/memstore`, `internal/store/sqlitestore` | The two repositories. |
+| `internal/store/memstore`, `internal/store/kubestore` | The two repositories. `kubestore` keeps each resource in one ConfigMap. `kubetest` starts envtest for tests. |
 | `internal/controller` | `Submit`, the only mutation path. |
 | `internal/reconciler` | The loop that converges the agent toward desired state. |
 | `internal/hypervisor` | The agent contract. `fakeagent` implements it in memory. `kubevirt` implements it with KubeVirt `VirtualMachine` objects. |
@@ -23,11 +23,11 @@ Rules for anyone changing this repository, human or agent. A rule with an enforc
 | Only `internal/reconciler` calls `CommitInstanceStatus`, `CommitImageStatus`, `ConvergeMachine`, and `ConvergeImage`. | `TestArchitectureRules` |
 | `internal/compute` imports nothing from this module and no gRPC, protobuf, `database/sql`, or SQLite package. | `TestArchitectureRules` |
 | `internal/hypervisor` imports nothing from this module. `fakeagent` and `kubevirt` import only `internal/hypervisor`. | `TestArchitectureRules` |
-| Kubernetes client packages (`k8s.io`, `sigs.k8s.io`) stay in `internal/hypervisor/kubevirt`. | `TestArchitectureRules` |
+| Kubernetes client packages (`k8s.io`, `sigs.k8s.io`) stay in `internal/hypervisor/kubevirt` and `internal/store/kubestore`. | `TestArchitectureRules` |
 | Converging a machine twice, or from a fresh agent, writes the Kubernetes API once. A power flip is one patch. | `TestConvergeTwiceMakesOneObject`, `TestNewAgentDoesNotDuplicate`, `TestPowerFlipsWithOnePatch` (envtest) |
 | An image is a CDI `DataVolume` and `DataSource` named by the image ID. Its size is the bound claim's capacity once the `DataVolume` succeeded. Removal fails while a `VirtualMachine` clones from it. | `TestImageIsCreatedOnceAndSizedByTheClaim` and `TestRemoveImageRefusedWhileAMachineClonesIt` (envtest) |
 | Wire types stay under `internal/grpcapi`. | Go `internal/` visibility and `TestArchitectureRules` |
-| `database/sql` and the SQLite driver stay in `sqlitestore`, and its row structs stay unexported. | `TestArchitectureRules` |
+| No `database/sql` or SQLite driver. `kubestore` exports only `Store`, `Repaired`, and `Open`/`New`, and its record structs stay unexported. | `TestArchitectureRules` |
 | Production packages do not import `testing`. `storetest` is the one declared exception. | `TestArchitectureRules` |
 | An operation changes state only through `compute.Settle`, and terminal states are absorbing. | Unexported fields, `TestOperationStateIsUnexported`, and the `Settle` table in `internal/compute` |
 | Transition rules live only in `compute.Plan`. Each intent carries its own `plan` method. | The compiler, because `Intent` is sealed by unexported methods |
@@ -37,7 +37,9 @@ Rules for anyone changing this repository, human or agent. A rule with an enforc
 | A new desired generation does not wait out the previous retry. | `TestNewGenerationDoesNotInheritBackoff` |
 | A commit rejects a plan whose observed generation or parked bit moved. | `storetest` conflict case and `TestStopReplansWhenTheGenerationParksBeforeCommit` |
 | Shutdown cancels an in-flight RPC instead of waiting out its timeout. | `TestStopServerCancelsHandlersAfterGrace` |
-| A second process cannot open a SQLite file this process holds, including one that already has a schema. | `TestSecondOpenFails` |
+| A request id maps to one operation across restarts, and a crash between the request index and the resource write is repaired. | `TestSameRequestIDSameOperationAcrossRestart`, `TestRepairRemovesAnOrphanedIndexAndTheRetrySucceeds`, `TestRetryAdoptsAnOrphanedIndex`, `TestRepairRestoresAMissingIndex` (envtest) |
+| A write that loses a resourceVersion race rereads and reapplies its rule. A stale plan conflicts and leaves no index. | `TestCASConflictRetriesOnFreshState` and `TestStaleExpectLosesToACompetingCommit` (envtest) |
+| A key name and a controller-driven volume have one holder. Only a holder that exists and no longer qualifies loses it. | `storetest` key pair and volume cases, `TestRepairReleasesAClaimWhoseHolderNeverWasWritten` (envtest) |
 | Startup re-applies converged specs to the agent. | `TestRestartRebuildsTheAgent` |
 | A seed file registers each image once. A restart with the same file writes nothing, and a changed path stops startup. | `TestSeedIsIdempotentAcrossRestarts` |
 | `CreateImage` stores a volume or snapshot source and `GetImage` returns it. A disk path is registered only by `-seed-images`. | `TestCreateImageRoundTrip` and `TestSeededImageLaunchStopStartTerminate` |

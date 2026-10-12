@@ -64,13 +64,20 @@ func Namespace(t testing.TB) (client.WithWatch, string) {
 	return c, ns
 }
 
-// Store returns a new repository over a fresh namespace, repaired and ready.
-func Store(t testing.TB) *kubestore.Store {
+// Open returns a repaired store over ns. Calling it again for the same
+// namespace is a process restart: a new store over the same cluster state.
+func Open(t testing.TB, c client.Client, ns string) *kubestore.Store {
 	t.Helper()
-	c, ns := Namespace(t)
 	s := kubestore.New(c, ns)
 	if _, err := s.Repair(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	return s
+}
+
+// Store returns a new repository over a fresh namespace, repaired and ready.
+func Store(t testing.TB) *kubestore.Store {
+	t.Helper()
+	c, ns := Namespace(t)
+	return Open(t, c, ns)
 }

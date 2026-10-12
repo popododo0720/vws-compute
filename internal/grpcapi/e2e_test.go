@@ -8,7 +8,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"net"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -37,8 +36,8 @@ import (
 	"github.com/popododo0720/vws-compute/internal/hypervisor/fakeagent"
 	"github.com/popododo0720/vws-compute/internal/reconciler"
 	"github.com/popododo0720/vws-compute/internal/store"
+	"github.com/popododo0720/vws-compute/internal/store/kubestore/kubetest"
 	"github.com/popododo0720/vws-compute/internal/store/memstore"
-	"github.com/popododo0720/vws-compute/internal/store/sqlitestore"
 )
 
 type harness struct {
@@ -946,12 +945,8 @@ func TestUpdateResponsesKeepTheCallersLocation(t *testing.T) {
 
 func TestMetadataSurvivesRestart(t *testing.T) {
 	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "state.db")
-	repo, err := sqlitestore.Open(ctx, path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	h := serveRepo(t, repo)
+	kc, ns := kubetest.Namespace(t)
+	h := serveRepo(t, kubetest.Open(t, kc, ns))
 	line, _ := ed25519Line(t)
 	parent := "projects/a12345/regions/us-east1"
 	name := parent + "/keyPairs/console"
@@ -984,11 +979,7 @@ func TestMetadataSurvivesRestart(t *testing.T) {
 	}
 	h.stop()
 
-	repo, err = sqlitestore.Open(ctx, path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	h = serveRepo(t, repo)
+	h = serveRepo(t, kubetest.Open(t, kc, ns))
 	got, err := h.keys.GetKeyPair(ctx, &computev1.GetKeyPairRequest{Name: name})
 	if err != nil || got.GetLabels()["vws-fingerprint"] != "fp-restart" {
 		t.Fatalf("key pair after restart = %v %v", got.GetLabels(), err)

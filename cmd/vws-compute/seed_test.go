@@ -14,8 +14,8 @@ import (
 	"github.com/popododo0720/vws-compute/internal/hypervisor/fakeagent"
 	"github.com/popododo0720/vws-compute/internal/reconciler"
 	"github.com/popododo0720/vws-compute/internal/store"
+	"github.com/popododo0720/vws-compute/internal/store/kubestore/kubetest"
 	"github.com/popododo0720/vws-compute/internal/store/memstore"
-	"github.com/popododo0720/vws-compute/internal/store/sqlitestore"
 )
 
 const seededImageID = "debian-12"
@@ -51,12 +51,9 @@ func TestSeedIsIdempotentAcrossRestarts(t *testing.T) {
 	disk := writeDisk(t)
 	doc := filepath.Join(dir, "images.json")
 	writeSeedFile(t, doc, disk, seededImageID)
-	db := filepath.Join(dir, "state.db")
+	kc, ns := kubetest.Namespace(t)
 
-	repo, err := sqlitestore.Open(ctx, db)
-	if err != nil {
-		t.Fatal(err)
-	}
+	repo := kubetest.Open(t, kc, ns)
 	ctl, agent, stop := boot(t, repo)
 	entries, err := readSeed(doc)
 	if err != nil {
@@ -78,10 +75,7 @@ func TestSeedIsIdempotentAcrossRestarts(t *testing.T) {
 	}
 	stop()
 
-	repo, err = sqlitestore.Open(ctx, db)
-	if err != nil {
-		t.Fatal(err)
-	}
+	repo = kubetest.Open(t, kc, ns)
 	ctl, agent, stop = boot(t, repo)
 	defer stop()
 	if err := applySeed(ctx, ctl, repo, entries); err != nil {
@@ -120,15 +114,8 @@ func TestSeededImageLaunchStopStartTerminate(t *testing.T) {
 	disk := writeDisk(t)
 	doc := `{"images":[{"id":"` + seededImageID + `","family":"debian-12","path":"` + disk + `"}]}`
 	stores := map[string]func(t *testing.T) store.Repository{
-		"memstore": func(t *testing.T) store.Repository { return memstore.New() },
-		"sqlitestore": func(t *testing.T) store.Repository {
-			t.Helper()
-			s, err := sqlitestore.Open(context.Background(), filepath.Join(t.TempDir(), "state.db"))
-			if err != nil {
-				t.Fatal(err)
-			}
-			return s
-		},
+		"memstore":  func(t *testing.T) store.Repository { return memstore.New() },
+		"kubestore": func(t *testing.T) store.Repository { return kubetest.Store(t) },
 	}
 	for name, open := range stores {
 		t.Run(name, func(t *testing.T) {

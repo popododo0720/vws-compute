@@ -69,7 +69,7 @@ var ownerRules = []struct {
 	owners []string
 	why    string
 }{
-	{hasPrefix("database/sql", "modernc.org/sqlite"), []string{"internal/store/sqlitestore"}, "SQL stays in the SQLite store"},
+	{hasPrefix("database/sql", "modernc.org/sqlite"), nil, "no SQL: state lives in ConfigMaps"},
 	{hasPrefix("google.golang.org/protobuf", "google.golang.org/genproto", "github.com/popododo0720/vws-proto", "cloud.google.com/go/longrunning"),
 		[]string{"internal/grpcapi"}, "wire types stay in grpcapi"},
 	{hasPrefix("google.golang.org/grpc"), []string{"internal/grpcapi", "cmd/vws-compute"}, "gRPC stays at the edge"},
@@ -88,13 +88,12 @@ var selectorRules = []struct {
 	{[]string{"CommitInstanceStatus", "CommitImageStatus"}, []string{"internal/reconciler"}, "only the reconciler writes status"},
 	{[]string{"ConvergeMachine", "ConvergeImage"}, []string{"internal/reconciler"}, "only the reconciler calls the agent"},
 	{[]string{"ReportInstanceStatus"}, []string{"internal/grpcapi"}, "only the report RPC writes controller-reported status"},
-	{[]string{"RestoreOperation"}, []string{"internal/store/sqlitestore", "internal/store/kubestore"}, "only storage rehydrates operations"},
+	{[]string{"RestoreOperation"}, []string{"internal/store/kubestore"}, "only storage rehydrates operations"},
 }
 
 // exportedTypes lists, per package, the only exported type names allowed.
 var exportedTypes = map[string][]string{
-	"internal/store/sqlitestore": {"Store"},
-	"internal/store/kubestore":   {"Store", "Repaired"},
+	"internal/store/kubestore": {"Store", "Repaired"},
 }
 
 // constrainedDirs are the directories a rule constrains by name. Renaming
@@ -209,19 +208,19 @@ func TestArchitectureRules(t *testing.T) {
 		"internal/hypervisor/kubevirt/k.go": `package kubevirt; import _ "` + module + `/internal/compute"`,
 		"internal/widget/w.go":              `package widget; import "testing"; var _ testing.TB`,
 		"internal/store/storetest/s.go":     `package storetest; import "testing"; func f(s S, _ *testing.T) { s.CommitInstanceStatus() }`,
-		"internal/store/sqlitestore/r.go":   `package sqlitestore; type Store struct{}; type InstanceRow struct{}`,
+		"internal/store/kubestore/r.go":     `package kubestore; type Store struct{}; type InstanceRow struct{}`,
 		"internal/store/memstore/m_test.go": `package memstore; import "testing"`,
 	} {
 		writeFile(t, filepath.Join(probe, rel), src)
 	}
 	want := []string{
 		"internal/compute imports database/sql: the domain imports no transport, storage, or hypervisor",
-		"internal/compute imports database/sql: SQL stays in the SQLite store",
+		"internal/compute imports database/sql: no SQL: state lives in ConfigMaps",
 		"internal/controller imports " + module + "/internal/hypervisor: Submit never reaches a hypervisor",
 		"internal/grpcapi uses CommitDesired: only the controller writes desired state",
 		"internal/reconciler uses ReportInstanceStatus: only the report RPC writes controller-reported status",
 		"internal/hypervisor imports " + module + "/internal/compute: the agent contract imports nothing from this module",
-		"internal/store/sqlitestore exports type InstanceRow: storage rows stay unexported",
+		"internal/store/kubestore exports type InstanceRow: storage rows stay unexported",
 		"internal/widget imports k8s.io/apimachinery/pkg/types: Kubernetes client types stay in the KubeVirt agent and the ConfigMap store",
 		"internal/hypervisor/kubevirt imports " + module + "/internal/compute: the KubeVirt agent sees only the agent contract",
 		"internal/widget imports testing: production code does not import testing",

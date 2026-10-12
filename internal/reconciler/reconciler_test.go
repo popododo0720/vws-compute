@@ -3,7 +3,6 @@ package reconciler_test
 import (
 	"context"
 	"errors"
-	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -15,8 +14,8 @@ import (
 	"github.com/popododo0720/vws-compute/internal/hypervisor/fakeagent"
 	"github.com/popododo0720/vws-compute/internal/reconciler"
 	"github.com/popododo0720/vws-compute/internal/store"
+	"github.com/popododo0720/vws-compute/internal/store/kubestore/kubetest"
 	"github.com/popododo0720/vws-compute/internal/store/memstore"
-	"github.com/popododo0720/vws-compute/internal/store/sqlitestore"
 )
 
 var t0 = time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
@@ -66,24 +65,13 @@ func newHarness(t *testing.T, repo store.Repository, agent *fakeagent.Agent, clk
 	}
 }
 
-func openSQLite(t *testing.T, path string) store.Repository {
-	t.Helper()
-	s, err := sqlitestore.Open(context.Background(), path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return s
-}
-
-// eachStore runs fn against a fresh memstore and a fresh SQLite store.
+// eachStore runs fn against a fresh memstore and a fresh kubestore.
 func eachStore(t *testing.T, fn func(h *harness)) {
 	t.Run("memstore", func(t *testing.T) {
 		fn(newHarness(t, memstore.New(), fakeagent.New(), &clock{t: t0}))
 	})
-	t.Run("sqlitestore", func(t *testing.T) {
-		repo := openSQLite(t, filepath.Join(t.TempDir(), "state.db"))
-		t.Cleanup(func() { _ = repo.Close() })
-		fn(newHarness(t, repo, fakeagent.New(), &clock{t: t0}))
+	t.Run("kubestore", func(t *testing.T) {
+		fn(newHarness(t, kubetest.Store(t), fakeagent.New(), &clock{t: t0}))
 	})
 }
 
@@ -415,16 +403,16 @@ func TestNewGenerationDoesNotInheritBackoff(t *testing.T) {
 }
 
 func TestRestartRebuildsTheAgent(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "state.db")
+	kc, ns := kubetest.Namespace(t)
 	clk := &clock{t: t0}
-	h := newHarness(t, openSQLite(t, path), fakeagent.New(), clk)
+	h := newHarness(t, kubetest.Open(t, kc, ns), fakeagent.New(), clk)
 	id := h.running()
 	img := h.instance(id).Spec.Image
 	if err := h.repo.Close(); err != nil {
 		t.Fatal(err)
 	}
 
-	repo := openSQLite(t, path)
+	repo := kubetest.Open(t, kc, ns)
 	defer repo.Close()
 	agent := fakeagent.New()
 	if err := reconciler.New(repo, agent, reconciler.WithClock(clk.Now)).Restore(context.Background()); err != nil {
@@ -452,11 +440,11 @@ func TestRestartRebuildsTheAgent(t *testing.T) {
 }
 
 func TestRestartResumesFromTheRepositoryAlone(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "state.db")
+	kc, ns := kubetest.Namespace(t)
 	agent := fakeagent.New()
 	clk := &clock{t: t0}
 
-	h := newHarness(t, openSQLite(t, path), agent, clk)
+	h := newHarness(t, kubetest.Open(t, kc, ns), agent, clk)
 	img := h.image()
 	run := h.submit("run", ok(compute.NewRunInstance(img.String(), "vws.medium", "")))
 	id := run.Target.ID
@@ -467,7 +455,7 @@ func TestRestartResumesFromTheRepositoryAlone(t *testing.T) {
 		t.Fatalf("creations before restart = %d, want 0", got)
 	}
 
-	repo := openSQLite(t, path)
+	repo := kubetest.Open(t, kc, ns)
 	defer repo.Close()
 	if err := reconciler.New(repo, agent, reconciler.WithClock(clk.Now)).Sweep(context.Background()); err != nil {
 		t.Fatal(err)
@@ -500,11 +488,11 @@ func (s *losesInstanceStatus) CommitInstanceStatus(ctx context.Context, id compu
 }
 
 func TestLostStatusCommitConvergesWithoutASecondCreation(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "state.db")
+	kc, ns := kubetest.Namespace(t)
 	agent := fakeagent.New()
 	clk := &clock{t: t0}
 
-	h := newHarness(t, openSQLite(t, path), agent, clk)
+	h := newHarness(t, kubetest.Open(t, kc, ns), agent, clk)
 	img := h.image()
 	run := h.submit("run", ok(compute.NewRunInstance(img.String(), "vws.small", "")))
 	id := run.Target.ID
@@ -519,7 +507,7 @@ func TestLostStatusCommitConvergesWithoutASecondCreation(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	repo := openSQLite(t, path)
+	repo := kubetest.Open(t, kc, ns)
 	defer repo.Close()
 	if err := reconciler.New(repo, agent, reconciler.WithClock(clk.Now)).Sweep(context.Background()); err != nil {
 		t.Fatal(err)

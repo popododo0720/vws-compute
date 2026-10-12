@@ -12,14 +12,14 @@ The wire contract is `github.com/popododo0720/vws-proto` (commit `a1c6084`), ven
 go run ./cmd/vws-compute -listen 127.0.0.1:50051
 ```
 
-`-db` selects storage. Empty, the default, keeps all state in memory. A path keeps desired state, observed status, and operations in that SQLite file, and one process holds the file at a time. The binary drives an in-memory fake agent. On startup it re-applies the stored specs, so a restart rebuilds that agent's machines and image artifacts from the repository.
+`-namespace` selects storage. Empty, the default, keeps all state in memory. A Kubernetes namespace keeps desired state, observed status, and operations as ConfigMaps there (no CRD). `-kubeconfig` names the cluster config. Empty uses the in-cluster service account, then `$KUBECONFIG`. Run one replica: startup repairs the namespace and assumes no other writer. The namespace must exist. The binary drives an in-memory fake agent. On startup it re-applies the stored specs, so a restart rebuilds that agent's machines and image artifacts from the repository.
 
 ## Seed images
 
 `-seed-images` names a JSON file of disk images to register before the server listens. The process opens the port only after every seed image is ready, so a running server can launch instances from those ids.
 
 ```sh
-go run ./cmd/vws-compute -db state.db -seed-images images.json
+go run ./cmd/vws-compute -namespace vws -seed-images images.json
 ```
 
 ```json
