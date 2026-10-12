@@ -14,10 +14,19 @@ import (
 
 func claim(t *testing.T, c client.Client, ns, name string, mode corev1.PersistentVolumeAccessMode) {
 	t.Helper()
+	block := corev1.PersistentVolumeBlock
+	claimIn(t, c, ns, name, mode, &block)
+}
+
+// claimIn makes a claim with the given volumeMode. A nil volumeMode leaves the
+// field out of the request, as a claim made without one.
+func claimIn(t *testing.T, c client.Client, ns, name string, mode corev1.PersistentVolumeAccessMode, volumeMode *corev1.PersistentVolumeMode) {
+	t.Helper()
 	err := c.Create(context.Background(), &corev1.PersistentVolumeClaim{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
 		Spec: corev1.PersistentVolumeClaimSpec{
 			AccessModes: []corev1.PersistentVolumeAccessMode{mode},
+			VolumeMode:  volumeMode,
 			Resources:   corev1.VolumeResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceStorage: resource.MustParse("1Gi")}},
 		},
 	})

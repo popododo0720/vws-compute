@@ -25,8 +25,9 @@ rules:
     verbs: ["delete"]
   - apiGroups: [""]
     resources: ["persistentvolumeclaims"]
-    # get: volumes.go checkAttachable (Get of the claim, about line 139) reads
-    # the claim access modes before a volume is attached. A missing claim is
+    # get: volumes.go checkAttachable (Get of the claim, about line 154) reads
+    # the claim access modes, and for a hot-plugged volume its volumeMode,
+    # before a volume is attached. A missing claim is
     # reported as transient, so a denied get would fail every attach.
     verbs: ["get"]
 ---

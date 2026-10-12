@@ -38,7 +38,14 @@ func TestApplyReport(t *testing.T) {
 	t.Run("error parks the generation", func(t *testing.T) {
 		st, _, err := compute.ApplyReport(controllerDriven(compute.PowerRunning),
 			compute.InstanceReport{Node: node, Generation: 2, State: compute.ReportError, Message: "no disk"}, now)
-		if err != nil || !st.Observed.Parked(2) || st.Observed.Failure.Message != "no disk" {
+		if err != nil || !st.Observed.Parked(2) || st.Observed.Failure.Message != "no disk" || st.Observed.Failure.Code != compute.CodeInternal {
+			t.Fatalf("%+v %v", st, err)
+		}
+	})
+	t.Run("error carries the report code", func(t *testing.T) {
+		st, _, err := compute.ApplyReport(controllerDriven(compute.PowerRunning),
+			compute.InstanceReport{Node: node, Generation: 2, State: compute.ReportError, Message: "not Block", Code: compute.CodeFailedPrecondition}, now)
+		if err != nil || !st.Observed.Parked(2) || st.Observed.Failure.Code != compute.CodeFailedPrecondition {
 			t.Fatalf("%+v %v", st, err)
 		}
 	})
