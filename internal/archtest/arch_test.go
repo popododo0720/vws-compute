@@ -21,7 +21,7 @@ const module = "github.com/popododo0720/vws-compute"
 // testSupport lists non-test packages that exist only to serve tests. They
 // are exempt from the production rules, and no other non-test package may
 // import "testing".
-var testSupport = []string{"internal/store/storetest"}
+var testSupport = []string{"internal/store/storetest", "internal/store/kubestore/kubetest"}
 
 func isModule(imp string) bool { return imp == module || strings.HasPrefix(imp, module+"/") }
 
@@ -73,7 +73,7 @@ var ownerRules = []struct {
 	{hasPrefix("google.golang.org/protobuf", "google.golang.org/genproto", "github.com/popododo0720/vws-proto", "cloud.google.com/go/longrunning"),
 		[]string{"internal/grpcapi"}, "wire types stay in grpcapi"},
 	{hasPrefix("google.golang.org/grpc"), []string{"internal/grpcapi", "cmd/vws-compute"}, "gRPC stays at the edge"},
-	{hasPrefix("k8s.io", "sigs.k8s.io"), []string{"internal/hypervisor/kubevirt"}, "Kubernetes client types stay in the KubeVirt agent"},
+	{hasPrefix("k8s.io", "sigs.k8s.io"), []string{"internal/hypervisor/kubevirt", "internal/store/kubestore"}, "Kubernetes client types stay in the KubeVirt agent and the ConfigMap store"},
 	{func(imp string) bool { return imp == "testing" }, testSupport, "production code does not import testing"},
 }
 
@@ -88,12 +88,13 @@ var selectorRules = []struct {
 	{[]string{"CommitInstanceStatus", "CommitImageStatus"}, []string{"internal/reconciler"}, "only the reconciler writes status"},
 	{[]string{"ConvergeMachine", "ConvergeImage"}, []string{"internal/reconciler"}, "only the reconciler calls the agent"},
 	{[]string{"ReportInstanceStatus"}, []string{"internal/grpcapi"}, "only the report RPC writes controller-reported status"},
-	{[]string{"RestoreOperation"}, []string{"internal/store/sqlitestore"}, "only storage rehydrates operations"},
+	{[]string{"RestoreOperation"}, []string{"internal/store/sqlitestore", "internal/store/kubestore"}, "only storage rehydrates operations"},
 }
 
 // exportedTypes lists, per package, the only exported type names allowed.
 var exportedTypes = map[string][]string{
 	"internal/store/sqlitestore": {"Store"},
+	"internal/store/kubestore":   {"Store", "Repaired"},
 }
 
 // constrainedDirs are the directories a rule constrains by name. Renaming
@@ -221,7 +222,7 @@ func TestArchitectureRules(t *testing.T) {
 		"internal/reconciler uses ReportInstanceStatus: only the report RPC writes controller-reported status",
 		"internal/hypervisor imports " + module + "/internal/compute: the agent contract imports nothing from this module",
 		"internal/store/sqlitestore exports type InstanceRow: storage rows stay unexported",
-		"internal/widget imports k8s.io/apimachinery/pkg/types: Kubernetes client types stay in the KubeVirt agent",
+		"internal/widget imports k8s.io/apimachinery/pkg/types: Kubernetes client types stay in the KubeVirt agent and the ConfigMap store",
 		"internal/hypervisor/kubevirt imports " + module + "/internal/compute: the KubeVirt agent sees only the agent contract",
 		"internal/widget imports testing: production code does not import testing",
 	}
