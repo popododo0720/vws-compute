@@ -1,6 +1,7 @@
 // Command vws-compute serves the vws.compute.v1 resource services over gRPC.
 //
-// It runs the reconciler against the in-memory fake hypervisor agent. With
+// It runs the reconciler against the in-memory fake hypervisor agent, or
+// against KubeVirt and CDI with -hypervisor=kubevirt. With
 // -namespace set, desired state, observed status, and operations persist as
 // ConfigMaps in that Kubernetes namespace. Startup repairs the namespace and
 // re-applies the stored specs, so the fake agent is rebuilt after a restart.
@@ -22,7 +23,9 @@ import (
 
 	"github.com/popododo0720/vws-compute/internal/controller"
 	"github.com/popododo0720/vws-compute/internal/grpcapi"
+	"github.com/popododo0720/vws-compute/internal/hypervisor"
 	"github.com/popododo0720/vws-compute/internal/hypervisor/fakeagent"
+	"github.com/popododo0720/vws-compute/internal/hypervisor/kubevirt"
 	"github.com/popododo0720/vws-compute/internal/reconciler"
 	"github.com/popododo0720/vws-compute/internal/store"
 	"github.com/popododo0720/vws-compute/internal/store/kubestore"
@@ -30,22 +33,24 @@ import (
 )
 
 func main() {
-	listen := flag.String("listen", "127.0.0.1:50051", "address to serve gRPC on")
-	namespace := flag.String("namespace", "", "Kubernetes namespace that holds the ConfigMap store; empty keeps all state in memory")
-	kubeconfig := flag.String("kubeconfig", "", "kubeconfig path for -namespace; empty uses the in-cluster service account, then $KUBECONFIG and the default path")
-	seedImages := flag.String("seed-images", "", "JSON file of disk images to register before serving; empty registers none")
-	storage := flag.String("storage", "", "vws-storage gRPC address CreateInstance verifies volumes against; empty makes CreateInstance answer DEPENDENCY_MISSING")
-	flag.Parse()
-
+	cfg, err := parseConfig(os.Args[1:], os.Getenv, os.Stderr)
+	if errors.Is(err, flag.ErrHelp) {
+		return
+	}
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "vws-compute:", err)
+		os.Exit(2)
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	if err := run(ctx, *listen, *namespace, *kubeconfig, *seedImages, *storage); err != nil {
+	if err := run(ctx, cfg); err != nil {
 		fmt.Fprintln(os.Stderr, "vws-compute:", err)
 		os.Exit(1)
 	}
 }
 
-func run(ctx context.Context, listen, namespace, kubeconfig, seedImages, storage string) error {
+func run(ctx context.Context, cfg config) error {
+	listen, namespace, kubeconfig, seedImages, storage := cfg.listen, cfg.namespace, cfg.kubeconfig, cfg.seedImages, cfg.storage
 	seed, err := readSeed(seedImages)
 	if err != nil {
 		return err
@@ -129,6 +134,13 @@ func stopServer(srv *grpc.Server, grace time.Duration) {
 		srv.Stop()
 		<-stopped
 	}
+}
+
+func newAgent(cfg config) (hypervisor.Agent, error) {
+	if cfg.hypervisor != hypervisorKubeVirt {
+		return fakeagent.New(), nil
+	}
+	return kubevirt.Open(cfg.kubeconfig, kubevirt.Config{Namespace: cfg.vmNamespace, ImageNamespace: cfg.imageNamespace})
 }
 
 func open(ctx context.Context, namespace, kubeconfig string) (store.Repository, error) {
