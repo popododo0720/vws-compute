@@ -5,7 +5,28 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
+	"regexp"
 )
+
+// dnsLabel is a Kubernetes namespace name (RFC 1123 label, at most 63).
+var dnsLabel = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$`)
+
+// validate rejects malformed values at the boundary, before they reach a
+// listener or a Kubernetes request.
+func (c config) validate() error {
+	if _, _, err := net.SplitHostPort(c.listen); err != nil {
+		return fmt.Errorf("-listen %q: %w", c.listen, err)
+	}
+	for _, ns := range []struct{ flag, v string }{
+		{"-namespace", c.namespace}, {"-vm-namespace", c.vmNamespace}, {"-image-namespace", c.imageNamespace},
+	} {
+		if ns.v != "" && !dnsLabel.MatchString(ns.v) {
+			return fmt.Errorf("%s %q is not a valid namespace name", ns.flag, ns.v)
+		}
+	}
+	return nil
+}
 
 const (
 	hypervisorFake     = "fake"
@@ -44,7 +65,7 @@ func parseConfig(args []string, getenv func(string) string, errOut io.Writer) (c
 	fs.StringVar(&c.vmNamespace, "vm-namespace", env("VWS_VM_NAMESPACE", "vws-vms"), "namespace of VirtualMachines, VirtualMachineInstances, and volume PVCs (env VWS_VM_NAMESPACE)")
 	fs.StringVar(&c.imageNamespace, "image-namespace", env("VWS_IMAGE_NAMESPACE", "vws-images"), "namespace of CDI DataVolumes and DataSources (env VWS_IMAGE_NAMESPACE)")
 	if err := fs.Parse(args); err != nil {
-		return config{}, err
+		return config{}, fmt.Errorf("flags: %w", err)
 	}
 	if fs.NArg() > 0 {
 		return config{}, fmt.Errorf("unexpected argument %q", fs.Arg(0))
@@ -60,6 +81,9 @@ func parseConfig(args []string, getenv func(string) string, errOut io.Writer) (c
 		}
 	default:
 		return config{}, fmt.Errorf("unknown -hypervisor %q, want fake or kubevirt", c.hypervisor)
+	}
+	if err := c.validate(); err != nil {
+		return config{}, err
 	}
 	return c, nil
 }
