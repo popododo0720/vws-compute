@@ -300,9 +300,13 @@ type VolumeStatus struct {
 	state    protoimpl.MessageState `protogen:"open.v1"`
 	Observed *v1.ObservedState      `protobuf:"bytes,1,opt,name=observed,proto3" json:"observed,omitempty"`
 	// Instance that currently attaches this volume. Empty when detached.
-	Instance      string `protobuf:"bytes,2,opt,name=instance,proto3" json:"instance,omitempty"`
-	DeviceName    string `protobuf:"bytes,3,opt,name=device_name,json=deviceName,proto3" json:"device_name,omitempty"`
-	SizeGib       int64  `protobuf:"varint,4,opt,name=size_gib,json=sizeGib,proto3" json:"size_gib,omitempty"`
+	Instance   string `protobuf:"bytes,2,opt,name=instance,proto3" json:"instance,omitempty"`
+	DeviceName string `protobuf:"bytes,3,opt,name=device_name,json=deviceName,proto3" json:"device_name,omitempty"`
+	SizeGib    int64  `protobuf:"varint,4,opt,name=size_gib,json=sizeGib,proto3" json:"size_gib,omitempty"`
+	// Name of the PersistentVolumeClaim that backs this volume, in the VM namespace.
+	// The server sets it when it creates the claim. Empty until then.
+	// Set once, never changes. ReportVolumeStatus leaves the stored value as it is.
+	ClaimName     string `protobuf:"bytes,5,opt,name=claim_name,json=claimName,proto3" json:"claim_name,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -363,6 +367,13 @@ func (x *VolumeStatus) GetSizeGib() int64 {
 		return x.SizeGib
 	}
 	return 0
+}
+
+func (x *VolumeStatus) GetClaimName() string {
+	if x != nil {
+		return x.ClaimName
+	}
+	return ""
 }
 
 type GetVolumeRequest struct {
@@ -883,14 +894,16 @@ const file_vws_storage_v1_volume_proto_rawDesc = "" +
 	"\x11vws.compute/ImageH\x00R\x05image\x12:\n" +
 	"\bsnapshot\x18\x04 \x01(\tB\x1c\xe0A\x05\xfaA\x16\n" +
 	"\x14vws.storage/SnapshotH\x00R\bsnapshotB\b\n" +
-	"\x06source\"\xbb\x01\n" +
+	"\x06source\"\xdf\x01\n" +
 	"\fVolumeStatus\x128\n" +
 	"\bobserved\x18\x01 \x01(\v2\x1c.vws.common.v1.ObservedStateR\bobserved\x125\n" +
 	"\binstance\x18\x02 \x01(\tB\x19\xfaA\x16\n" +
 	"\x14vws.compute/InstanceR\binstance\x12\x1f\n" +
 	"\vdevice_name\x18\x03 \x01(\tR\n" +
 	"deviceName\x12\x19\n" +
-	"\bsize_gib\x18\x04 \x01(\x03R\asizeGib\"B\n" +
+	"\bsize_gib\x18\x04 \x01(\x03R\asizeGib\x12\"\n" +
+	"\n" +
+	"claim_name\x18\x05 \x01(\tB\x03\xe0A\x03R\tclaimName\"B\n" +
 	"\x10GetVolumeRequest\x12.\n" +
 	"\x04name\x18\x01 \x01(\tB\x1a\xe0A\x02\xfaA\x14\n" +
 	"\x12vws.storage/VolumeR\x04name\"\x84\x01\n" +

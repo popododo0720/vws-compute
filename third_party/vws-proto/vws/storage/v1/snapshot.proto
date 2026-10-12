@@ -117,6 +117,9 @@ message SnapshotStatus {
   int64 size_gib = 2;
   // 0 to 100 while the copy is running.
   int32 progress_percent = 3;
+  // Name of the VolumeSnapshot that backs this snapshot. Empty until the server creates it.
+  // Set once, never changes. ReportSnapshotStatus leaves the stored value as it is.
+  string snapshot_object_name = 4 [(google.api.field_behavior) = OUTPUT_ONLY];
 }
 
 message GetSnapshotRequest {
