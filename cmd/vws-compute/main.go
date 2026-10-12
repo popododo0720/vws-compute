@@ -61,7 +61,11 @@ func run(ctx context.Context, cfg config) error {
 	}
 	defer repo.Close()
 
-	rec := reconciler.New(repo, fakeagent.New(), reconciler.WithReports(repo))
+	agent, err := newAgent(cfg)
+	if err != nil {
+		return err
+	}
+	rec := reconciler.New(repo, agent, reconciler.WithReports(repo))
 	ctl := controller.New(repo, controller.WithKick(rec.Kick))
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -88,12 +92,17 @@ func run(ctx context.Context, cfg config) error {
 	}
 	srv := grpc.NewServer(grpc.WaitForHandlers(true))
 	grpcapi.Register(srv, ctl, repo, opts...)
+	hl := grpcapi.NewHealth(srv, healthInterval, healthChecks(repo, agent)...)
+	go hl.Run(ctx)
 	served := make(chan error, 1)
 	go func() { served <- srv.Serve(lis) }()
 	slog.Info("serving vws.compute.v1", "addr", lis.Addr().String(), "namespace", namespace)
 
 	select {
 	case <-ctx.Done():
+		// NOT_SERVING first, so probes and balancers drain before the
+		// listener closes.
+		hl.Shutdown()
 		stopServer(srv, shutdownGrace)
 		err = <-served
 	case err = <-served:
@@ -134,6 +143,26 @@ func stopServer(srv *grpc.Server, grace time.Duration) {
 		srv.Stop()
 		<-stopped
 	}
+}
+
+// healthInterval is how often readiness re-checks the store and the
+// cluster, and the timeout of one check round.
+const healthInterval = 5 * time.Second
+
+// pinger is a dependency readiness can check: the ConfigMap store and the
+// KubeVirt agent. The memory store and the fake agent have nothing to reach.
+type pinger interface {
+	Ping(ctx context.Context) error
+}
+
+func healthChecks(deps ...any) []grpcapi.Check {
+	var checks []grpcapi.Check
+	for _, d := range deps {
+		if p, ok := d.(pinger); ok {
+			checks = append(checks, p.Ping)
+		}
+	}
+	return checks
 }
 
 func newAgent(cfg config) (hypervisor.Agent, error) {
