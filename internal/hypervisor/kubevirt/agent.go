@@ -14,7 +14,6 @@ package kubevirt
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"strconv"
 
@@ -51,9 +50,14 @@ const (
 type Config struct {
 	// Namespace holds VirtualMachines.
 	Namespace string
-	// ImageNamespace holds the CDI DataSources that root disks clone from.
-	// Empty means Namespace.
+	// ImageNamespace holds the CDI DataVolumes and DataSources that root
+	// disks clone from. Empty means Namespace.
 	ImageNamespace string
+	// ImportSize is the disk size requested for an image fetched from a URL,
+	// as a Kubernetes quantity such as "20Gi". CDI cannot size an import by
+	// itself. Clones take their size from the source. Empty rejects URL
+	// images.
+	ImportSize string
 }
 
 // Agent converges machines through the Kubernetes API. It is safe for
@@ -101,10 +105,6 @@ func (a *Agent) ConvergeMachine(ctx context.Context, spec hypervisor.MachineSpec
 		return a.update(ctx, vm, spec)
 	}
 	return fmt.Errorf("machine %s: lost a create race twice", spec.Name)
-}
-
-func (a *Agent) ConvergeImage(context.Context, hypervisor.ImageSpec) (int64, error) {
-	return 0, hypervisor.Permanent(errors.New("kubevirt agent: images are not implemented yet"))
 }
 
 func (a *Agent) destroy(ctx context.Context, name string) error {

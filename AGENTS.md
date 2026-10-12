@@ -25,6 +25,7 @@ Rules for anyone changing this repository, human or agent. A rule with an enforc
 | `internal/hypervisor` imports nothing from this module. `fakeagent` and `kubevirt` import only `internal/hypervisor`. | `TestArchitectureRules` |
 | Kubernetes client packages (`k8s.io`, `sigs.k8s.io`) stay in `internal/hypervisor/kubevirt`. | `TestArchitectureRules` |
 | Converging a machine twice, or from a fresh agent, writes the Kubernetes API once. A power flip is one patch. | `TestConvergeTwiceMakesOneObject`, `TestNewAgentDoesNotDuplicate`, `TestPowerFlipsWithOnePatch` (envtest) |
+| An image is a CDI `DataVolume` and `DataSource` named by the image ID. Its size is the bound claim's capacity once the `DataVolume` succeeded. Removal fails while a `VirtualMachine` clones from it. | `TestImageIsCreatedOnceAndSizedByTheClaim` and `TestRemoveImageRefusedWhileAMachineClonesIt` (envtest) |
 | Wire types stay under `internal/grpcapi`. | Go `internal/` visibility and `TestArchitectureRules` |
 | `database/sql` and the SQLite driver stay in `sqlitestore`, and its row structs stay unexported. | `TestArchitectureRules` |
 | Production packages do not import `testing`. `storetest` is the one declared exception. | `TestArchitectureRules` |
