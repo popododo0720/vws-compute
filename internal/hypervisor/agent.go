@@ -104,3 +104,26 @@ func IsPermanent(err error) bool {
 	var p *PermanentError
 	return errors.As(err, &p)
 }
+
+// NotReadyError marks a transient agent error that only says the machine is
+// still coming up: the spec is applied and nothing is wrong, the hypervisor
+// has not finished yet. Callers retry it like any transient error but need
+// not log it as a failure.
+type NotReadyError struct{ Err error }
+
+func (e *NotReadyError) Error() string { return e.Err.Error() }
+func (e *NotReadyError) Unwrap() error { return e.Err }
+
+// NotReady wraps err as a NotReadyError. It returns nil for nil.
+func NotReady(err error) error {
+	if err == nil {
+		return nil
+	}
+	return &NotReadyError{Err: err}
+}
+
+// IsNotReady reports whether err's chain holds a NotReadyError.
+func IsNotReady(err error) bool {
+	var n *NotReadyError
+	return errors.As(err, &n)
+}

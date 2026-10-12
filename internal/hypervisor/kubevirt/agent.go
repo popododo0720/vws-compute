@@ -97,7 +97,7 @@ func (a *Agent) ConvergeMachine(ctx context.Context, spec hypervisor.MachineSpec
 
 // running reports whether KubeVirt has the guest up: the VirtualMachineInstance
 // exists, its phase is Running, and its Ready condition is True. Anything else
-// is a transient error, so the reconciler reports the instance as reconciling
+// is a hypervisor.NotReady error (transient), so the reconciler reports the instance as reconciling
 // and checks again on the next sweep instead of reporting it ready. It only
 // reads, so a converged machine is never written again.
 func (a *Agent) running(ctx context.Context, name string) error {
@@ -105,7 +105,7 @@ func (a *Agent) running(ctx context.Context, name string) error {
 	vmi.SetGroupVersionKind(vmiGVK)
 	err := a.c.Get(ctx, client.ObjectKey{Namespace: a.cfg.Namespace, Name: name}, vmi)
 	if apierrors.IsNotFound(err) {
-		return fmt.Errorf("machine %s: no virtual machine instance yet", name)
+		return hypervisor.NotReady(fmt.Errorf("machine %s: no virtual machine instance yet", name))
 	}
 	if err != nil {
 		return fmt.Errorf("machine %s: get virtual machine instance: %w", name, err)
@@ -115,10 +115,10 @@ func (a *Agent) running(ctx context.Context, name string) error {
 		return fmt.Errorf("machine %s: read instance phase: %w", name, err)
 	}
 	if phase != "Running" {
-		return fmt.Errorf("machine %s: instance phase is %q, not Running", name, phase)
+		return hypervisor.NotReady(fmt.Errorf("machine %s: instance phase is %q, not Running", name, phase))
 	}
 	if ready := readyCondition(vmi); ready != "True" {
-		return fmt.Errorf("machine %s: instance is Running but its Ready condition is %q", name, ready)
+		return hypervisor.NotReady(fmt.Errorf("machine %s: instance is Running but its Ready condition is %q", name, ready))
 	}
 	return nil
 }

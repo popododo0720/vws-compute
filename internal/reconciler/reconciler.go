@@ -84,7 +84,13 @@ func (r *Reconciler) Run(ctx context.Context) error {
 	defer tick.Stop()
 	for {
 		if err := r.Sweep(ctx); err != nil && ctx.Err() == nil {
-			r.log.WarnContext(ctx, "reconcile sweep", slog.Any("err", err))
+			// A machine that is only still booting fails every sweep until it
+			// is up. That is progress, not a failure, so it logs at debug.
+			if onlyNotReady(err) {
+				r.log.DebugContext(ctx, "reconcile sweep: waiting for machines", slog.Any("err", err))
+			} else {
+				r.log.WarnContext(ctx, "reconcile sweep", slog.Any("err", err))
+			}
 		}
 		select {
 		case <-ctx.Done():
@@ -485,4 +491,27 @@ func imageSpec(s compute.ImageSpec) hypervisor.ImageSpec {
 		i.SourceSnapshot = src.Ref.String()
 	}
 	return i
+}
+
+// onlyNotReady reports whether every error joined into err is a
+// hypervisor.NotReadyError. A sweep error that also holds a real failure is
+// not, so the failure is still logged as a warning.
+func onlyNotReady(err error) bool {
+	// Follow the single-error chain. If it reaches a join, every branch of
+	// the join must be not-ready. If it does not, errors.As sees the whole
+	// chain and nothing else.
+	for e := err; e != nil; e = errors.Unwrap(e) {
+		multi, ok := e.(interface{ Unwrap() []error }) //nolint:errorlint // looking for a join node itself, not a wrapped one
+		if !ok {
+			continue
+		}
+		errs := multi.Unwrap()
+		for _, b := range errs {
+			if !onlyNotReady(b) {
+				return false
+			}
+		}
+		return len(errs) > 0
+	}
+	return hypervisor.IsNotReady(err)
 }

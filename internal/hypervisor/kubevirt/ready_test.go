@@ -48,8 +48,8 @@ func TestPowerOnWaitsForReadyVMI(t *testing.T) {
 				switch {
 				case tc.want == "" && err != nil:
 					t.Fatalf("pass %d: %v, want converged", pass, err)
-				case tc.want != "" && (err == nil || hypervisor.IsPermanent(err) || !strings.Contains(err.Error(), tc.want)):
-					t.Fatalf("pass %d: %v, want a transient error containing %q", pass, err, tc.want)
+				case tc.want != "" && (!hypervisor.IsNotReady(err) || hypervisor.IsPermanent(err) || !strings.Contains(err.Error(), tc.want)):
+					t.Fatalf("pass %d: %v, want a NotReady error containing %q", pass, err, tc.want)
 				}
 				// The first pass creates the VirtualMachine. A second pass
 				// on an unchanged spec only reads, ready or not.
