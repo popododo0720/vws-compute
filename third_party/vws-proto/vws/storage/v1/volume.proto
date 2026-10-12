@@ -129,6 +129,10 @@ message VolumeStatus {
   string instance = 2 [(google.api.resource_reference).type = "vws.compute/Instance"];
   string device_name = 3;
   int64 size_gib = 4;
+  // Name of the PersistentVolumeClaim that backs this volume, in the VM namespace.
+  // The server sets it when it creates the claim. Empty until then.
+  // Set once, never changes. ReportVolumeStatus leaves the stored value as it is.
+  string claim_name = 5 [(google.api.field_behavior) = OUTPUT_ONLY];
 }
 
 enum VolumeType {

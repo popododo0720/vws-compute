@@ -143,9 +143,6 @@ var classifiedSpecFields = map[string]map[string]bool{
 	"KeyPairSpec": {
 		"public_key": true,
 	},
-	"NodeSpec": {
-		"instance_slots": true,
-	},
 }
 
 func TestMaskClassifiesEverySpecField(t *testing.T) {
@@ -153,7 +150,6 @@ func TestMaskClassifiesEverySpecField(t *testing.T) {
 		(&computev1.InstanceSpec{}).ProtoReflect().Descriptor(),
 		(&computev1.ImageSpec{}).ProtoReflect().Descriptor(),
 		(&computev1.KeyPairSpec{}).ProtoReflect().Descriptor(),
-		(&computev1.NodeSpec{}).ProtoReflect().Descriptor(),
 	} {
 		allowed := classifiedSpecFields[string(msg.Name())]
 		fields := msg.Fields()

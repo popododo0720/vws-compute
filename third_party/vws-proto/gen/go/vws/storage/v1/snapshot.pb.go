@@ -202,8 +202,11 @@ type SnapshotStatus struct {
 	SizeGib  int64                  `protobuf:"varint,2,opt,name=size_gib,json=sizeGib,proto3" json:"size_gib,omitempty"`
 	// 0 to 100 while the copy is running.
 	ProgressPercent int32 `protobuf:"varint,3,opt,name=progress_percent,json=progressPercent,proto3" json:"progress_percent,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	// Name of the VolumeSnapshot that backs this snapshot. Empty until the server creates it.
+	// Set once, never changes. ReportSnapshotStatus leaves the stored value as it is.
+	SnapshotObjectName string `protobuf:"bytes,4,opt,name=snapshot_object_name,json=snapshotObjectName,proto3" json:"snapshot_object_name,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
 }
 
 func (x *SnapshotStatus) Reset() {
@@ -255,6 +258,13 @@ func (x *SnapshotStatus) GetProgressPercent() int32 {
 		return x.ProgressPercent
 	}
 	return 0
+}
+
+func (x *SnapshotStatus) GetSnapshotObjectName() string {
+	if x != nil {
+		return x.SnapshotObjectName
+	}
+	return ""
 }
 
 type GetSnapshotRequest struct {
@@ -770,11 +780,12 @@ const file_vws_storage_v1_snapshot_proto_rawDesc = "" +
 	"\fSnapshotSpec\x125\n" +
 	"\x06volume\x18\x01 \x01(\tB\x1d\xe0A\x02\xe0A\x05\xfaA\x14\n" +
 	"\x12vws.storage/VolumeR\x06volume\x12 \n" +
-	"\vdescription\x18\x02 \x01(\tR\vdescription\"\x90\x01\n" +
+	"\vdescription\x18\x02 \x01(\tR\vdescription\"\xc7\x01\n" +
 	"\x0eSnapshotStatus\x128\n" +
 	"\bobserved\x18\x01 \x01(\v2\x1c.vws.common.v1.ObservedStateR\bobserved\x12\x19\n" +
 	"\bsize_gib\x18\x02 \x01(\x03R\asizeGib\x12)\n" +
-	"\x10progress_percent\x18\x03 \x01(\x05R\x0fprogressPercent\"F\n" +
+	"\x10progress_percent\x18\x03 \x01(\x05R\x0fprogressPercent\x125\n" +
+	"\x14snapshot_object_name\x18\x04 \x01(\tB\x03\xe0A\x03R\x12snapshotObjectName\"F\n" +
 	"\x12GetSnapshotRequest\x120\n" +
 	"\x04name\x18\x01 \x01(\tB\x1c\xe0A\x02\xfaA\x16\n" +
 	"\x14vws.storage/SnapshotR\x04name\"\x88\x01\n" +

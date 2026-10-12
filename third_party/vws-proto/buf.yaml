@@ -7,5 +7,11 @@ lint:
 breaking:
   use:
     - FILE
+  # The NodeService removal (vws-proto#5). Remove these entries once the removal is on main.
+  ignore_only:
+    FILE_NO_DELETE:
+      - vws/compute/v1/node.proto
+    FIELD_NO_DELETE:
+      - vws/compute/v1/instance.proto
 deps:
   - buf.build/googleapis/googleapis
