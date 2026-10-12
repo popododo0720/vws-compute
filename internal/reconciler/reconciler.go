@@ -33,6 +33,7 @@ const (
 
 type Reconciler struct {
 	store    store.StatusStore
+	reports  store.ReportStore
 	agent    hypervisor.Agent
 	now      func() time.Time
 	interval time.Duration
@@ -114,6 +115,12 @@ func (r *Reconciler) Sweep(ctx context.Context) error {
 		return err
 	}
 	var errs []error
+	if err := r.sweepDriven(ctx); err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		errs = append(errs, err)
+	}
 	step := func(ref compute.Ref) error {
 		if err := r.converge(ctx, ref); err != nil {
 			if ctx.Err() != nil {
@@ -273,7 +280,7 @@ func (r *Reconciler) Restore(ctx context.Context) error {
 		return ctx.Err()
 	}
 	if err := r.eachInstance(ctx, func(inst compute.Instance) error {
-		if inst.Spec.ControllerDriven() || inst.Spec.Power == compute.PowerTerminated || inst.Lifecycle() == compute.InstanceError {
+		if (inst.Spec.ControllerDriven() && r.reports == nil) || inst.Spec.Power == compute.PowerTerminated || inst.Lifecycle() == compute.InstanceError {
 			return nil
 		}
 		if inst.Status.Observed.Generation != inst.Spec.Generation {

@@ -87,7 +87,7 @@ var selectorRules = []struct {
 	{[]string{"CommitDesired"}, []string{"internal/controller"}, "only the controller writes desired state"},
 	{[]string{"CommitInstanceStatus", "CommitImageStatus"}, []string{"internal/reconciler"}, "only the reconciler writes status"},
 	{[]string{"ConvergeMachine", "ConvergeImage"}, []string{"internal/reconciler"}, "only the reconciler calls the agent"},
-	{[]string{"ReportInstanceStatus"}, []string{"internal/grpcapi"}, "only the report RPC writes controller-reported status"},
+	{[]string{"ReportInstanceStatus"}, []string{"internal/grpcapi", "internal/reconciler"}, "only the report RPC and the reconciler write controller-reported status"},
 	{[]string{"RestoreOperation"}, []string{"internal/store/kubestore"}, "only storage rehydrates operations"},
 }
 
@@ -218,7 +218,6 @@ func TestArchitectureRules(t *testing.T) {
 		"internal/compute imports database/sql: no SQL: state lives in ConfigMaps",
 		"internal/controller imports " + module + "/internal/hypervisor: Submit never reaches a hypervisor",
 		"internal/grpcapi uses CommitDesired: only the controller writes desired state",
-		"internal/reconciler uses ReportInstanceStatus: only the report RPC writes controller-reported status",
 		"internal/hypervisor imports " + module + "/internal/compute: the agent contract imports nothing from this module",
 		"internal/store/kubestore exports type InstanceRow: storage rows stay unexported",
 		"internal/widget imports k8s.io/apimachinery/pkg/types: Kubernetes client types stay in the KubeVirt agent and the ConfigMap store",
