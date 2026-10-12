@@ -1,8 +1,9 @@
 // Command vws-compute serves the vws.compute.v1 resource services over gRPC.
 //
 // It runs the reconciler against the in-memory fake hypervisor agent. With
-// -db set, desired state, observed status, and operations persist in SQLite.
-// Startup re-applies those specs, so the fake agent is rebuilt after a restart.
+// -namespace set, desired state, observed status, and operations persist as
+// ConfigMaps in that Kubernetes namespace. Startup repairs the namespace and
+// re-applies the stored specs, so the fake agent is rebuilt after a restart.
 package main
 
 import (
@@ -24,31 +25,32 @@ import (
 	"github.com/popododo0720/vws-compute/internal/hypervisor/fakeagent"
 	"github.com/popododo0720/vws-compute/internal/reconciler"
 	"github.com/popododo0720/vws-compute/internal/store"
+	"github.com/popododo0720/vws-compute/internal/store/kubestore"
 	"github.com/popododo0720/vws-compute/internal/store/memstore"
-	"github.com/popododo0720/vws-compute/internal/store/sqlitestore"
 )
 
 func main() {
 	listen := flag.String("listen", "127.0.0.1:50051", "address to serve gRPC on")
-	db := flag.String("db", "", "SQLite database path; empty keeps all state in memory")
+	namespace := flag.String("namespace", "", "Kubernetes namespace that holds the ConfigMap store; empty keeps all state in memory")
+	kubeconfig := flag.String("kubeconfig", "", "kubeconfig path for -namespace; empty uses the in-cluster service account, then $KUBECONFIG and the default path")
 	seedImages := flag.String("seed-images", "", "JSON file of disk images to register before serving; empty registers none")
 	storage := flag.String("storage", "", "vws-storage gRPC address CreateInstance verifies volumes against; empty makes CreateInstance answer DEPENDENCY_MISSING")
 	flag.Parse()
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	if err := run(ctx, *listen, *db, *seedImages, *storage); err != nil {
+	if err := run(ctx, *listen, *namespace, *kubeconfig, *seedImages, *storage); err != nil {
 		fmt.Fprintln(os.Stderr, "vws-compute:", err)
 		os.Exit(1)
 	}
 }
 
-func run(ctx context.Context, listen, db, seedImages, storage string) error {
+func run(ctx context.Context, listen, namespace, kubeconfig, seedImages, storage string) error {
 	seed, err := readSeed(seedImages)
 	if err != nil {
 		return err
 	}
-	repo, err := open(ctx, db)
+	repo, err := open(ctx, namespace, kubeconfig)
 	if err != nil {
 		return err
 	}
@@ -83,7 +85,7 @@ func run(ctx context.Context, listen, db, seedImages, storage string) error {
 	grpcapi.Register(srv, ctl, repo, opts...)
 	served := make(chan error, 1)
 	go func() { served <- srv.Serve(lis) }()
-	slog.Info("serving vws.compute.v1", "addr", lis.Addr().String(), "db", db)
+	slog.Info("serving vws.compute.v1", "addr", lis.Addr().String(), "namespace", namespace)
 
 	select {
 	case <-ctx.Done():
@@ -129,9 +131,14 @@ func stopServer(srv *grpc.Server, grace time.Duration) {
 	}
 }
 
-func open(ctx context.Context, path string) (store.Repository, error) {
-	if path == "" {
+func open(ctx context.Context, namespace, kubeconfig string) (store.Repository, error) {
+	if namespace == "" {
 		return memstore.New(), nil
 	}
-	return sqlitestore.Open(ctx, path)
+	repo, repaired, err := kubestore.Open(ctx, kubeconfig, namespace)
+	if err != nil {
+		return nil, err
+	}
+	slog.Info("opened store", "namespace", namespace, "repaired", repaired)
+	return repo, nil
 }

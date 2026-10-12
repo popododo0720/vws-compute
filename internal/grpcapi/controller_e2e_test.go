@@ -157,9 +157,8 @@ func TestUnreportedDeleteStaysUntilTheControllerReports(t *testing.T) {
 }
 
 // TestControllerStateSurvivesRestart starts a second server over the same
-// store, which is what a process restart does. The sqlite store keeps the
-// same rows across a real restart: see TestControllerDrivenStateSurvivesRestart
-// in sqlitestore.
+// store, which is what a process restart does. The kubestore keeps the same
+// objects across a restart: see TestMetadataSurvivesRestart.
 func TestControllerStateSurvivesRestart(t *testing.T) {
 	ctx := context.Background()
 	repo := memstore.New()
