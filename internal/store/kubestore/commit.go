@@ -144,11 +144,17 @@ func (s *Store) claimsFor(ctx context.Context, c store.DesiredChange) ([]claim, 
 		if err != nil {
 			return nil, nil, err
 		}
-		if e.exists || !spec.ControllerDriven() {
+		if !spec.ControllerDriven() || spec.Power == compute.PowerTerminated {
 			return nil, qualifies, nil
 		}
+		// A create claims every volume; an update claims only the ones it
+		// attaches. A detached volume's claim is taken over later, because
+		// volumeQualifies no longer finds it on this instance.
 		var out []claim
 		for _, v := range spec.Volumes {
+			if e.exists && holds(e.inst.Spec.Volumes, v.Volume) {
+				continue
+			}
 			out = append(out, claim{kind: kindClaimVolume, subject: v.Volume.String(), holder: spec.ID.String()})
 		}
 		slices.SortFunc(out, func(a, b claim) int { return strings.Compare(a.subject, b.subject) })
@@ -245,4 +251,13 @@ func put(e *entry, spec compute.Spec) error {
 		return compute.Errorf(compute.CodeInternal, "unknown spec %T", spec)
 	}
 	return nil
+}
+
+func holds(vols []compute.VolumeAttachment, ref compute.VolumeRef) bool {
+	for _, v := range vols {
+		if v.Volume == ref {
+			return true
+		}
+	}
+	return false
 }

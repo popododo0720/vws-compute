@@ -157,3 +157,46 @@ func deleteWaitsForTheController(f fixture) {
 		f.t.Fatal("DELETING did not remove the instance")
 	}
 }
+
+// withData returns spec at gen with a data volume vol on vdb, backed by
+// claim, after the boot entry.
+func withData(spec compute.InstanceSpec, gen int64, vol, claim string) compute.InstanceSpec {
+	spec.Generation = gen
+	spec.Volumes = append(append([]compute.VolumeAttachment(nil), spec.Volumes[:1]...),
+		compute.VolumeAttachment{Volume: ok(compute.ParseVolumeRef(volPrefix + vol)), DeviceName: "vdb", Claim: claim})
+	return spec
+}
+
+func attachIntent(id string, spec compute.InstanceSpec) compute.Intent {
+	return ok(compute.NewUpdateInstanceSpec(id, compute.PowerRunning, spec.Volumes, compute.MetadataPatch{}))
+}
+
+// attachClaimsVolumes is AttachVolume and DetachVolume through an update: an
+// update claims the volumes it adds, one held by another live instance is
+// refused, and a detached volume can be attached elsewhere.
+func attachClaimsVolumes(f fixture) {
+	f.mustCreateControllerDriven("req-1", "web-1", "root-1", t0)
+	f.mustCreateControllerDriven("req-2", "web-2", "root-2", t0)
+
+	held := withData(controllerSpec("web-1", "root-1", 1, compute.PowerRunning), 2, "root-2", "pvc-root-2")
+	_, err := f.commit("req-3", attachIntent("web-1", held), held, true)
+	wantCode(f.t, err, compute.CodeFailedPrecondition)
+
+	data := withData(controllerSpec("web-1", "root-1", 1, compute.PowerRunning), 2, "data", "pvc-data")
+	f.mustCommit("req-4", attachIntent("web-1", data), data, true)
+	got := f.instance("web-1").Spec
+	if len(got.Volumes) != 2 || got.Volumes[1].Claim != "pvc-data" || got.Volumes[0].Volume.String() != volPrefix+"root-1" {
+		f.t.Fatalf("after attach = %+v", got.Volumes)
+	}
+
+	taken := withData(controllerSpec("web-2", "root-2", 1, compute.PowerRunning), 2, "data", "pvc-data")
+	_, err = f.commit("req-5", attachIntent("web-2", taken), taken, true)
+	wantCode(f.t, err, compute.CodeFailedPrecondition)
+
+	detached := controllerSpec("web-1", "root-1", 3, compute.PowerRunning)
+	f.mustCommit("req-6", attachIntent("web-1", detached), detached, true)
+	f.mustCommit("req-7", attachIntent("web-2", taken), taken, true)
+	if got := f.instance("web-2").Spec; len(got.Volumes) != 2 || got.Volumes[1].Claim != "pvc-data" {
+		f.t.Fatalf("web-2 after takeover = %+v", got.Volumes)
+	}
+}
