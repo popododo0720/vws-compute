@@ -177,7 +177,7 @@ func TestPlanRejects(t *testing.T) {
 func TestIntentConstructorsValidate(t *testing.T) {
 	cases := map[string]func() (compute.Intent, error){
 		"missing instance type": func() (compute.Intent, error) { return compute.NewRunInstance(imageID, "", "") },
-		"unknown instance type": func() (compute.Intent, error) { return compute.NewRunInstance(imageID, "vws.large", "") },
+		"unknown instance type": func() (compute.Intent, error) { return compute.NewRunInstance(imageID, "vws.huge", "") },
 		"bad image id":          func() (compute.Intent, error) { return compute.NewRunInstance("9debian", "vws.small", "") },
 		"bad image path": func() (compute.Intent, error) {
 			return compute.NewRegisterFile("debian-12", "images/debian-12.qcow2", "debian-12")

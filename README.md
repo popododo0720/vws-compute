@@ -14,6 +14,17 @@ go run ./cmd/vws-compute -listen 127.0.0.1:50051
 
 `-namespace` selects storage. Empty, the default, keeps all state in memory. A Kubernetes namespace keeps desired state, observed status, and operations as ConfigMaps there (no CRD). `-kubeconfig` names the cluster config. Empty uses the in-cluster service account, then `$KUBECONFIG`. Run one replica: startup repairs the namespace and assumes no other writer. The namespace must exist. The binary drives an in-memory fake agent. On startup it re-applies the stored specs, so a restart rebuilds that agent's machines and image artifacts from the repository.
 
+## Machine types
+
+`machine_type` must be one of these (`internal/compute/names.go`). Any other name is `INVALID_ARGUMENT` / `INVALID_SPEC`.
+
+| name | vCPU | memory |
+| --- | --- | --- |
+| `vws.small` | 1 | 1024 MiB |
+| `vws.medium` | 2 | 4096 MiB |
+| `vws.large` | 4 | 8192 MiB |
+| `vws.xlarge` | 8 | 16384 MiB |
+
 ## Seed images
 
 `-seed-images` names a JSON file of disk images to register before the server listens. The process opens the port only after every seed image is ready, so a running server can launch instances from those ids.

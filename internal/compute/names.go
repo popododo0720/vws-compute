@@ -148,6 +148,8 @@ type InstanceType struct {
 var instanceTypes = [...]InstanceType{
 	{name: "vws.small", vcpus: 1, memoryMiB: 1024},
 	{name: "vws.medium", vcpus: 2, memoryMiB: 4096},
+	{name: "vws.large", vcpus: 4, memoryMiB: 8192},
+	{name: "vws.xlarge", vcpus: 8, memoryMiB: 16384},
 }
 
 // ParseInstanceType looks s up in the catalog. It fails with CodeInvalid.
