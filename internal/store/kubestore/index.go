@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"strconv"
 
 	corev1 "k8s.io/api/core/v1"
@@ -71,10 +72,10 @@ func (s *Store) index(ctx context.Context, req compute.RequestID) (*requestIndex
 	var cm corev1.ConfigMap
 	err := s.c.Get(ctx, client.ObjectKey{Namespace: s.ns, Name: indexName(req)}, &cm)
 	if apierrors.IsNotFound(err) {
-		return nil, nil
+		return nil, nil //nolint:nilnil // nil is "no index": callers branch on it and every path treats it as unclaimed
 	}
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("get request index %s: %w", indexName(req), err)
 	}
 	return decodeIndex(&cm)
 }
@@ -83,12 +84,12 @@ func (s *Store) index(ctx context.Context, req compute.RequestID) (*requestIndex
 func (s *Store) indexByOp(ctx context.Context, id compute.OperationID) (*requestIndex, error) {
 	var cms corev1.ConfigMapList
 	if err := s.c.List(ctx, &cms, client.InNamespace(s.ns), client.MatchingLabels{labelKind: kindRequest, labelOp: id.String()}); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("list request index for %s: %w", id, err)
 	}
 	for i := range cms.Items {
 		return decodeIndex(&cms.Items[i])
 	}
-	return nil, nil
+	return nil, nil //nolint:nilnil // nil is "no index names op", which callers handle
 }
 
 // claimIndex creates the index. It fails with errCAS when one exists.
@@ -112,7 +113,7 @@ func (s *Store) releaseIndex(ctx context.Context, req compute.RequestID, op comp
 	if apierrors.IsNotFound(err) || apierrors.IsConflict(err) {
 		return nil
 	}
-	return err
+	return fmt.Errorf("delete request index %s: %w", indexName(req), err)
 }
 
 var errBadIndex = errors.New("bad index fields")

@@ -2,6 +2,7 @@ package kubestore
 
 import (
 	"context"
+	"fmt"
 
 	"k8s.io/client-go/tools/clientcmd"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -15,11 +16,11 @@ func Open(ctx context.Context, kubeconfig, namespace string) (*Store, Repaired, 
 	rules.ExplicitPath = kubeconfig
 	cfg, err := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(rules, nil).ClientConfig()
 	if err != nil {
-		return nil, Repaired{}, err
+		return nil, Repaired{}, fmt.Errorf("kubeconfig: %w", err)
 	}
 	c, err := client.New(cfg, client.Options{})
 	if err != nil {
-		return nil, Repaired{}, err
+		return nil, Repaired{}, fmt.Errorf("kubernetes client: %w", err)
 	}
 	s := New(c, namespace)
 	r, err := s.Repair(ctx)

@@ -2,6 +2,7 @@ package kubestore
 
 import (
 	"context"
+	"fmt"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -46,7 +47,7 @@ func (s *Store) Repair(ctx context.Context) (Repaired, error) {
 	// Indexes whose operation the resource does not hold.
 	var idxs corev1.ConfigMapList
 	if err := s.c.List(ctx, &idxs, client.InNamespace(s.ns), client.MatchingLabels{labelKind: kindRequest}); err != nil {
-		return r, err
+		return r, fmt.Errorf("list request indexes: %w", err)
 	}
 	have := map[compute.RequestID]bool{}
 	for i := range idxs.Items {
@@ -63,7 +64,7 @@ func (s *Store) Repair(ctx context.Context) (Repaired, error) {
 			continue
 		}
 		if err := s.c.Delete(ctx, &idxs.Items[i]); err != nil && !apierrors.IsNotFound(err) {
-			return r, err
+			return r, fmt.Errorf("delete orphaned index %s: %w", idxs.Items[i].Name, err)
 		}
 		r.OrphanIndexes++
 	}
@@ -88,7 +89,7 @@ func (s *Store) Repair(ctx context.Context) (Repaired, error) {
 	var claims corev1.ConfigMapList
 	for _, k := range []string{kindClaimKey, kindClaimVolume} {
 		if err := s.c.List(ctx, &claims, client.InNamespace(s.ns), client.MatchingLabels{labelKind: k}); err != nil {
-			return r, err
+			return r, fmt.Errorf("list %s claims: %w", k, err)
 		}
 		for i := range claims.Items {
 			cm := &claims.Items[i]
@@ -106,7 +107,7 @@ func (s *Store) Repair(ctx context.Context) (Repaired, error) {
 				continue
 			}
 			if err := s.c.Delete(ctx, cm); err != nil && !apierrors.IsNotFound(err) {
-				return r, err
+				return r, fmt.Errorf("delete stale claim %s: %w", cm.Name, err)
 			}
 			r.StaleClaims++
 		}

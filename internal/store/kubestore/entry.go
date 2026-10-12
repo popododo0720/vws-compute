@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"time"
@@ -201,7 +202,7 @@ func (s *Store) get(ctx context.Context, ref compute.Ref) (*entry, error) {
 		return &entry{ref: ref}, nil
 	}
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("get %s: %w", objectName(ref), err)
 	}
 	return decode(ref, &cm)
 }
@@ -210,7 +211,7 @@ func (s *Store) get(ctx context.Context, ref compute.Ref) (*entry, error) {
 func (s *Store) list(ctx context.Context, kind compute.Kind) ([]*entry, error) {
 	var cms corev1.ConfigMapList
 	if err := s.c.List(ctx, &cms, client.InNamespace(s.ns), client.MatchingLabels{labelKind: kindLabel(kind)}); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("list %s: %w", kindLabel(kind), err)
 	}
 	out := make([]*entry, 0, len(cms.Items))
 	prefix := "vws-" + kind.String() + "-"

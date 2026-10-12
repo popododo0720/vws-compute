@@ -2,6 +2,7 @@ package kubestore
 
 import (
 	"context"
+	"fmt"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -75,14 +76,14 @@ func (s *Store) release(ctx context.Context, c claim) error {
 		return nil
 	}
 	if err != nil {
-		return err
+		return fmt.Errorf("get claim %s: %w", c.name(), err)
 	}
 	rv := cur.ResourceVersion
 	err = s.c.Delete(ctx, &cur, client.Preconditions{ResourceVersion: &rv})
 	if apierrors.IsNotFound(err) || apierrors.IsConflict(err) {
 		return nil
 	}
-	return err
+	return fmt.Errorf("delete claim %s: %w", c.name(), err)
 }
 
 // keyNameQualifies reports whether holder still holds the key name: it does

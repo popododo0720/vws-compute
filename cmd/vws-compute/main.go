@@ -59,7 +59,11 @@ func run(ctx context.Context, cfg config) error {
 	if err != nil {
 		return err
 	}
-	defer repo.Close()
+	defer func() {
+		if err := repo.Close(); err != nil {
+			slog.WarnContext(ctx, "close store", slog.Any("err", err))
+		}
+	}()
 
 	rec := reconciler.New(repo, fakeagent.New(), reconciler.WithReports(repo))
 	ctl := controller.New(repo, controller.WithKick(rec.Kick))
@@ -71,7 +75,7 @@ func run(ctx context.Context, cfg config) error {
 		return stopReconciler(cancel, reconciled, err)
 	}
 
-	lis, err := net.Listen("tcp", listen)
+	lis, err := (&net.ListenConfig{}).Listen(ctx, "tcp", listen)
 	if err != nil {
 		return stopReconciler(cancel, reconciled, err)
 	}
@@ -83,14 +87,18 @@ func run(ctx context.Context, cfg config) error {
 		if err != nil {
 			return stopReconciler(cancel, reconciled, err)
 		}
-		defer closeStorage()
+		defer func() {
+			if err := closeStorage(); err != nil {
+				slog.WarnContext(ctx, "close storage connection", slog.Any("err", err))
+			}
+		}()
 		opts = append(opts, grpcapi.WithVolumes(lookup))
 	}
 	srv := grpc.NewServer(grpc.WaitForHandlers(true))
 	grpcapi.Register(srv, ctl, repo, opts...)
 	served := make(chan error, 1)
 	go func() { served <- srv.Serve(lis) }()
-	slog.Info("serving vws.compute.v1", "addr", lis.Addr().String(), "namespace", namespace)
+	slog.InfoContext(ctx, "serving vws.compute.v1", slog.String("addr", lis.Addr().String()), slog.String("namespace", namespace))
 
 	select {
 	case <-ctx.Done():
@@ -151,6 +159,6 @@ func open(ctx context.Context, namespace, kubeconfig string) (store.Repository, 
 	if err != nil {
 		return nil, err
 	}
-	slog.Info("opened store", "namespace", namespace, "repaired", repaired)
+	slog.InfoContext(ctx, "opened store", slog.String("namespace", namespace), slog.Any("repaired", repaired))
 	return repo, nil
 }

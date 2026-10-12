@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/hex"
+	"fmt"
 	"strconv"
 	"strings"
 	"time"
@@ -49,7 +50,7 @@ func checkEtag(got, want string) error {
 func hexFingerprint(k compute.PublicKey) (string, error) {
 	raw, err := base64.RawStdEncoding.DecodeString(strings.TrimPrefix(k.Fingerprint(), "SHA256:"))
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("decode key fingerprint: %w", err)
 	}
 	return hex.EncodeToString(raw), nil
 }
@@ -331,7 +332,7 @@ func (s *server) operationResource(ctx context.Context, project, resourceName st
 		name := resourceName
 		id, err := compute.ParseInstanceID(op.Target.ID)
 		if err != nil {
-			return name, nil, nil
+			return name, nil, nil //nolint:nilerr // a stored target id that does not parse has no resource to show; the operation itself is still answered
 		}
 		inst, err := s.read.Instance(ctx, id)
 		if err != nil {
@@ -356,7 +357,7 @@ func (s *server) operationResource(ctx context.Context, project, resourceName st
 		}
 		id, err := compute.ParseImageID(op.Target.ID)
 		if err != nil {
-			return name, nil, nil
+			return name, nil, nil //nolint:nilerr // a stored target id that does not parse has no resource to show; the operation itself is still answered
 		}
 		img, err := s.read.Image(ctx, id)
 		if err != nil {
@@ -369,7 +370,7 @@ func (s *server) operationResource(ctx context.Context, project, resourceName st
 	case compute.KindKeyPair:
 		id, err := compute.ParseKeyPairID(op.Target.ID)
 		if err != nil {
-			return "", nil, nil
+			return "", nil, nil //nolint:nilerr // a stored target id that does not parse has no resource to show; the operation itself is still answered
 		}
 		kp, err := s.read.KeyPair(ctx, id)
 		if err != nil {

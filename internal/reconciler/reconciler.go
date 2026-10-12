@@ -78,13 +78,13 @@ func (r *Reconciler) Kick() {
 // to the repository before new work is accepted.
 func (r *Reconciler) Run(ctx context.Context) error {
 	if err := r.Restore(ctx); err != nil && ctx.Err() == nil {
-		r.log.Warn("restore agent", "err", err)
+		r.log.WarnContext(ctx, "restore agent", slog.Any("err", err))
 	}
 	tick := time.NewTicker(r.interval)
 	defer tick.Stop()
 	for {
 		if err := r.Sweep(ctx); err != nil && ctx.Err() == nil {
-			r.log.Warn("reconcile sweep", "err", err)
+			r.log.WarnContext(ctx, "reconcile sweep", slog.Any("err", err))
 		}
 		select {
 		case <-ctx.Done():
