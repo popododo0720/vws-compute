@@ -56,7 +56,7 @@ func run(ctx context.Context, listen, namespace, kubeconfig, seedImages, storage
 	}
 	defer repo.Close()
 
-	rec := reconciler.New(repo, fakeagent.New())
+	rec := reconciler.New(repo, fakeagent.New(), reconciler.WithReports(repo))
 	ctl := controller.New(repo, controller.WithKick(rec.Kick))
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
