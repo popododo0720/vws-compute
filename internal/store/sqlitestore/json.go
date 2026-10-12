@@ -7,7 +7,7 @@ import (
 	"github.com/popododo0720/vws-compute/internal/compute"
 )
 
-// The node-driven instance columns are canonical JSON. Every value is
+// The controller-driven instance columns are canonical JSON. Every value is
 // re-validated through compute's parsers on read.
 
 type volumeJSON struct {
@@ -83,7 +83,7 @@ func parseNICsJSON(s string) ([]compute.NetworkInterface, error) {
 	return out, nil
 }
 
-func reportToJSON(r compute.NodeReport) (string, error) {
+func reportToJSON(r compute.Report) (string, error) {
 	out := reportJSON{Node: r.Node, State: uint8(r.State), Message: r.Message, Power: uint8(r.Power)}
 	for _, i := range r.Interfaces {
 		out.Interfaces = append(out.Interfaces, observedNICJS{Device: i.DeviceName, Subnet: i.Subnet, PrivateIPv4: i.PrivateIPv4, PublicIPv4: i.PublicIPv4})
@@ -92,15 +92,15 @@ func reportToJSON(r compute.NodeReport) (string, error) {
 	return string(b), err
 }
 
-func parseReportJSON(s string) (compute.NodeReport, error) {
+func parseReportJSON(s string) (compute.Report, error) {
 	var in reportJSON
 	if err := json.Unmarshal([]byte(s), &in); err != nil {
-		return compute.NodeReport{}, err
+		return compute.Report{}, err
 	}
 	if in.State > uint8(compute.ReportError) || in.Power > uint8(compute.PowerTerminated) {
-		return compute.NodeReport{}, errors.New("report out of range")
+		return compute.Report{}, errors.New("report out of range")
 	}
-	out := compute.NodeReport{Node: in.Node, State: compute.ReportState(in.State), Message: in.Message, Power: compute.Power(in.Power)}
+	out := compute.Report{Node: in.Node, State: compute.ReportState(in.State), Message: in.Message, Power: compute.Power(in.Power)}
 	for _, i := range in.Interfaces {
 		out.Interfaces = append(out.Interfaces, compute.ObservedInterface{DeviceName: i.Device, Subnet: i.Subnet, PrivateIPv4: i.PrivateIPv4, PublicIPv4: i.PublicIPv4})
 	}

@@ -5,7 +5,7 @@ import (
 	"time"
 )
 
-// VolumeAttachment is one volume of a node-driven instance. Volume is the
+// VolumeAttachment is one volume of a controller-driven instance. Volume is the
 // storage service's resource name, so its project and zone are the volume's.
 type VolumeAttachment struct {
 	Volume     VolumeRef
@@ -13,7 +13,7 @@ type VolumeAttachment struct {
 	Boot       bool
 }
 
-// NetworkInterface is one requested interface of a node-driven instance.
+// NetworkInterface is one requested interface of a controller-driven instance.
 // Subnet and SecurityGroups are resource names. The control plane stores
 // them as sent and does not look them up.
 type NetworkInterface struct {
@@ -23,7 +23,7 @@ type NetworkInterface struct {
 	SecurityGroups []string
 }
 
-// ObservedInterface is what a node reports for one interface.
+// ObservedInterface is what a controller reports for one interface.
 type ObservedInterface struct {
 	DeviceName  string
 	Subnet      string
@@ -31,7 +31,7 @@ type ObservedInterface struct {
 	PublicIPv4  string
 }
 
-// ReportState is the reconcile state a node reports for one instance.
+// ReportState is the reconcile state a controller reports for one instance.
 type ReportState uint8
 
 const (
@@ -43,11 +43,13 @@ const (
 	ReportError
 )
 
-// NodeReport is the part of a node's last accepted report that is not
+// Report is the part of a controller's last accepted report that is not
 // Observed: the state it reported, its message, the power it saw, and the
 // interfaces it configured. The zero value means nothing was reported.
-type NodeReport struct {
-	// Node is the resource name the node reported as observed.node.
+type Report struct {
+	// Node is the name of the machine host the controller reported as
+	// observed.node. It is informational. This service does not place
+	// instances.
 	Node       string
 	State      ReportState
 	Message    string
@@ -55,19 +57,19 @@ type NodeReport struct {
 	Interfaces []ObservedInterface
 }
 
-// NodeDriven reports whether a node, not the in-process reconciler, converges
+// ControllerDriven reports whether an external controller, not the in-process reconciler, converges
 // this instance. CreateInstance sets Project and Zone, RunInstance leaves
 // them empty.
-func (s InstanceSpec) NodeDriven() bool { return s.Zone != "" }
+func (s InstanceSpec) ControllerDriven() bool { return s.Zone != "" }
 
 // Removed reports whether the instance row is gone as far as callers can
-// tell: a delete was accepted and then converged, whether the node reported
-// DELETING or no node was ever assigned.
+// tell: a delete was accepted and then converged by the controller's
+// DELETING report.
 func (i Instance) Removed() bool {
 	return i.Spec.Power == PowerTerminated && i.Status.Observed.Generation == i.Spec.Generation
 }
 
-// InstanceReport is one node report for one instance, already parsed.
+// InstanceReport is one controller report for one instance, already parsed.
 type InstanceReport struct {
 	// Node is observed.node.
 	Node string
@@ -80,35 +82,31 @@ type InstanceReport struct {
 }
 
 // ApplyReport returns the status that results from rep and whether it
-// differs from the stored one. It never touches AssignedNode. The rules:
+// differs from the stored one. The rules:
 //
 //   - a report ahead of the spec generation fails with CodeAborted;
-//   - an assigned instance accepts reports only from its node, otherwise
-//     CodeInvalid;
 //   - a report behind the stored observed generation changes nothing;
 //   - Observed.Generation advances to the reported generation only when the
 //     report finishes it: READY on a live instance, DELETING on a terminated
 //     one, or ERROR, which parks that generation. RECONCILING and PENDING
 //     record the report and leave the generation where it was.
 //
-// A terminated spec never converges on READY, so a node cannot keep a
+// A terminated spec never converges on READY, so a controller cannot keep a
 // deleted instance alive by calling it ready.
 func ApplyReport(inst Instance, rep InstanceReport, now time.Time) (InstanceStatus, bool, error) {
 	spec, st := inst.Spec, inst.Status
 	switch {
-	case !spec.NodeDriven():
-		return st, false, Errorf(CodeFailedPrecondition, "instance %s is not node-driven", spec.ID)
+	case !spec.ControllerDriven():
+		return st, false, Errorf(CodeFailedPrecondition, "instance %s is not controller-driven", spec.ID)
 	case rep.Generation > spec.Generation:
 		return st, false, Errorf(CodeAborted, "observed generation %d is ahead of the stored generation %d", rep.Generation, spec.Generation)
-	case st.AssignedNode != "" && rep.Node != st.AssignedNode:
-		return st, false, Errorf(CodeInvalid, "observed.node %q is not the assigned node %q", rep.Node, st.AssignedNode)
 	case rep.State == ReportUnspecified || rep.State > ReportError:
 		return st, false, Errorf(CodeInvalid, "observed.state is required")
 	case rep.Generation < st.Observed.Generation:
 		return st, false, nil
 	}
 	next := st
-	next.Report = NodeReport{
+	next.Report = Report{
 		Node: rep.Node, State: rep.State, Message: rep.Message, Power: rep.Power,
 		Interfaces: append([]ObservedInterface(nil), rep.Interfaces...),
 	}
@@ -154,7 +152,7 @@ type createInstance struct {
 	labels   Labels
 }
 
-// NewCreateInstance creates a node-driven instance under the caller's id.
+// NewCreateInstance creates a controller-driven instance under the caller's id.
 // It checks what the spec rules in instance.proto say the server alone can
 // check: power, volume and interface shape, and that every volume is in the
 // instance's zone. Whether a volume exists is the storage service's answer
@@ -299,7 +297,7 @@ func (in createInstance) plan(v View, env Env) (Change, error) {
 
 func (in createInstance) matches(cur Instance) bool {
 	s := cur.Spec
-	if s.Power == PowerTerminated || !s.NodeDriven() || s.Project != in.project || s.Zone != in.zone ||
+	if s.Power == PowerTerminated || !s.ControllerDriven() || s.Project != in.project || s.Zone != in.zone ||
 		s.Type.name != in.typ.name || s.Power != in.power || s.UserData != in.userData ||
 		len(s.Volumes) != len(in.volumes) || len(s.NICs) != len(in.nics) || !cur.Meta.Labels.Equal(in.labels) {
 		return false
@@ -324,4 +322,24 @@ func (in createInstance) matches(cur Instance) bool {
 		}
 	}
 	return true
+}
+
+// segment returns the i'th slash-separated segment of a resource name, or ""
+// when the name has fewer.
+func segment(name string, i int) string {
+	start := 0
+	for ; i > 0; i-- {
+		for start < len(name) && name[start] != '/' {
+			start++
+		}
+		start++
+	}
+	end := start
+	for end < len(name) && name[end] != '/' {
+		end++
+	}
+	if start > len(name) {
+		return ""
+	}
+	return name[start:end]
 }

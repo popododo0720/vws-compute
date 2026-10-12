@@ -49,7 +49,7 @@ func (f *fakeStorage) count() int {
 
 func createReq(id, req, volume string) *computev1.CreateInstanceRequest {
 	return &computev1.CreateInstanceRequest{
-		Parent: nodeParent, InstanceId: id, RequestId: req,
+		Parent: zoneParent, InstanceId: id, RequestId: req,
 		Instance: &computev1.Instance{
 			Labels: map[string]string{"app": "web"},
 			Spec: &computev1.InstanceSpec{
@@ -64,15 +64,11 @@ func createReq(id, req, volume string) *computev1.CreateInstanceRequest {
 	}
 }
 
-func TestCreateInstancePlacesAndIsIdempotent(t *testing.T) {
+func TestCreateInstanceIsIdempotent(t *testing.T) {
 	ctx := context.Background()
 	repo := memstore.New()
 	st := &fakeStorage{vols: map[string]grpcapi.VolumeInfo{volBase + "root-1": {}, volBase + "root-2": {}}}
 	h := serveRepo(t, repo, grpcapi.WithVolumes(st))
-	h.createNode(t, "node-a", 4, "")
-	if _, err := h.syncNode(nodeA, commonv1.ReconciliationState_RECONCILIATION_STATE_READY); err != nil {
-		t.Fatal(err)
-	}
 
 	const req = "31313131-3131-4131-8131-313131313131"
 	op, err := h.inst.CreateInstance(ctx, createReq("web-1", req, "root-1"))
@@ -80,19 +76,19 @@ func TestCreateInstancePlacesAndIsIdempotent(t *testing.T) {
 		t.Fatal(err)
 	}
 	if op.GetDone() {
-		t.Fatal("a node-driven create is done only when the node reports READY")
+		t.Fatal("a controller-driven create is done only when the controller reports READY")
 	}
 	var md commonv1.OperationMetadata
 	if err := anypb.UnmarshalTo(op.GetMetadata(), &md, proto.UnmarshalOptions{}); err != nil ||
-		md.GetResource() != nodeParent+"/instances/web-1" || md.GetGeneration() != 1 {
+		md.GetResource() != zoneParent+"/instances/web-1" || md.GetGeneration() != 1 {
 		t.Fatalf("metadata = %v, %v", &md, err)
 	}
-	// The row exists and was placed at commit, because node-a had a fresh heartbeat.
+	// The row exists and waits for the controller.
 	got, err := h.inst.GetInstance(ctx, &computev1.GetInstanceRequest{Name: md.GetResource()})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.GetStatus().GetAssignedNode() != nodeA || got.GetSpec().GetUserData() != "#cloud-config" ||
+	if got.GetSpec().GetUserData() != "#cloud-config" ||
 		got.GetSpec().GetVolumes()[0].GetVolume() != volBase+"root-1" || got.GetLabels()["app"] != "web" ||
 		got.GetSpec().GetNetworkInterfaces()[0].GetSubnet() != "projects/demo/regions/r/vpcs/v/subnets/s" {
 		t.Fatalf("instance = %v", got)
@@ -129,15 +125,15 @@ func TestCreateInstancePlacesAndIsIdempotent(t *testing.T) {
 	// The only holder of a volume is the first live instance.
 	_, err = h.inst.CreateInstance(ctx, createReq("web-2", "34343434-3434-4434-8434-343434343434", "root-1"))
 	wantCode(t, err, codes.FailedPrecondition)
-	if _, err := h.inst.GetInstance(ctx, &computev1.GetInstanceRequest{Name: nodeParent + "/instances/web-2"}); err == nil {
+	if _, err := h.inst.GetInstance(ctx, &computev1.GetInstanceRequest{Name: zoneParent + "/instances/web-2"}); err == nil {
 		t.Fatal("a refused create stored an instance")
 	}
 
-	// The node reports READY and the create operation succeeds.
+	// The controller reports READY and the create operation succeeds.
 	rep, err := h.inst.ReportInstanceStatus(ctx, &computev1.ReportInstanceStatusRequest{
 		Name: md.GetResource(),
 		Status: &computev1.InstanceStatus{
-			Observed: &commonv1.ObservedState{State: commonv1.ReconciliationState_RECONCILIATION_STATE_READY, Generation: 1, Node: nodeA},
+			Observed: &commonv1.ObservedState{State: commonv1.ReconciliationState_RECONCILIATION_STATE_READY, Generation: 1, Node: "host-a"},
 			Power:    computev1.InstancePower_INSTANCE_POWER_RUNNING,
 		},
 	})
@@ -154,8 +150,8 @@ func TestCreateInstanceVerifiesVolumes(t *testing.T) {
 	st := &fakeStorage{vols: map[string]grpcapi.VolumeInfo{
 		volBase + "ok":       {},
 		volBase + "going":    {Deleting: true},
-		volBase + "held":     {Instance: nodeParent + "/instances/other"},
-		volBase + "mine":     {Instance: nodeParent + "/instances/web"},
+		volBase + "held":     {Instance: zoneParent + "/instances/other"},
+		volBase + "mine":     {Instance: zoneParent + "/instances/web"},
 		volBase + "no-owner": {},
 	}}
 	h := serveRepo(t, memstore.New(), grpcapi.WithVolumes(st))
@@ -181,7 +177,7 @@ func TestCreateInstanceVerifiesVolumes(t *testing.T) {
 	wantCode(t, err, codes.Unavailable)
 	wantReason(t, err, "DEPENDENCY_UNAVAILABLE")
 	st.err = nil
-	if _, err := h.inst.GetInstance(ctx, &computev1.GetInstanceRequest{Name: nodeParent + "/instances/web"}); err == nil {
+	if _, err := h.inst.GetInstance(ctx, &computev1.GetInstanceRequest{Name: zoneParent + "/instances/web"}); err == nil {
 		t.Fatal("a refused create stored an instance")
 	}
 
@@ -192,7 +188,7 @@ func TestCreateInstanceVerifiesVolumes(t *testing.T) {
 	if err != nil || !vo.GetDone() {
 		t.Fatalf("validate_only = %v, %v", vo, err)
 	}
-	if _, err := h.inst.GetInstance(ctx, &computev1.GetInstanceRequest{Name: nodeParent + "/instances/web"}); err == nil {
+	if _, err := h.inst.GetInstance(ctx, &computev1.GetInstanceRequest{Name: zoneParent + "/instances/web"}); err == nil {
 		t.Fatal("validate_only stored an instance")
 	}
 	// A volume the storage service already names for this instance is fine.

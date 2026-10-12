@@ -161,7 +161,7 @@ func ParseInstanceType(s string) (InstanceType, error) {
 }
 
 // ParseMachineType accepts a catalog entry, and otherwise any name in the
-// proto's machine_type grammar. Nodes own the real machine catalog, so an
+// proto's machine_type grammar. The controller owns the real machine catalog, so an
 // unlisted name is stored as sent and carries no vCPU or memory figures.
 func ParseMachineType(s string) (InstanceType, error) {
 	if t, err := ParseInstanceType(s); err == nil {

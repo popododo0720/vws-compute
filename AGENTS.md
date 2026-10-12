@@ -41,10 +41,10 @@ Rules for anyone changing this repository, human or agent. A rule with an enforc
 | Startup re-applies converged specs to the agent. | `TestRestartRebuildsTheAgent` |
 | A seed file registers each image once. A restart with the same file writes nothing, and a changed path stops startup. | `TestSeedIsIdempotentAcrossRestarts` |
 | `CreateImage` stores a volume or snapshot source and `GetImage` returns it. A disk path is registered only by `-seed-images`. | `TestCreateImageRoundTrip` and `TestSeededImageLaunchStopStartTerminate` |
-| A new RPC on `InstanceService`, `ImageService`, `KeyPairService`, or `NodeService` fails to build until it is served. | `server` embeds the four `Unsafe...ServiceServer` types |
-| Only `internal/grpcapi` calls `SyncNode` and `ReportInstanceStatus`. Placement runs in the store transaction that writes it and sets `assigned_node` only while it is empty. | `TestArchitectureRules` and the `storetest` placement cases |
-| A node-driven instance (non-empty zone) is converged by its node, never by the reconciler. | `storetest` `nodeDrivenNotUnconverged` |
-| `CreateInstance` asks the storage service about volumes only for a request id the store has not seen. | `TestCreateInstancePlacesAndIsIdempotent` |
+| A new RPC on `InstanceService`, `ImageService`, or `KeyPairService` fails to build until it is served. | `server` embeds the three `Unsafe...ServiceServer` types |
+| Only `internal/grpcapi` calls `ReportInstanceStatus`. This service places nothing: kube-scheduler does. | `TestArchitectureRules` |
+| A controller-driven instance (non-empty zone) is converged by an external controller through `ReportInstanceStatus`, never by the reconciler. Its delete finishes only when the controller reports DELETING. | `storetest` `controllerNotUnconverged`, `deleteWaitsForTheController`, and `TestUnreportedDeleteStaysUntilTheControllerReports` |
+| `CreateInstance` asks the storage service about volumes only for a request id the store has not seen. | `TestCreateInstanceIsIdempotent` |
 | Create, Update, and Delete take `request_id` and return an `Operation`. Reads do not. A report takes `request_id` and returns the resource. | `TestServicesMatchTheResourceAPI` |
 | Wire protos come from `github.com/popododo0720/vws-proto`, vendored at `third_party/vws-proto` until that module is public. | `TestVendoredProtoModule` |
 | No rights or mark notices outside `LICENSE`. | `TestNoTrademarkNotices` |

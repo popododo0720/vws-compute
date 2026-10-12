@@ -38,7 +38,7 @@ func (s *server) ListInstances(ctx context.Context, r *computev1.ListInstancesRe
 			if inst.Removed() || inst.Lifecycle() == compute.InstanceTerminated {
 				continue
 			}
-			if inst.Spec.NodeDriven() && (inst.Spec.Project != project || inst.Spec.Zone != zone) {
+			if inst.Spec.ControllerDriven() && (inst.Spec.Project != project || inst.Spec.Zone != zone) {
 				continue
 			}
 			matched = append(matched, inst)
@@ -278,7 +278,7 @@ func (s *server) ReportInstanceStatus(ctx context.Context, r *computev1.ReportIn
 	if r.GetStatus() == nil || r.GetStatus().GetObserved() == nil {
 		return nil, invalidSpec("status.observed is required")
 	}
-	// A converged delete is not a live instance, but its node may still be
+	// A converged delete is not a live instance, but its controller may still be
 	// retrying the DELETING report that removed it.
 	inst, err := s.storedInstance(ctx, r.GetName())
 	if err != nil {
@@ -286,14 +286,14 @@ func (s *server) ReportInstanceStatus(ctx context.Context, r *computev1.ReportIn
 	}
 	name := r.GetName()
 	obs := r.GetStatus().GetObserved()
-	if inst.Removed() && (!inst.Spec.NodeDriven() || obs.GetState() != commonv1.ReconciliationState_RECONCILIATION_STATE_DELETING) {
+	if inst.Removed() && (!inst.Spec.ControllerDriven() || obs.GetState() != commonv1.ReconciliationState_RECONCILIATION_STATE_DELETING) {
 		return nil, notFound("instance " + name + " not found")
 	}
 	if obs.GetGeneration() > inst.Spec.Generation {
 		return nil, aborted("GENERATION_CONFLICT", "observed generation is ahead of the stored generation")
 	}
-	if !inst.Spec.NodeDriven() {
-		// The in-process reconciler is the node that commits status for this
+	if !inst.Spec.ControllerDriven() {
+		// The in-process reconciler commits status for this
 		// instance. A report that is not ahead of the stored generation
 		// changes nothing.
 		return &computev1.ReportInstanceStatusResponse{Instance: instancePB(inst, name)}, nil
@@ -305,7 +305,7 @@ func (s *server) ReportInstanceStatus(ctx context.Context, r *computev1.ReportIn
 	if inst.Removed() {
 		return &computev1.ReportInstanceStatusResponse{Instance: instancePB(inst, name)}, nil
 	}
-	got, err := s.nodes.ReportInstanceStatus(ctx, inst.Spec.ID, rep, s.now())
+	got, err := s.reports.ReportInstanceStatus(ctx, inst.Spec.ID, rep, s.now())
 	if err != nil {
 		if compute.CodeOf(err) == compute.CodeAborted {
 			return nil, aborted("GENERATION_CONFLICT", err.Error())
@@ -358,7 +358,7 @@ func (s *server) liveInstance(ctx context.Context, name string) (compute.Instanc
 }
 
 // storedInstance reads the row named name, including one whose delete has
-// converged. A node-driven instance lives in the project and zone it was
+// converged. A controller-driven instance lives in the project and zone it was
 // created in, so the same id under another parent is not found.
 func (s *server) storedInstance(ctx context.Context, name string) (compute.Instance, error) {
 	project, zone, id, err := parseInstanceName(name)
@@ -373,7 +373,7 @@ func (s *server) storedInstance(ctx context.Context, name string) (compute.Insta
 	if err != nil {
 		return compute.Instance{}, toStatus(err)
 	}
-	if inst.Spec.NodeDriven() && (inst.Spec.Project != project || inst.Spec.Zone != zone) {
+	if inst.Spec.ControllerDriven() && (inst.Spec.Project != project || inst.Spec.Zone != zone) {
 		return compute.Instance{}, notFound("instance " + name + " not found")
 	}
 	return inst, nil

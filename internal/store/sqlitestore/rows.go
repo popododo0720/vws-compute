@@ -16,7 +16,7 @@ const metaColumns = `labels, description, meta_revision, meta_changed_at`
 const instanceColumns = `id, generation, created_at, changed_at, image_id, instance_type, key_name, key_public,
   power, reboot_epoch, observed_generation, failure_code, failure_message, machine, applied_epoch,
   attempts, retry_at, last_error, updated_at, ` + metaColumns + `,
-  node_driven, project, zone, user_data, volumes, nics, assigned_node, report`
+  controller_driven, project, zone, user_data, volumes, nics, report`
 
 // instanceRow mirrors one row of the instances table.
 type instanceRow struct {
@@ -30,9 +30,9 @@ type instanceRow struct {
 	machine, appliedEpoch, attempts, retryAt, updatedAt int64
 	lastError                                           string
 	meta                                                metaRow
-	nodeDriven                                          int64
+	controllerDriven                                    int64
 	project, zone, userData, volumes, nics              string
-	assignedNode, report                                string
+	report                                              string
 }
 
 func scanInstance(sc scanner) (compute.Instance, error) {
@@ -40,7 +40,7 @@ func scanInstance(sc scanner) (compute.Instance, error) {
 	err := sc.Scan(append([]any{&r.id, &r.generation, &r.createdAt, &r.changedAt, &r.imageID, &r.typeName, &r.keyName, &r.keyPublic,
 		&r.power, &r.rebootEpoch, &r.observedGeneration, &r.failureCode, &r.failureMessage, &r.machine, &r.appliedEpoch,
 		&r.attempts, &r.retryAt, &r.lastError, &r.updatedAt}, append(r.meta.dest(),
-		&r.nodeDriven, &r.project, &r.zone, &r.userData, &r.volumes, &r.nics, &r.assignedNode, &r.report)...)...)
+		&r.controllerDriven, &r.project, &r.zone, &r.userData, &r.volumes, &r.nics, &r.report)...)...)
 	if err != nil {
 		return compute.Instance{}, err
 	}
@@ -53,7 +53,7 @@ func (r instanceRow) instance() (compute.Instance, error) {
 	id, err1 := compute.ParseInstanceID(r.id)
 	var img compute.ImageID
 	var err2 error
-	if r.nodeDriven == 0 {
+	if r.controllerDriven == 0 {
 		img, err2 = compute.ParseImageID(r.imageID)
 	}
 	typ, err3 := compute.ParseMachineType(r.typeName)
@@ -98,8 +98,7 @@ func (r instanceRow) instance() (compute.Instance, error) {
 			Retry:       compute.Retry{Attempts: int(r.attempts), At: fromNanos(r.retryAt), LastError: r.lastError},
 			UpdatedAt:   fromNanos(r.updatedAt),
 
-			AssignedNode: r.assignedNode,
-			Report:       report,
+			Report: report,
 		},
 		Meta: meta,
 	}, nil
@@ -278,7 +277,7 @@ func (r operationRow) operation() (compute.Operation, error) {
 	req, err2 := compute.ParseRequestID(r.requestID)
 	kind, err3 := compute.ParseOperationKind(r.kind)
 	failure, err4 := failureOf(r.failureCode, r.failureMessage)
-	err5 := inRange("target kind", r.targetKind, int64(compute.KindInstance), int64(compute.KindNode))
+	err5 := inRange("target kind", r.targetKind, int64(compute.KindInstance), int64(compute.KindKeyPair))
 	var err6 error
 	if len(r.fingerprint) != len(compute.Fingerprint{}) {
 		err6 = errors.New("fingerprint has the wrong length")

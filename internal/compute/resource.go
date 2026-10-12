@@ -12,7 +12,6 @@ const (
 	KindInstance Kind = iota + 1
 	KindImage
 	KindKeyPair
-	KindNode
 )
 
 func (k Kind) String() string {
@@ -23,8 +22,6 @@ func (k Kind) String() string {
 		return "image"
 	case KindKeyPair:
 		return "keypair"
-	case KindNode:
-		return "node"
 	}
 	return fmt.Sprintf("Kind(%d)", k)
 }

@@ -41,14 +41,10 @@ func Run(t *testing.T, open func(t *testing.T) store.Repository) {
 		{"StaleMetadataRevisionConflicts", staleMetadata},
 		{"CreateOverExistingImageConflicts", createOverExistingImage},
 		{"ImageSourcesRoundTrip", imageSourcesRoundTrip},
-		{"NodesSettleAtCommitAndPage", nodesRoundTrip},
-		{"NodeDrivenInstanceRoundTripsAndOwnsItsVolumes", nodeDrivenRoundTrip},
-		{"NodeDrivenInstancesAreNotUnconverged", nodeDrivenNotUnconverged},
-		{"CreatePlacesOnAnEligibleNode", createPlaces},
-		{"SyncNodeHeartbeatsAndPlacesOnce", syncPlaces},
-		{"SyncNodeAcceptFailureWritesNothing", syncAccept},
-		{"ReportSettlesAndKeepsAssignment", reportSettles},
-		{"DeleteOfUnassignedSettlesAtOnceAndAssignedWaitsForNode", deleteFlows},
+		{"ControllerDrivenInstanceRoundTripsAndOwnsItsVolumes", controllerRoundTrip},
+		{"ControllerDrivenInstancesAreNotUnconverged", controllerNotUnconverged},
+		{"ReportSettlesAndKeepsTheReport", reportSettles},
+		{"DeleteWaitsForTheControllersReport", deleteWaitsForTheController},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) { c.fn(fixture{t: t, s: open(t)}) })
