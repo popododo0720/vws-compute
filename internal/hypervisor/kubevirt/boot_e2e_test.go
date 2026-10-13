@@ -33,8 +33,9 @@ func (s claimStorage) Volume(context.Context, string) (grpcapi.VolumeInfo, error
 // TestCreateInstanceBootsFromVolumeOnKubeVirt drives CreateInstance through
 // the gRPC API, the controller, and the reconciler with this agent against
 // envtest: the instance reaches READY and its VirtualMachine boots from the
-// storage claim. envtest runs no KubeVirt controller, so READY here means
-// the VirtualMachine object was accepted, not that a guest booted.
+// storage claim. envtest runs no KubeVirt controller; newClient's stand-in
+// marks the VirtualMachineInstance Running and Ready, so READY here means the
+// readiness check passed against that stand-in, not that a guest booted.
 func TestCreateInstanceBootsFromVolumeOnKubeVirt(t *testing.T) {
 	ctx := context.Background()
 	c, ns, _ := newClient(t)
@@ -70,6 +71,17 @@ func ok[T any](v T, err error) T {
 // sweep with agent.
 func createThroughAPI(t *testing.T, agent hypervisor.Agent, machineType, claim string) *memstore.Store {
 	t.Helper()
+	repo, rec := createUnreconciled(t, agent, machineType, claim)
+	if err := rec.Sweep(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	return repo
+}
+
+// createUnreconciled is createThroughAPI without the sweep. It returns the
+// reconciler so the test can sweep when it chooses.
+func createUnreconciled(t *testing.T, agent hypervisor.Agent, machineType, claim string) (*memstore.Store, *reconciler.Reconciler) {
+	t.Helper()
 	ctx := context.Background()
 	repo := memstore.New()
 	rec := reconciler.New(repo, agent, reconciler.WithReports(repo))
@@ -96,10 +108,7 @@ func createThroughAPI(t *testing.T, agent hypervisor.Agent, machineType, claim s
 	if err != nil {
 		t.Fatalf("CreateInstance %s: %v", machineType, err)
 	}
-	if err := rec.Sweep(ctx); err != nil {
-		t.Fatal(err)
-	}
-	return repo
+	return repo, rec
 }
 
 var largeTypes = []struct {
