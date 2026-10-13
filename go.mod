@@ -2,6 +2,8 @@ module github.com/popododo0720/vws-compute
 
 go 1.26.0
 
+toolchain go1.26.9
+
 require (
 	cloud.google.com/go/longrunning v1.3.0
 	github.com/popododo0720/vws-proto v0.0.0
