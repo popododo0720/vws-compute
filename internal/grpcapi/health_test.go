@@ -71,6 +71,9 @@ func TestHealthServingFollowsChecks(t *testing.T) {
 		t.Fatal(err)
 	}
 	wantStatus(t, c, healthpb.HealthCheckResponse_SERVING)
+	if !h.Serving() {
+		t.Fatal("Serving() = false while grpc health answers SERVING")
+	}
 
 	down.Store(true)
 	_ = h.Probe(context.Background())
@@ -87,6 +90,9 @@ func TestHealthShutdownIsFinal(t *testing.T) {
 	wantStatus(t, c, healthpb.HealthCheckResponse_NOT_SERVING)
 	_ = h.Probe(context.Background()) // a late probe must not revive it
 	wantStatus(t, c, healthpb.HealthCheckResponse_NOT_SERVING)
+	if h.Serving() {
+		t.Fatal("Serving() = true after Shutdown")
+	}
 }
 
 func TestHealthUnknownService(t *testing.T) {

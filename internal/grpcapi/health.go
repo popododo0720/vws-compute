@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"sync/atomic"
 	"time"
 
 	"cloud.google.com/go/longrunning/autogen/longrunningpb"
@@ -36,6 +37,8 @@ type Health struct {
 	checks   []Check
 	interval time.Duration
 	timeout  time.Duration
+	serving  atomic.Bool
+	shutdown atomic.Bool
 }
 
 // NewHealth registers grpc.health.v1 on s with every service NOT_SERVING.
@@ -47,6 +50,7 @@ func NewHealth(s grpc.ServiceRegistrar, interval time.Duration, checks ...Check)
 }
 
 func (h *Health) set(st healthpb.HealthCheckResponse_ServingStatus) {
+	h.serving.Store(st == healthpb.HealthCheckResponse_SERVING)
 	h.srv.SetServingStatus("", st)
 	for _, n := range ServiceNames() {
 		h.srv.SetServingStatus(n, st)
@@ -97,4 +101,11 @@ func (h *Health) Run(ctx context.Context) {
 
 // Shutdown sets every service NOT_SERVING for good, so load balancers stop
 // sending work before GracefulStop. Later probes cannot undo it.
-func (h *Health) Shutdown() { h.srv.Shutdown() }
+func (h *Health) Shutdown() {
+	h.shutdown.Store(true)
+	h.srv.Shutdown()
+}
+
+// Serving reports the readiness verdict grpc.health.v1 answers: true once
+// every check passed on the last probe, false after Shutdown.
+func (h *Health) Serving() bool { return h.serving.Load() && !h.shutdown.Load() }
