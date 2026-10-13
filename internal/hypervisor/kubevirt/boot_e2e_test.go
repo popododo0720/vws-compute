@@ -79,8 +79,9 @@ func createThroughAPI(t *testing.T, agent hypervisor.Agent, machineType, claim s
 }
 
 // createUnreconciled is createThroughAPI without the sweep. It returns the
-// reconciler so the test can sweep when it chooses.
-func createUnreconciled(t *testing.T, agent hypervisor.Agent, machineType, claim string) (*memstore.Store, *reconciler.Reconciler) {
+// reconciler so the test can sweep when it chooses. nics go into the request
+// as given.
+func createUnreconciled(t *testing.T, agent hypervisor.Agent, machineType, claim string, nics ...*computev1.NetworkInterface) (*memstore.Store, *reconciler.Reconciler) {
 	t.Helper()
 	ctx := context.Background()
 	repo := memstore.New()
@@ -102,7 +103,8 @@ func createUnreconciled(t *testing.T, agent hypervisor.Agent, machineType, claim
 		Parent: "projects/demo/zones/z1", InstanceId: "web-1", RequestId: "71717171-7171-4171-8171-717171717171",
 		Instance: &computev1.Instance{Spec: &computev1.InstanceSpec{
 			MachineType: machineType, Power: computev1.InstancePower_INSTANCE_POWER_RUNNING,
-			Volumes: []*computev1.VolumeAttachment{{Volume: "projects/demo/zones/z1/volumes/root-1", DeviceName: "vda", Boot: true}},
+			Volumes:           []*computev1.VolumeAttachment{{Volume: "projects/demo/zones/z1/volumes/root-1", DeviceName: "vda", Boot: true}},
+			NetworkInterfaces: nics,
 		}},
 	})
 	if err != nil {

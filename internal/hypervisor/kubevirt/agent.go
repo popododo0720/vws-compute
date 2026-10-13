@@ -41,6 +41,10 @@ const (
 	LabelManaged = "vws.io/managed"
 	// AnnotationRebootEpoch holds the last reboot epoch applied to a machine.
 	AnnotationRebootEpoch = "vws.io/reboot-epoch"
+	// AnnotationLogicalSwitch is the Kube-OVN pod annotation that picks the
+	// subnet of the pod's default interface. It is set on the VM template,
+	// so the virt-launcher pod carries it.
+	AnnotationLogicalSwitch = "ovn.kubernetes.io/logical_switch"
 
 	runAlways = "Always"
 	runHalted = "Halted"
@@ -189,6 +193,9 @@ func (a *Agent) create(ctx context.Context, spec hypervisor.MachineSpec) error {
 			return hypervisor.Permanent(fmt.Errorf("machine %s: root disk source %q is not a valid object name", spec.Name, n))
 		}
 	}
+	if errs := validation.IsDNS1123Subdomain(spec.Subnet); spec.Subnet != "" && len(errs) > 0 {
+		return hypervisor.Permanent(fmt.Errorf("machine %s: subnet %q is not a valid Kube-OVN Subnet name", spec.Name, spec.Subnet))
+	}
 	run := runHalted
 	if spec.Power == hypervisor.PowerOn {
 		run = runAlways
@@ -226,11 +233,18 @@ func (a *Agent) create(ctx context.Context, spec hypervisor.MachineSpec) error {
 			"cloudInitNoCloud": map[string]any{"userData": "#cloud-config\nssh_authorized_keys: " + string(keys) + "\n"},
 		})
 	}
+	podMeta := map[string]any{"labels": map[string]any{"vws.io/instance": spec.Name}}
+	if spec.Subnet != "" {
+		// KubeVirt copies template annotations to the virt-launcher pod,
+		// and Kube-OVN puts the pod's default interface on this logical
+		// switch instead of the cluster default subnet.
+		podMeta["annotations"] = map[string]any{AnnotationLogicalSwitch: spec.Subnet}
+	}
 	vm := &unstructured.Unstructured{Object: map[string]any{
 		"spec": map[string]any{
 			"runStrategy": run,
 			"template": map[string]any{
-				"metadata": map[string]any{"labels": map[string]any{"vws.io/instance": spec.Name}},
+				"metadata": podMeta,
 				"spec": map[string]any{
 					"domain": map[string]any{
 						"cpu":     map[string]any{"cores": int64(spec.VCPUs)},
