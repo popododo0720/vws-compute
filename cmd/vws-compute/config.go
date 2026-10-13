@@ -18,6 +18,9 @@ func (c config) validate() error {
 	if _, _, err := net.SplitHostPort(c.listen); err != nil {
 		return fmt.Errorf("-listen %q: %w", c.listen, err)
 	}
+	if _, _, err := net.SplitHostPort(c.http); c.http != "" && err != nil {
+		return fmt.Errorf("-http %q: %w", c.http, err)
+	}
 	for _, ns := range []struct{ flag, v string }{
 		{"-namespace", c.namespace}, {"-vm-namespace", c.vmNamespace}, {"-image-namespace", c.imageNamespace},
 	} {
@@ -37,6 +40,7 @@ const (
 // variable, and the environment wins over the built-in default.
 type config struct {
 	listen         string
+	http           string
 	namespace      string
 	kubeconfig     string
 	seedImages     string
@@ -57,6 +61,7 @@ func parseConfig(args []string, getenv func(string) string, errOut io.Writer) (c
 	fs := flag.NewFlagSet("vws-compute", flag.ContinueOnError)
 	fs.SetOutput(errOut)
 	fs.StringVar(&c.listen, "listen", "127.0.0.1:50051", "address to serve gRPC on")
+	fs.StringVar(&c.http, "http", env("VWS_HEALTH_ADDR", ""), "address to serve /healthz, /readyz, and /metrics on; empty serves none (env VWS_HEALTH_ADDR)")
 	fs.StringVar(&c.namespace, "namespace", env("VWS_STORE_NAMESPACE", ""), "Kubernetes namespace that holds the ConfigMap store; empty keeps all state in memory (env VWS_STORE_NAMESPACE)")
 	fs.StringVar(&c.kubeconfig, "kubeconfig", "", "kubeconfig path; empty uses the in-cluster service account, then $KUBECONFIG and the default path")
 	fs.StringVar(&c.seedImages, "seed-images", "", "JSON file of disk images to register before serving; empty registers none")

@@ -39,6 +39,7 @@ type Reconciler struct {
 	now      func() time.Time
 	interval time.Duration
 	log      *slog.Logger
+	observe  func(result string)
 	kick     chan struct{}
 }
 
@@ -48,6 +49,20 @@ func WithClock(now func() time.Time) Option { return func(r *Reconciler) { r.now
 func WithInterval(d time.Duration) Option   { return func(r *Reconciler) { r.interval = d } }
 func WithLogger(l *slog.Logger) Option      { return func(r *Reconciler) { r.log = l } }
 
+// Sweep results passed to the WithSweepObserver function.
+const (
+	SweepOK      = "ok"
+	SweepWaiting = "waiting"
+	SweepError   = "error"
+)
+
+// WithSweepObserver makes Run call observe after each sweep with SweepOK,
+// SweepWaiting (only machines still booting), or SweepError. It must not
+// block.
+func WithSweepObserver(observe func(result string)) Option {
+	return func(r *Reconciler) { r.observe = observe }
+}
+
 func New(s store.StatusStore, a hypervisor.Agent, opts ...Option) *Reconciler {
 	r := &Reconciler{
 		store:    s,
@@ -56,6 +71,7 @@ func New(s store.StatusStore, a hypervisor.Agent, opts ...Option) *Reconciler {
 		interval: DefaultInterval,
 		log:      slog.Default(),
 		kick:     make(chan struct{}, 1),
+		observe:  func(string) {},
 	}
 	for _, o := range opts {
 		o(r)
@@ -84,14 +100,19 @@ func (r *Reconciler) Run(ctx context.Context) error {
 	tick := time.NewTicker(r.interval)
 	defer tick.Stop()
 	for {
-		if err := r.Sweep(ctx); err != nil && ctx.Err() == nil {
+		err := r.Sweep(ctx)
+		switch {
+		case ctx.Err() != nil:
+		case err == nil:
+			r.observe(SweepOK)
+		case onlyNotReady(err):
 			// A machine that is only still booting fails every sweep until it
 			// is up. That is progress, not a failure, so it logs at debug.
-			if onlyNotReady(err) {
-				r.log.DebugContext(ctx, "reconcile sweep: waiting for machines", slog.Any("err", err))
-			} else {
-				r.log.WarnContext(ctx, "reconcile sweep", slog.Any("err", err))
-			}
+			r.log.DebugContext(ctx, "reconcile sweep: waiting for machines", slog.Any("err", err))
+			r.observe(SweepWaiting)
+		default:
+			r.log.WarnContext(ctx, "reconcile sweep", slog.Any("err", err))
+			r.observe(SweepError)
 		}
 		select {
 		case <-ctx.Done():
