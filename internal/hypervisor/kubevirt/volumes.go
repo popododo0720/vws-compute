@@ -99,7 +99,8 @@ func volumeChange(vm *unstructured.Unstructured, want []hypervisor.Volume) (volu
 		}
 	}
 	for _, d := range templateSlice(vm, "spec", "template", "spec", "domain", "devices", "disks") {
-		name, _ := d.(map[string]any)["name"].(string) //nolint:errcheck // a disk of another shape is not a hotplug disk of ours
+		m, _ := d.(map[string]any)    //nolint:errcheck // a disk of another shape is not a hotplug disk of ours
+		name, _ := m["name"].(string) //nolint:errcheck // nor is one without a string name
 		if _, hot := have[name]; !hot {
 			disks = append(disks, d)
 		}
