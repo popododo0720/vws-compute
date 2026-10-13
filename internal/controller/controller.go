@@ -31,9 +31,6 @@ type Option func(*Controller)
 // WithClock sets the time source for operation and spec timestamps.
 func WithClock(now func() time.Time) Option { return func(c *Controller) { c.now = now } }
 
-// WithRand sets the entropy source for IDs and generated keys.
-func WithRand(r io.Reader) Option { return func(c *Controller) { c.rand = r } }
-
 // WithKick sets a function Submit calls after committing work the reconciler
 // must converge. It must not block. Without it the reconciler finds the
 // work on its next periodic sweep.

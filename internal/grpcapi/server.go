@@ -53,9 +53,6 @@ type Option func(*server)
 // CreateInstance answers DEPENDENCY_MISSING.
 func WithVolumes(v VolumeLookup) Option { return func(s *server) { s.volumes = v } }
 
-// WithClock sets the server clock ReportInstanceStatus stamps reports with.
-func WithClock(now func() time.Time) Option { return func(s *server) { s.clock = now } }
-
 // Register adds InstanceService, ImageService, KeyPairService,
 // and google.longrunning.Operations to s. ctl is the only desired-state
 // write path, r the read path, and r's report method the only write path for
