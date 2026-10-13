@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/popododo0720/vws-compute/internal/compute"
@@ -455,6 +456,13 @@ func machineSpec(s compute.InstanceSpec) hypervisor.MachineSpec {
 			m.Volumes = append(m.Volumes, hypervisor.Volume{Name: v.DeviceName, Claim: v.Claim})
 		}
 	}
+	// The first interface joins its subnet. The agent gets the subnet ID,
+	// the last segment of projects/*/regions/*/vpcs/*/subnets/<id>, which
+	// vws-network also uses as the Kube-OVN Subnet name. More interfaces
+	// are not wired yet (vws-compute#55).
+	if len(s.NICs) > 0 {
+		m.Subnet = subnetID(s.NICs[0].Subnet)
+	}
 	switch s.Power {
 	case compute.PowerRunning:
 		m.Power = hypervisor.PowerOn
@@ -464,6 +472,17 @@ func machineSpec(s compute.InstanceSpec) hypervisor.MachineSpec {
 		m.Power = hypervisor.PowerAbsent
 	}
 	return m
+}
+
+// subnetID is the ID at the end of a subnet resource name, or "" when name
+// has no subnets segment. The gRPC edge has already checked the shape.
+func subnetID(name string) string {
+	const seg = "/subnets/"
+	i := strings.LastIndex(name, seg)
+	if i < 0 {
+		return ""
+	}
+	return name[i+len(seg):]
 }
 
 func machineState(p hypervisor.Power) compute.MachineState {

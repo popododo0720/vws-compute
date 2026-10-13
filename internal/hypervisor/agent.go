@@ -47,6 +47,11 @@ type MachineSpec struct {
 	// of its root disk. The agent attaches the ones that are missing and
 	// detaches the ones that are no longer listed, on a running machine too.
 	Volumes []Volume
+	// Subnet is the network the machine's first interface joins: the VWS
+	// subnet ID, which is also the name of the Kube-OVN Subnet that
+	// vws-network creates for it. Empty means the cluster's default pod
+	// network. Like Image, it is fixed when the machine is created.
+	Subnet string
 }
 
 // Volume is one attached data volume.

@@ -32,6 +32,8 @@ type Machine struct {
 	Power        hypervisor.Power
 	AppliedEpoch uint32
 	Volumes      []hypervisor.Volume
+	// Subnet is fixed at creation, as the real agent does.
+	Subnet string
 }
 
 // Agent is safe for concurrent use. The zero value is not usable. Call New.
@@ -166,7 +168,7 @@ func (a *Agent) ConvergeMachine(ctx context.Context, spec hypervisor.MachineSpec
 		if _, ok := a.images[spec.Image]; !ok && spec.Image != "" {
 			return hypervisor.Permanent(fmt.Errorf("machine %s: image artifact %s not found", spec.Name, spec.Image))
 		}
-		m = Machine{Image: spec.Image, BootClaim: spec.BootClaim, Power: hypervisor.PowerOff}
+		m = Machine{Image: spec.Image, BootClaim: spec.BootClaim, Subnet: spec.Subnet, Power: hypervisor.PowerOff}
 		a.creations[spec.Name]++
 	}
 	m.VCPUs, m.MemoryMiB = spec.VCPUs, spec.MemoryMiB
