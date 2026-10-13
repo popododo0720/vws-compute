@@ -112,6 +112,12 @@ type InstanceReport struct {
 	Message    string
 	Power      Power
 	Interfaces []ObservedInterface
+	// Code is the failure code an ERROR report parks the generation with.
+	// Zero means CodeInternal, which is what a report from an external
+	// controller carries. The built-in reconciler reports a permanent agent
+	// error as CodeFailedPrecondition, as it does for instances it converges
+	// without reports.
+	Code Code
 }
 
 // ApplyReport returns the status that results from rep and whether it
@@ -145,7 +151,11 @@ func ApplyReport(inst Instance, rep InstanceReport, now time.Time) (InstanceStat
 	}
 	switch {
 	case rep.State == ReportError:
-		next.Observed = Observed{Generation: rep.Generation, Failure: &Failure{Code: CodeInternal, Message: rep.Message}}
+		code := rep.Code
+		if code == 0 {
+			code = CodeInternal
+		}
+		next.Observed = Observed{Generation: rep.Generation, Failure: &Failure{Code: code, Message: rep.Message}}
 	case rep.State == ReportReady && spec.Power != PowerTerminated,
 		rep.State == ReportDeleting && spec.Power == PowerTerminated:
 		next.Observed = Observed{Generation: rep.Generation}

@@ -210,7 +210,7 @@ func (a *Agent) create(ctx context.Context, spec hypervisor.MachineSpec) error {
 		// not owned by the VirtualMachine, so deleting the machine leaves the
 		// volume to storage. Not hotpluggable: the root disk never changes.
 		if err := a.checkAttachable(ctx, spec.Name, &unstructured.Unstructured{Object: map[string]any{}},
-			[]hypervisor.Volume{{Name: "rootdisk", Claim: spec.BootClaim}}); err != nil {
+			[]hypervisor.Volume{{Name: "rootdisk", Claim: spec.BootClaim}}, false); err != nil {
 			return err
 		}
 		volumes = []any{map[string]any{"name": "rootdisk", "persistentVolumeClaim": map[string]any{"claimName": spec.BootClaim}}}
@@ -321,7 +321,7 @@ func (a *Agent) update(ctx context.Context, vm *unstructured.Unstructured, spec 
 		return err
 	}
 	if volumes, disks, changed := volumeChange(vm, spec.Volumes); changed {
-		if err := a.checkAttachable(ctx, spec.Name, vm, spec.Volumes); err != nil {
+		if err := a.checkAttachable(ctx, spec.Name, vm, spec.Volumes, true); err != nil {
 			return err
 		}
 		set([]string{"spec", "template", "spec", "volumes"}, volumes)

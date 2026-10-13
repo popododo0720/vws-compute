@@ -126,10 +126,19 @@ func volumeChange(vm *unstructured.Unstructured, want []hypervisor.Volume) (volu
 }
 
 // checkAttachable fails permanently when a volume that is being attached is a
-// single-writer claim already used by another VirtualMachine. A claim that
-// does not exist yet is transient: the storage service may still be creating
-// it.
-func (a *Agent) checkAttachable(ctx context.Context, machine string, vm *unstructured.Unstructured, want []hypervisor.Volume) error {
+// single-writer claim already used by another VirtualMachine, or, with
+// hotplug, a claim whose volumeMode is not Block. A claim that does not exist
+// yet is transient: the storage service may still be creating it.
+//
+// KubeVirt hot-plugs a Block claim as a raw device but expects a Filesystem
+// claim to hold a disk.img, which a fresh storage volume does not. That fails
+// only inside KubeVirt (the VMI volumeStatus) while the VirtualMachine patch
+// succeeds, so the check runs here, before the patch. volumeMode is immutable,
+// so the error is permanent. Claims already in the VirtualMachine are not
+// checked again, so a Filesystem volume attached before this check stays.
+// The boot claim is not hot-plugged and passes hotplug false: a Filesystem
+// boot claim holding a disk.img boots.
+func (a *Agent) checkAttachable(ctx context.Context, machine string, vm *unstructured.Unstructured, want []hypervisor.Volume, hotplug bool) error {
 	have := map[string]bool{}
 	for _, v := range templateSlice(vm, "spec", "template", "spec", "volumes") {
 		if _, claim, ok := claimOf(v); ok {
@@ -148,6 +157,11 @@ func (a *Agent) checkAttachable(ctx context.Context, machine string, vm *unstruc
 		}
 		if err != nil {
 			return fmt.Errorf("machine %s: get claim %s: %w", machine, v.Claim, err)
+		}
+		if hotplug {
+			if err := requireBlock(machine, v, &pvc); err != nil {
+				return err
+			}
 		}
 		if !singleWriter(pvc.Spec.AccessModes) {
 			continue
@@ -185,4 +199,23 @@ func singleWriter(modes []corev1.PersistentVolumeAccessMode) bool {
 		}
 	}
 	return true
+}
+
+// requireBlock fails permanently unless the claim's volumeMode is Block. An
+// unset volumeMode is Filesystem, the Kubernetes default.
+func requireBlock(machine string, v hypervisor.Volume, pvc *corev1.PersistentVolumeClaim) error {
+	mode := corev1.PersistentVolumeFilesystem
+	if pvc.Spec.VolumeMode != nil {
+		mode = *pvc.Spec.VolumeMode
+	}
+	if mode == corev1.PersistentVolumeBlock {
+		return nil
+	}
+	shown := string(mode)
+	if pvc.Spec.VolumeMode == nil {
+		shown += " (unset, the default)"
+	}
+	return hypervisor.Permanent(fmt.Errorf(
+		"machine %s: volume %s: claim %s has volumeMode %s, but hot-plugging needs volumeMode Block; recreate the volume as a Block volume and attach it again",
+		machine, v.Name, v.Claim, shown))
 }
