@@ -4,7 +4,7 @@ vws-compute is the VWS compute service. It serves `InstanceService`, `ImageServi
 
 Every mutating call records desired state and returns a long-running operation at once. A reconciler converges the hypervisor agent toward that state in the background. Callers poll `GetOperation` or block in `WaitOperation`. Each mutating request may carry a UUID `request_id`, so a retry is safe. Sending the same request again returns the original operation and changes nothing.
 
-The wire contract is `github.com/popododo0720/vws-proto` (commit `a1c6084`), vendored at `third_party/vws-proto`. When vws-proto is public, remove the `replace` in `go.mod` and require a tagged version. This process stores key pairs under their resource name. `CreateImage` records a volume or snapshot resource name and the reconciler copies it; this process does not host those resources. An instance spec that names a volume, subnet, or security group is rejected with `DEPENDENCY_MISSING`. One repository backs every project, and list responses name rows with the parent the caller sent. Contributor rules are in `AGENTS.md`.
+The wire contract is `github.com/popododo0720/vws-proto` (v0.1.0, commit `cc30570`), vendored at `third_party/vws-proto`. When vws-proto is public, remove the `replace` in `go.mod` and require a tagged version. This process stores key pairs under their resource name. `CreateImage` records a volume or snapshot resource name and the reconciler copies it; this process does not host those resources. `CreateInstance` verifies its volumes with vws-storage (`-storage`); without that flag it answers `DEPENDENCY_MISSING`. Subnet and security group names are checked for shape and stored. One repository backs every project, and list responses name rows with the parent the caller sent. Contributor rules are in `AGENTS.md`.
 
 ## Run
 
@@ -12,7 +12,7 @@ The wire contract is `github.com/popododo0720/vws-proto` (commit `a1c6084`), ven
 go run ./cmd/vws-compute -listen 127.0.0.1:50051
 ```
 
-`-namespace` selects storage. Empty, the default, keeps all state in memory. A Kubernetes namespace keeps desired state, observed status, and operations as ConfigMaps there (no CRD). `-kubeconfig` names the cluster config. Empty uses the in-cluster service account, then `$KUBECONFIG`. Run one replica: startup repairs the namespace and assumes no other writer. The namespace must exist. The binary drives an in-memory fake agent. On startup it re-applies the stored specs, so a restart rebuilds that agent's machines and image artifacts from the repository.
+`-namespace` selects storage. Empty, the default, keeps all state in memory. A Kubernetes namespace keeps desired state, observed status, and operations as ConfigMaps there (no CRD). `-kubeconfig` names the cluster config. Empty uses the in-cluster service account, then `$KUBECONFIG`. Run one replica: startup repairs the namespace and assumes no other writer. The namespace must exist. `-hypervisor` picks the agent: `fake` (the default, in memory) or `kubevirt`, which needs `-namespace`. On startup the process re-applies the stored specs, so a restart rebuilds the fake agent's machines and image artifacts from the repository.
 
 ## Machine types
 
