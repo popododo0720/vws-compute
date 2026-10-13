@@ -27,6 +27,7 @@ import (
 	"github.com/popododo0720/vws-compute/internal/hypervisor"
 	"github.com/popododo0720/vws-compute/internal/hypervisor/fakeagent"
 	"github.com/popododo0720/vws-compute/internal/hypervisor/kubevirt"
+	"github.com/popododo0720/vws-compute/internal/obs"
 	"github.com/popododo0720/vws-compute/internal/reconciler"
 	"github.com/popododo0720/vws-compute/internal/store"
 	"github.com/popododo0720/vws-compute/internal/store/kubestore"
@@ -70,7 +71,11 @@ func run(ctx context.Context, cfg config) error {
 	if err != nil {
 		return err
 	}
-	rec := reconciler.New(repo, agent, reconciler.WithReports(repo))
+	// hl is set before the HTTP server starts, the only reader of ready.
+	var hl *grpcapi.Health
+	ready := func() bool { return hl != nil && hl.Serving() }
+	metrics := obs.NewMetrics(ready)
+	rec := reconciler.New(repo, agent, reconciler.WithReports(repo), reconciler.WithSweepObserver(metrics.Sweep))
 	ctl := controller.New(repo, controller.WithKick(rec.Kick))
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -101,8 +106,15 @@ func run(ctx context.Context, cfg config) error {
 	}
 	srv := grpc.NewServer(append(grpcapi.Recovery(), grpc.WaitForHandlers(true))...)
 	grpcapi.Register(srv, ctl, repo, opts...)
-	hl := grpcapi.NewHealth(srv, healthInterval, healthChecks(repo, agent)...)
+	hl = grpcapi.NewHealth(srv, healthInterval, healthChecks(repo, agent)...)
 	go hl.Run(ctx)
+	if cfg.http != "" {
+		stopHTTP, err := serveHTTP(ctx, cfg.http, obs.Handler(ready, metrics))
+		if err != nil {
+			return stopReconciler(cancel, reconciled, err)
+		}
+		defer stopHTTP()
+	}
 	served := make(chan error, 1)
 	go func() { served <- srv.Serve(lis) }()
 	slog.InfoContext(ctx, "serving vws.compute.v1", slog.String("addr", lis.Addr().String()), slog.String("namespace", namespace))
