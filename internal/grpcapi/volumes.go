@@ -97,3 +97,34 @@ func Claims(l VolumeLookup) func(ctx context.Context, volume string) (string, er
 		return info.ClaimName, nil
 	}
 }
+
+// DeleteVolume asks the storage service to delete the volume. A volume
+// already gone (allow_missing) or already being deleted is success; an
+// operation storage already finished with an error is returned as one.
+// The request carries no request id: storage answers a repeat with the
+// delete already in flight, and a fixed id would replay an old failure.
+func (s storageVolumes) DeleteVolume(ctx context.Context, name string) error {
+	op, err := s.c.DeleteVolume(ctx, &storagev1.DeleteVolumeRequest{Name: name, AllowMissing: true})
+	if err != nil {
+		return fmt.Errorf("delete volume %s: %w", name, err)
+	}
+	if e := op.GetError(); e != nil {
+		return fmt.Errorf("delete volume %s: %s", name, e.GetMessage())
+	}
+	return nil
+}
+
+// VolumeDeleter is a VolumeLookup that can also delete volumes.
+type VolumeDeleter interface {
+	DeleteVolume(ctx context.Context, name string) error
+}
+
+// DeleteVolumes returns l's DeleteVolume as a reconciler.VolumeDeleter, or
+// nil when l cannot delete.
+func DeleteVolumes(l VolumeLookup) func(ctx context.Context, volume string) error {
+	d, ok := l.(VolumeDeleter)
+	if !ok {
+		return nil
+	}
+	return d.DeleteVolume
+}
