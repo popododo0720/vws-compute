@@ -30,8 +30,11 @@ func (r *Reconciler) sweepDriven(ctx context.Context) error {
 		if inst.Spec.ControllerDriven() && inst.Removed() {
 			return r.releaseVolumes(ctx, inst)
 		}
-		if !inst.Spec.ControllerDriven() || inst.Status.Observed.Generation >= inst.Spec.Generation {
+		if !inst.Spec.ControllerDriven() || inst.Removed() {
 			return nil
+		}
+		if inst.Status.Observed.Generation >= inst.Spec.Generation {
+			return r.refreshAddress(ctx, inst)
 		}
 		return r.convergeDriven(ctx, inst)
 	})
@@ -52,6 +55,7 @@ func (r *Reconciler) convergeDriven(ctx context.Context, inst compute.Instance) 
 		rep.State = compute.ReportDeleting
 	case agentErr == nil:
 		rep.State = compute.ReportReady
+		rep.Interfaces = r.interfaces(ctx, spec)
 	case hypervisor.IsPermanent(agentErr):
 		rep.State, rep.Message, rep.Code = compute.ReportError, agentErr.Error(), compute.CodeFailedPrecondition
 	default:
@@ -137,4 +141,51 @@ func (r *Reconciler) heldVolumes(ctx context.Context) (map[string]string, error)
 		return nil
 	})
 	return held, err
+}
+
+// interfaces is the instance's observed interface: its first NIC with the
+// address the agent sees on the machine. KubeVirt's own name for that
+// interface is not the device name, so the spec's device name is used. It
+// is nil when the agent cannot say, the instance has no NIC, or the machine
+// has no address yet; a lookup error is logged and treated the same way.
+func (r *Reconciler) interfaces(ctx context.Context, spec compute.InstanceSpec) []compute.ObservedInterface {
+	obs, ok := r.agent.(hypervisor.AddressObserver)
+	if !ok || len(spec.NICs) == 0 || spec.Power != compute.PowerRunning {
+		return nil
+	}
+	ip, err := obs.MachineIPv4(ctx, spec.ID.String())
+	if err != nil {
+		r.log.WarnContext(ctx, "machine address", slog.String("instance", spec.ID.String()), slog.Any("err", err))
+		return nil
+	}
+	if ip == "" {
+		return nil
+	}
+	nic := spec.NICs[0]
+	return []compute.ObservedInterface{{DeviceName: nic.DeviceName, Subnet: nic.Subnet, PrivateIPv4: ip}}
+}
+
+// refreshAddress reports a READY running instance again once its machine
+// has an address that the last report lacked: KubeVirt often reports the
+// guest Ready before the interface address shows. It reads the agent only
+// while the address is missing, so a settled instance costs nothing.
+func (r *Reconciler) refreshAddress(ctx context.Context, inst compute.Instance) error {
+	st := inst.Status
+	if st.Report.State != compute.ReportReady || st.Observed.Failure != nil || inst.Spec.Power != compute.PowerRunning ||
+		(len(st.Report.Interfaces) > 0 && st.Report.Interfaces[0].PrivateIPv4 != "") {
+		return nil
+	}
+	ifaces := r.interfaces(ctx, inst.Spec)
+	if len(ifaces) == 0 {
+		return nil
+	}
+	rep := compute.InstanceReport{
+		Node: st.Report.Node, Generation: inst.Spec.Generation, State: compute.ReportReady,
+		Message: st.Report.Message, Power: st.Report.Power, Interfaces: ifaces,
+	}
+	_, err := r.reports.ReportInstanceStatus(ctx, inst.Spec.ID, rep, r.now())
+	if err != nil && compute.CodeOf(err) != compute.CodeAborted {
+		return fmt.Errorf("report %s address: %w", inst.Spec.ID, err)
+	}
+	return nil
 }
