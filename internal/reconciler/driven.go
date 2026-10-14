@@ -3,6 +3,7 @@ package reconciler
 import (
 	"context"
 	"fmt"
+	"log/slog"
 
 	"github.com/popododo0720/vws-compute/internal/compute"
 	"github.com/popododo0720/vws-compute/internal/hypervisor"
@@ -26,7 +27,10 @@ func (r *Reconciler) sweepDriven(ctx context.Context) error {
 	return eachPage(ctx, func(after string) (store.Page[compute.Instance], error) {
 		return r.store.Instances(ctx, store.InstanceQuery{PageSize: store.MaxPageSize, After: after})
 	}, func(inst compute.Instance) error {
-		if !inst.Spec.ControllerDriven() || inst.Removed() || inst.Status.Observed.Generation >= inst.Spec.Generation {
+		if inst.Spec.ControllerDriven() && inst.Removed() {
+			return r.releaseVolumes(ctx, inst)
+		}
+		if !inst.Spec.ControllerDriven() || inst.Status.Observed.Generation >= inst.Spec.Generation {
 			return nil
 		}
 		return r.convergeDriven(ctx, inst)
@@ -67,4 +71,70 @@ func (r *Reconciler) convergeDriven(ctx context.Context, inst compute.Instance) 
 		return fmt.Errorf("converge %s: %w", spec.ID, agentErr)
 	}
 	return nil
+}
+
+// VolumeDeleter asks the storage service to delete a volume. It must be
+// idempotent: a volume already gone or already being deleted is success.
+type VolumeDeleter func(ctx context.Context, volume string) error
+
+// WithVolumeDeleter makes the reconciler delete, once a controller-driven
+// instance is removed, each of its volumes marked DeleteOnTermination.
+// Terminate does not wait for it: the instance is already gone when this
+// runs. Without it volumes are always kept.
+func WithVolumeDeleter(d VolumeDeleter) Option { return func(r *Reconciler) { r.deleteVolume = d } }
+
+// releaseVolumes deletes a removed instance's DeleteOnTermination volumes
+// and then records that it did, so a restart or a later sweep does not ask
+// again. A volume a live instance now holds is skipped: the store lets
+// another instance take a terminated instance's volume. A failure is logged
+// and retried on the next sweep; it never blocks other work.
+func (r *Reconciler) releaseVolumes(ctx context.Context, inst compute.Instance) error {
+	if r.deleteVolume == nil || inst.Status.VolumesReleased {
+		return nil
+	}
+	var doomed []compute.VolumeAttachment
+	for _, v := range inst.Spec.Volumes {
+		if v.DeleteOnTermination {
+			doomed = append(doomed, v)
+		}
+	}
+	if len(doomed) > 0 {
+		held, err := r.heldVolumes(ctx)
+		if err != nil {
+			return err
+		}
+		for _, v := range doomed {
+			if holder, ok := held[v.Volume.String()]; ok {
+				r.log.InfoContext(ctx, "keep volume on termination: another instance holds it",
+					slog.String("instance", inst.Spec.ID.String()), slog.String("volume", v.Volume.String()), slog.String("holder", holder))
+				continue
+			}
+			if err := r.deleteVolume(ctx, v.Volume.String()); err != nil {
+				r.log.WarnContext(ctx, "delete volume on termination",
+					slog.String("instance", inst.Spec.ID.String()), slog.String("volume", v.Volume.String()), slog.Any("err", err))
+				return nil
+			}
+		}
+	}
+	if err := r.reports.ReleaseVolumes(ctx, inst.Spec.ID); err != nil {
+		return fmt.Errorf("record released volumes of %s: %w", inst.Spec.ID, err)
+	}
+	return nil
+}
+
+// heldVolumes maps each volume a live instance lists to that instance.
+func (r *Reconciler) heldVolumes(ctx context.Context) (map[string]string, error) {
+	held := map[string]string{}
+	err := eachPage(ctx, func(after string) (store.Page[compute.Instance], error) {
+		return r.store.Instances(ctx, store.InstanceQuery{PageSize: store.MaxPageSize, After: after})
+	}, func(inst compute.Instance) error {
+		if inst.Spec.Power == compute.PowerTerminated {
+			return nil
+		}
+		for _, v := range inst.Spec.Volumes {
+			held[v.Volume.String()] = inst.Spec.ID.String()
+		}
+		return nil
+	})
+	return held, err
 }
