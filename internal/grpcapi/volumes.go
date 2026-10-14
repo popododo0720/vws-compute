@@ -12,6 +12,8 @@ import (
 
 	commonv1 "github.com/popododo0720/vws-proto/gen/go/vws/common/v1"
 	storagev1 "github.com/popododo0720/vws-proto/gen/go/vws/storage/v1"
+
+	"github.com/popododo0720/vws-compute/internal/hypervisor"
 )
 
 // ErrVolumeNotFound is what a VolumeLookup returns for a volume the storage
@@ -71,4 +73,27 @@ func DialStorage(addr string) (VolumeLookup, func() error, error) {
 		return nil, nil, fmt.Errorf("dial storage %s: %w", addr, err)
 	}
 	return NewStorageVolumes(storagev1.NewVolumeServiceClient(conn)), conn.Close, nil
+}
+
+// Claims resolves, through l, the claim of a volume that was still
+// provisioning when its instance was accepted (see WithPendingClaims). It is
+// a reconciler.ClaimFunc. Still provisioning is "" and no error, so the
+// instance waits. A volume storage removed, is removing, or gave up on
+// (ERROR) will never get a claim, so that is hypervisor.Permanent and the
+// instance fails with the reason.
+func Claims(l VolumeLookup) func(ctx context.Context, volume string) (string, error) {
+	return func(ctx context.Context, volume string) (string, error) {
+		info, err := l.Volume(ctx, volume)
+		switch {
+		case errors.Is(err, ErrVolumeNotFound):
+			return "", hypervisor.Permanent(fmt.Errorf("volume %s does not exist", volume))
+		case err != nil:
+			return "", err
+		case info.Deleting:
+			return "", hypervisor.Permanent(fmt.Errorf("volume %s is being deleted", volume))
+		case info.State == commonv1.ReconciliationState_RECONCILIATION_STATE_ERROR:
+			return "", hypervisor.Permanent(fmt.Errorf("volume %s failed in storage: %s", volume, info.Message))
+		}
+		return info.ClaimName, nil
+	}
 }
