@@ -169,7 +169,6 @@ func TestCreateInstanceVerifiesVolumes(t *testing.T) {
 		"missing": {codes.FailedPrecondition, "DEPENDENCY_MISSING"},
 		"going":   {codes.FailedPrecondition, "DEPENDENCY_MISSING"},
 		"held":    {codes.FailedPrecondition, "VOLUME_IN_USE"},
-		"pending": {codes.FailedPrecondition, "VOLUME_NOT_PROVISIONED"},
 	} {
 		_, err := h.inst.CreateInstance(ctx, createReq("web", req(), vol))
 		wantCode(t, err, want.code)
@@ -261,11 +260,17 @@ func TestUpdateInstanceAttachesAndDetachesVolumes(t *testing.T) {
 	err := update(root, att("held"))
 	wantCode(t, err, codes.FailedPrecondition)
 	wantReason(t, err, "VOLUME_IN_USE")
-	err = update(root, att("pending"))
-	wantReason(t, err, "VOLUME_NOT_PROVISIONED")
 	err = update(&computev1.VolumeAttachment{Volume: volBase + "root-2", DeviceName: "vda", Boot: true})
 	wantCode(t, err, codes.InvalidArgument)
 	if got, _ := repo.Instance(ctx, id); got.Spec.Generation != 3 {
 		t.Fatalf("a refused update wrote generation %d", got.Spec.Generation)
+	}
+	// A volume storage is still provisioning attaches with no claim yet; the
+	// reconciler resolves it.
+	if err := update(root, att("pending")); err != nil {
+		t.Fatalf("attach a provisioning volume: %v", err)
+	}
+	if got, _ := repo.Instance(ctx, id); got.Spec.Generation != 4 || got.Spec.Volumes[1].Claim != "" {
+		t.Fatalf("after attaching a provisioning volume = gen %d %+v", got.Spec.Generation, got.Spec.Volumes)
 	}
 }

@@ -168,9 +168,13 @@ func attachments(vols []*computev1.VolumeAttachment, claims map[string]string) (
 
 // verifyVolumes asks the storage service about each volume: it must exist,
 // must not be going away, must not be attached to another instance, and
-// must not have failed in storage, and must report the claim that backs it. It returns the claim name per volume. The
-// store enforces the same one-holder rule atomically with the write, so this
-// check only turns a doomed request into an early, specific error.
+// must not have failed in storage. It returns the claim name per volume,
+// empty for a volume storage is still provisioning: RunInstances creates the
+// root volume from the image and the instance back to back, so such an
+// instance is accepted and waits (the reconciler resolves the claim through
+// Claims) instead of failing. The store enforces the same one-holder rule
+// atomically with the write, so this check only turns a doomed request into
+// an early, specific error.
 func (s *server) verifyVolumes(ctx context.Context, vols []*computev1.VolumeAttachment, instance string) (map[string]string, error) {
 	if s.volumes == nil {
 		return nil, dependencyMissing("no storage service is configured, so volume " + vols[0].GetVolume() + " cannot be verified")
@@ -190,8 +194,6 @@ func (s *server) verifyVolumes(ctx context.Context, vols []*computev1.VolumeAtta
 		case info.State == commonv1.ReconciliationState_RECONCILIATION_STATE_ERROR:
 			// Storage has given up on this volume; retrying will not help.
 			return nil, failedPre("VOLUME_FAILED", "volume "+v.GetVolume()+" failed in storage: "+info.Message)
-		case info.ClaimName == "":
-			return nil, failedPre("VOLUME_NOT_PROVISIONED", "volume "+v.GetVolume()+" has no claim yet")
 		}
 		claims[v.GetVolume()] = info.ClaimName
 	}

@@ -71,11 +71,35 @@ func run(ctx context.Context, cfg config) error {
 	if err != nil {
 		return err
 	}
+	var opts []grpcapi.Option
+	var lookup grpcapi.VolumeLookup
+	if storage != "" {
+		// The connection is lazy: the storage service may come up after this
+		// process, and CreateInstance answers UNAVAILABLE until it does.
+		l, closeStorage, err := grpcapi.DialStorage(storage)
+		if err != nil {
+			return err
+		}
+		defer func() {
+			if err := closeStorage(); err != nil {
+				slog.WarnContext(ctx, "close storage connection", slog.Any("err", err))
+			}
+		}()
+		lookup = l
+		// The reconciler resolves a claim storage has not reported yet, so a
+		// root volume still being made from its image leaves the instance
+		// pending instead of failing the create.
+		opts = append(opts, grpcapi.WithVolumes(lookup))
+	}
 	// hl is set before the HTTP server starts, the only reader of ready.
 	var hl *grpcapi.Health
 	ready := func() bool { return hl != nil && hl.Serving() }
 	metrics := obs.NewMetrics(ready)
-	rec := reconciler.New(repo, agent, reconciler.WithReports(repo), reconciler.WithSweepObserver(metrics.Sweep))
+	recOpts := []reconciler.Option{reconciler.WithReports(repo), reconciler.WithSweepObserver(metrics.Sweep)}
+	if lookup != nil {
+		recOpts = append(recOpts, reconciler.WithClaims(grpcapi.Claims(lookup)))
+	}
+	rec := reconciler.New(repo, agent, recOpts...)
 	ctl := controller.New(repo, controller.WithKick(rec.Kick))
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -88,21 +112,6 @@ func run(ctx context.Context, cfg config) error {
 	lis, err := (&net.ListenConfig{}).Listen(ctx, "tcp", listen)
 	if err != nil {
 		return stopReconciler(cancel, reconciled, err)
-	}
-	var opts []grpcapi.Option
-	if storage != "" {
-		// The connection is lazy: the storage service may come up after this
-		// process, and CreateInstance answers UNAVAILABLE until it does.
-		lookup, closeStorage, err := grpcapi.DialStorage(storage)
-		if err != nil {
-			return stopReconciler(cancel, reconciled, err)
-		}
-		defer func() {
-			if err := closeStorage(); err != nil {
-				slog.WarnContext(ctx, "close storage connection", slog.Any("err", err))
-			}
-		}()
-		opts = append(opts, grpcapi.WithVolumes(lookup))
 	}
 	srv := grpc.NewServer(append(grpcapi.Recovery(), grpc.WaitForHandlers(true))...)
 	grpcapi.Register(srv, ctl, repo, opts...)

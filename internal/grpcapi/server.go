@@ -50,7 +50,9 @@ const (
 type Option func(*server)
 
 // WithVolumes sets how CreateInstance verifies volumes. Without it,
-// CreateInstance answers DEPENDENCY_MISSING.
+// CreateInstance answers DEPENDENCY_MISSING. A volume storage is still
+// provisioning is accepted with no claim; the reconciler must then be given
+// reconciler.WithClaims(Claims(v)) to resolve it.
 func WithVolumes(v VolumeLookup) Option { return func(s *server) { s.volumes = v } }
 
 // Register adds InstanceService, ImageService, KeyPairService,
