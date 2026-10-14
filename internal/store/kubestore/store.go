@@ -258,6 +258,22 @@ func (s *Store) ReportInstanceStatus(ctx context.Context, id compute.InstanceID,
 	return out, err
 }
 
+func (s *Store) ReleaseVolumes(ctx context.Context, id compute.InstanceID) error {
+	return s.update(ctx, id.Ref(), func(e *entry) (bool, error) {
+		if !e.exists {
+			return false, compute.Errorf(compute.CodeNotFound, "instance %s not found", id)
+		}
+		if !e.inst.Removed() {
+			return false, compute.Errorf(compute.CodeFailedPrecondition, "instance %s is not removed", id)
+		}
+		if e.inst.Status.VolumesReleased {
+			return false, nil
+		}
+		e.inst.Status.VolumesReleased = true
+		return true, nil
+	})
+}
+
 func (s *Store) Unconverged(ctx context.Context, now time.Time) ([]compute.Ref, error) {
 	return s.lagging(ctx, func(r compute.Retry) bool { return r.Due(now) })
 }

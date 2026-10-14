@@ -76,6 +76,10 @@ type InstanceStatus struct {
 	UpdatedAt   time.Time
 	// Report is the last accepted controller report. Only ApplyReport sets it.
 	Report Report
+	// VolumesReleased records that the volumes marked DeleteOnTermination
+	// were handed to the storage service for deletion after the instance was
+	// removed. Only the report path's ReleaseVolumes sets it.
+	VolumesReleased bool
 }
 
 // Instance is the merged read model: desired spec plus observed status.

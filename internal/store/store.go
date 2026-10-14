@@ -191,6 +191,10 @@ type ReportStore interface {
 	// Pending operation on the instance in the same transaction. It returns
 	// the instance as stored.
 	ReportInstanceStatus(ctx context.Context, id compute.InstanceID, rep compute.InstanceReport, now time.Time) (compute.Instance, error)
+	// ReleaseVolumes sets VolumesReleased on a removed controller-driven
+	// instance. It fails with compute.CodeFailedPrecondition on an
+	// instance that is not removed, and is a no-op when already set.
+	ReleaseVolumes(ctx context.Context, id compute.InstanceID) error
 }
 
 // CheckMetadata is the rule CommitDesired applies before it writes metadata.

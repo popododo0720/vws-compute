@@ -45,3 +45,17 @@ func (s *Store) ReportInstanceStatus(_ context.Context, id compute.InstanceID, r
 	}
 	return row.read(), nil
 }
+
+func (s *Store) ReleaseVolumes(_ context.Context, id compute.InstanceID) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	row, ok := s.instances[id.String()]
+	if !ok {
+		return compute.Errorf(compute.CodeNotFound, "instance %s not found", id)
+	}
+	if !row.read().Removed() {
+		return compute.Errorf(compute.CodeFailedPrecondition, "instance %s is not removed", id)
+	}
+	row.status.VolumesReleased = true
+	return nil
+}
