@@ -132,3 +132,13 @@ func IsNotReady(err error) bool {
 	var n *NotReadyError
 	return errors.As(err, &n)
 }
+
+// AddressObserver is implemented by an agent that can say which private
+// IPv4 address a machine's first interface (the one joined to
+// MachineSpec.Subnet) has. The reconciler reports it as the instance's
+// observed interface.
+type AddressObserver interface {
+	// MachineIPv4 returns the address, or "" while the machine has none
+	// yet or does not exist.
+	MachineIPv4(ctx context.Context, name string) (string, error)
+}
