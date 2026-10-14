@@ -1,8 +1,10 @@
 package kubevirt
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"io"
 	"mime"
@@ -16,6 +18,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	kubevirtv1 "kubevirt.io/api/core/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	computev1 "github.com/popododo0720/vws-proto/gen/go/vws/compute/v1"
@@ -104,6 +107,33 @@ func TestRenderUserData(t *testing.T) {
 	}
 }
 
+// strictVolumes decodes each of the VirtualMachine's template volumes into
+// the KubeVirt v1.9.0 Volume type, failing on unknown fields. (Volumes are
+// decoded one by one because VirtualMachineInstanceSpec has its own
+// UnmarshalJSON, which bypasses DisallowUnknownFields.)
+func strictVolumes(t *testing.T, vm *unstructured.Unstructured) []kubevirtv1.Volume {
+	t.Helper()
+	raw, ok, err := unstructured.NestedSlice(vm.Object, "spec", "template", "spec", "volumes")
+	if err != nil || !ok {
+		t.Fatalf("spec.template.spec.volumes: found %v, %v", ok, err)
+	}
+	out := make([]kubevirtv1.Volume, 0, len(raw))
+	for _, r := range raw {
+		b, err := json.Marshal(r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		dec := json.NewDecoder(bytes.NewReader(b))
+		dec.DisallowUnknownFields()
+		var v kubevirtv1.Volume
+		if err := dec.Decode(&v); err != nil {
+			t.Fatalf("volume is not a valid KubeVirt v1.9.0 Volume: %v\n%s", err, b)
+		}
+		out = append(out, v)
+	}
+	return out
+}
+
 // TestKeyAndUserDataReachCloudInit drives CreateInstance with a key pair and
 // user data through the gRPC API and the reconciler to this agent on
 // envtest. The VirtualMachine reads NoCloud user data from Secret
@@ -157,19 +187,26 @@ func TestKeyAndUserDataReachCloudInit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	vols, _, _ := unstructured.NestedSlice(vm.Object, "spec", "template", "spec", "volumes") //nolint:errcheck // checked below
+	// Decode the rendered volumes strictly into the KubeVirt v1.9.0 API
+	// types: a field KubeVirt does not know (such as the old
+	// cloudInitNoCloud.userDataSecretRef, which its webhook ignores and then
+	// rejects the VM for having no user data source) fails here.
+	vols := strictVolumes(t, vm)
 	var ref string
 	for _, v := range vols {
-		m, _ := v.(map[string]any) //nolint:errcheck // a foreign shape fails the check below
-		if m["name"] == "cloudinitdisk" {
-			ref, _, _ = unstructured.NestedString(m, "cloudInitNoCloud", "userDataSecretRef", "name") //nolint:errcheck // checked below
-			if _, inline := m["cloudInitNoCloud"].(map[string]any)["userData"]; inline {
-				t.Fatal("user data is inlined in the VirtualMachine")
-			}
+		if v.Name != "cloudinitdisk" {
+			continue
 		}
+		if v.CloudInitNoCloud == nil || v.CloudInitNoCloud.UserDataSecretRef == nil {
+			t.Fatalf("cloudinitdisk has no cloudInitNoCloud.secretRef: %+v", v)
+		}
+		if v.CloudInitNoCloud.UserData != "" || v.CloudInitNoCloud.UserDataBase64 != "" {
+			t.Fatal("user data is inlined in the VirtualMachine")
+		}
+		ref = v.CloudInitNoCloud.UserDataSecretRef.Name
 	}
 	if ref != "web-1-cloudinit" {
-		t.Fatalf("cloudinitdisk userDataSecretRef = %q, want web-1-cloudinit (volumes %v)", ref, vols)
+		t.Fatalf("cloudinitdisk secretRef = %q, want web-1-cloudinit (volumes %+v)", ref, vols)
 	}
 	var sec corev1.Secret
 	if err := c.Get(ctx, client.ObjectKey{Namespace: ns, Name: ref}, &sec); err != nil {
