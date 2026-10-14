@@ -40,8 +40,9 @@ func storageVolume(state commonv1.ReconciliationState, msg, claim string) *stora
 }
 
 // TestAttachFailedVolume: a volume storage left in ERROR is refused as
-// VOLUME_FAILED with storage's message, on create and on attach; one still
-// provisioning stays VOLUME_NOT_PROVISIONED (vws-compute#68).
+// VOLUME_FAILED with storage's message, on create and on attach
+// (vws-compute#68). One still provisioning is accepted and waits; see
+// provisioning_test.go.
 func TestAttachFailedVolume(t *testing.T) {
 	ctx := context.Background()
 	const storageMsg = "ceph pool rbd-ssd is full"
@@ -63,9 +64,6 @@ func TestAttachFailedVolume(t *testing.T) {
 
 	_, err := h.inst.CreateInstance(ctx, createReq("web-0", "71717170-7171-4171-8171-717171717171", "broken"))
 	wantFailed(t, err)
-	_, err = h.inst.CreateInstance(ctx, createReq("web-0", "71717171-7171-4171-8171-717171717171", "pending"))
-	wantCode(t, err, codes.FailedPrecondition)
-	wantReason(t, err, "VOLUME_NOT_PROVISIONED")
 
 	if _, err := h.inst.CreateInstance(ctx, createReq("web-1", "71717172-7171-4171-8171-717171717171", "root")); err != nil {
 		t.Fatal(err)
@@ -84,7 +82,4 @@ func TestAttachFailedVolume(t *testing.T) {
 		return err
 	}
 	wantFailed(t, attach("broken", "71717173-7171-4171-8171-717171717171"))
-	err = attach("pending", "71717174-7171-4171-8171-717171717171")
-	wantCode(t, err, codes.FailedPrecondition)
-	wantReason(t, err, "VOLUME_NOT_PROVISIONED")
 }

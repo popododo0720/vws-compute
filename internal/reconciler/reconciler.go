@@ -40,6 +40,7 @@ type Reconciler struct {
 	interval time.Duration
 	log      *slog.Logger
 	observe  func(result string)
+	claims   ClaimFunc
 	kick     chan struct{}
 }
 
@@ -48,6 +49,17 @@ type Option func(*Reconciler)
 func WithClock(now func() time.Time) Option { return func(r *Reconciler) { r.now = now } }
 func WithInterval(d time.Duration) Option   { return func(r *Reconciler) { r.interval = d } }
 func WithLogger(l *slog.Logger) Option      { return func(r *Reconciler) { r.log = l } }
+
+// ClaimFunc returns the claim storage reports for a volume. "" with a nil
+// error means the volume is still provisioning. A hypervisor.Permanent error
+// means it never will have one.
+type ClaimFunc func(ctx context.Context, volume string) (string, error)
+
+// WithClaims resolves, on every converge, the claim of each volume the
+// instance was accepted without (storage was still provisioning it). Until
+// it resolves the instance stays unconverged and is retried. Without it an
+// empty claim reaches the agent as it is.
+func WithClaims(f ClaimFunc) Option { return func(r *Reconciler) { r.claims = f } }
 
 // Sweep results passed to the WithSweepObserver function.
 const (
@@ -314,7 +326,11 @@ func (r *Reconciler) Restore(ctx context.Context) error {
 		if inst.Status.Observed.Generation != inst.Spec.Generation {
 			return nil
 		}
-		return r.agent.ConvergeMachine(ctx, machineSpec(inst.Spec))
+		m, err := r.machine(ctx, inst.Spec)
+		if err != nil {
+			return err
+		}
+		return r.agent.ConvergeMachine(ctx, m)
 	}); err != nil {
 		errs = append(errs, err)
 	}
@@ -386,8 +402,10 @@ func (r *Reconciler) convergeInstance(ctx context.Context, ref compute.Ref) erro
 	if inst.Status.Observed.Generation >= spec.Generation {
 		return nil
 	}
-	machine := machineSpec(spec)
-	agentErr := r.agent.ConvergeMachine(ctx, machine)
+	machine, agentErr := r.machine(ctx, spec)
+	if agentErr == nil {
+		agentErr = r.agent.ConvergeMachine(ctx, machine)
+	}
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
@@ -454,6 +472,34 @@ func verdict(prev compute.Observed, retry compute.Retry, gen int64, changedAt ti
 func backoff(attempts int) time.Duration {
 	d := time.Duration(1<<min(attempts, 5)) * time.Second
 	return min(d, MaxBackoff)
+}
+
+// machine is machineSpec with every claim the instance was accepted
+// without resolved through WithClaims. A volume still provisioning is a
+// transient error, so the instance stays pending and is retried.
+func (r *Reconciler) machine(ctx context.Context, s compute.InstanceSpec) (hypervisor.MachineSpec, error) {
+	if r.claims != nil {
+		vols := make([]compute.VolumeAttachment, len(s.Volumes))
+		copy(vols, s.Volumes)
+		for i, v := range vols {
+			if v.Claim != "" {
+				continue
+			}
+			claim, err := r.claims(ctx, v.Volume.String())
+			if err != nil {
+				if hypervisor.IsPermanent(err) {
+					return hypervisor.MachineSpec{}, err
+				}
+				return hypervisor.MachineSpec{}, fmt.Errorf("volume %s: %w", v.Volume, err)
+			}
+			if claim == "" {
+				return hypervisor.MachineSpec{}, fmt.Errorf("volume %s is still provisioning", v.Volume)
+			}
+			vols[i].Claim = claim
+		}
+		s.Volumes = vols
+	}
+	return machineSpec(s), nil
 }
 
 func machineSpec(s compute.InstanceSpec) hypervisor.MachineSpec {

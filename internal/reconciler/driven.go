@@ -35,7 +35,10 @@ func (r *Reconciler) sweepDriven(ctx context.Context) error {
 
 func (r *Reconciler) convergeDriven(ctx context.Context, inst compute.Instance) error {
 	spec := inst.Spec
-	agentErr := r.agent.ConvergeMachine(ctx, machineSpec(spec))
+	machine, agentErr := r.machine(ctx, spec)
+	if agentErr == nil {
+		agentErr = r.agent.ConvergeMachine(ctx, machine)
+	}
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
