@@ -27,6 +27,11 @@ type VolumeInfo struct {
 	// ClaimName is the PersistentVolumeClaim behind the volume, from
 	// VolumeStatus.claim_name. Empty until storage has provisioned it.
 	ClaimName string
+	// State and Message are the volume's status.observed state and message
+	// as storage reports them. A volume storage gave up on is
+	// RECONCILIATION_STATE_ERROR, with the reason in Message.
+	State   commonv1.ReconciliationState
+	Message string
 }
 
 // VolumeLookup reads volumes from the storage service. Any error other than
@@ -53,6 +58,8 @@ func (s storageVolumes) Volume(ctx context.Context, name string) (VolumeInfo, er
 		Deleting: v.GetDeleteTime() != nil ||
 			v.GetStatus().GetObserved().GetState() == commonv1.ReconciliationState_RECONCILIATION_STATE_DELETING,
 		ClaimName: v.GetStatus().GetClaimName(),
+		State:     v.GetStatus().GetObserved().GetState(),
+		Message:   v.GetStatus().GetObserved().GetMessage(),
 	}, nil
 }
 
