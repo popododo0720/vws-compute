@@ -98,6 +98,10 @@ func run(ctx context.Context, cfg config) error {
 	recOpts := []reconciler.Option{reconciler.WithReports(repo), reconciler.WithSweepObserver(metrics.Sweep)}
 	if lookup != nil {
 		recOpts = append(recOpts, reconciler.WithClaims(grpcapi.Claims(lookup)))
+		if del := grpcapi.DeleteVolumes(lookup); del != nil {
+			// Root volumes go with their instance (DeleteOnTermination).
+			recOpts = append(recOpts, reconciler.WithVolumeDeleter(del))
+		}
 	}
 	rec := reconciler.New(repo, agent, recOpts...)
 	ctl := controller.New(repo, controller.WithKick(rec.Kick))

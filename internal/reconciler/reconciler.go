@@ -41,7 +41,9 @@ type Reconciler struct {
 	log      *slog.Logger
 	observe  func(result string)
 	claims   ClaimFunc
-	kick     chan struct{}
+	// deleteVolume is set by WithVolumeDeleter.
+	deleteVolume VolumeDeleter
+	kick         chan struct{}
 }
 
 type Option func(*Reconciler)

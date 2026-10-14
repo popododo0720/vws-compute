@@ -57,6 +57,9 @@ type volumeJSON struct {
 	Device string `json:"device"`
 	Boot   bool   `json:"boot,omitempty"`
 	Claim  string `json:"claim,omitempty"`
+	// DeleteOnTermination is absent on rows written before it existed,
+	// which keeps their volumes.
+	DeleteOnTermination bool `json:"delete_on_termination,omitempty"`
 }
 
 type nicJSON struct {
@@ -105,6 +108,7 @@ type instanceJSON struct {
 	Retry        retryJSON    `json:"retry"`
 	UpdatedAt    int64        `json:"updated_at,omitempty"`
 	Report       reportJSON   `json:"report"`
+	Released     bool         `json:"volumes_released,omitempty"`
 	Meta         metaJSON     `json:"meta"`
 }
 
@@ -260,13 +264,14 @@ func instanceTo(in compute.Instance) *instanceJSON {
 		Project: s.Project, Zone: s.Zone, UserData: s.UserData,
 		Observed: observedTo(st.Observed), Machine: uint8(st.Machine), AppliedEpoch: st.RebootEpoch,
 		Retry: retryTo(st.Retry), UpdatedAt: nanos(st.UpdatedAt), Meta: metaTo(in.Meta),
-		Report: reportJSON{Node: st.Report.Node, State: uint8(st.Report.State), Message: st.Report.Message, Power: uint8(st.Report.Power)},
+		Report:   reportJSON{Node: st.Report.Node, State: uint8(st.Report.State), Message: st.Report.Message, Power: uint8(st.Report.Power)},
+		Released: st.VolumesReleased,
 	}
 	if s.Key != nil {
 		j.KeyName, j.KeyPublic = s.Key.Name.String(), s.Key.PublicKey.AuthorizedKey()
 	}
 	for _, v := range s.Volumes {
-		j.Volumes = append(j.Volumes, volumeJSON{Volume: v.Volume.String(), Device: v.DeviceName, Boot: v.Boot, Claim: v.Claim})
+		j.Volumes = append(j.Volumes, volumeJSON{Volume: v.Volume.String(), Device: v.DeviceName, Boot: v.Boot, Claim: v.Claim, DeleteOnTermination: v.DeleteOnTermination})
 	}
 	for _, n := range s.NICs {
 		j.NICs = append(j.NICs, nicJSON{Device: n.DeviceName, Subnet: n.Subnet, PrivateIPv4: n.PrivateIPv4, SecurityGroups: n.SecurityGroups})
@@ -301,7 +306,7 @@ func instanceFrom(j *instanceJSON) (compute.Instance, error) {
 	for _, v := range j.Volumes {
 		ref, err := compute.ParseVolumeRef(v.Volume)
 		errs = append(errs, err)
-		vols = append(vols, compute.VolumeAttachment{Volume: ref, DeviceName: v.Device, Boot: v.Boot, Claim: v.Claim})
+		vols = append(vols, compute.VolumeAttachment{Volume: ref, DeviceName: v.Device, Boot: v.Boot, Claim: v.Claim, DeleteOnTermination: v.DeleteOnTermination})
 	}
 	var nics []compute.NetworkInterface
 	for _, n := range j.NICs {
@@ -325,6 +330,7 @@ func instanceFrom(j *instanceJSON) (compute.Instance, error) {
 		Status: compute.InstanceStatus{
 			Observed: obs, Machine: compute.MachineState(j.Machine), RebootEpoch: j.AppliedEpoch,
 			Retry: retryFrom(j.Retry), UpdatedAt: fromNanos(j.UpdatedAt), Report: report,
+			VolumesReleased: j.Released,
 		},
 		Meta: meta,
 	}, nil

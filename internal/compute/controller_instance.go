@@ -16,6 +16,11 @@ type VolumeAttachment struct {
 	// it from that answer; it is not part of the request, so it takes no
 	// part in fingerprints or in request matching.
 	Claim string
+	// DeleteOnTermination asks compute to delete the volume in the storage
+	// service once the instance is gone. The edge sets it for the boot
+	// volume, as EC2 does for a root device; vws-proto has no field for it
+	// yet, so a data volume is always kept.
+	DeleteOnTermination bool
 }
 
 // sameAttachment compares what a caller asked for, not the claim.
