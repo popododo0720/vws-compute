@@ -46,6 +46,7 @@ type Agent struct {
 	failures  map[string][]error
 	calls     int
 	gate      chan struct{}
+	addrs     map[string]string
 }
 
 func New() *Agent {
@@ -55,7 +56,26 @@ func New() *Agent {
 		creations: map[string]int{},
 		reboots:   map[string]int{},
 		failures:  map[string][]error{},
+		addrs:     map[string]string{},
 	}
+}
+
+// SetIPv4 sets the address MachineIPv4 reports for a machine.
+func (a *Agent) SetIPv4(name, ip string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.addrs[name] = ip
+}
+
+// MachineIPv4 implements hypervisor.AddressObserver: the address SetIPv4
+// gave a machine that exists, else "".
+func (a *Agent) MachineIPv4(_ context.Context, name string) (string, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if _, ok := a.machines[name]; !ok {
+		return "", nil
+	}
+	return a.addrs[name], nil
 }
 
 // Block makes every later call wait until release is called or the call's
