@@ -28,6 +28,8 @@ type Machine struct {
 	VCPUs          int
 	MemoryMiB      int
 	AuthorizedKeys []string
+	// UserData is fixed at creation.
+	UserData string
 	// Power is PowerOff or PowerOn. Destroyed machines are not returned.
 	Power        hypervisor.Power
 	AppliedEpoch uint32
@@ -188,7 +190,7 @@ func (a *Agent) ConvergeMachine(ctx context.Context, spec hypervisor.MachineSpec
 		if _, ok := a.images[spec.Image]; !ok && spec.Image != "" {
 			return hypervisor.Permanent(fmt.Errorf("machine %s: image artifact %s not found", spec.Name, spec.Image))
 		}
-		m = Machine{Image: spec.Image, BootClaim: spec.BootClaim, Subnet: spec.Subnet, Power: hypervisor.PowerOff}
+		m = Machine{Image: spec.Image, BootClaim: spec.BootClaim, Subnet: spec.Subnet, UserData: spec.UserData, Power: hypervisor.PowerOff}
 		a.creations[spec.Name]++
 	}
 	m.VCPUs, m.MemoryMiB = spec.VCPUs, spec.MemoryMiB

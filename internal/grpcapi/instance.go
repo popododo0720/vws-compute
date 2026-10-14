@@ -132,11 +132,12 @@ func createInstanceIntent(project, zone, id string, body *computev1.Instance, cl
 		p.Power = compute.PowerStopped
 	}
 	if spec.GetKeyPair() != "" {
-		_, _, kid, err := parseKeyPairName(spec.GetKeyPair())
-		if err != nil {
+		if _, _, _, err := parseKeyPairName(spec.GetKeyPair()); err != nil {
 			return nil, err
 		}
-		p.KeyPair = kid
+		// KeyPairService stores a key pair under its full resource name, so
+		// the instance resolves it by that name, not its last segment.
+		p.KeyPair = spec.GetKeyPair()
 	}
 	if p.Volumes, err = attachments(spec.GetVolumes(), claims); err != nil {
 		return nil, err

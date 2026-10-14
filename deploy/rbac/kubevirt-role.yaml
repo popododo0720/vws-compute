@@ -33,6 +33,16 @@ rules:
     # before a volume is attached. A missing claim is
     # reported as transient, so a denied get would fail every attach.
     verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    # cloudinit.go: the cloud-init user data of a machine, Secret
+    # <instance>-cloudinit, referenced by cloudInitNoCloud.userDataSecretRef.
+    # create: ensureCloudInitSecret before the VM is created.
+    # get: ensureCloudInitSecret on a retried create, deleteCloudInitSecret
+    # to check the managed label.
+    # update: ensureCloudInitSecret when a retried create renders other data.
+    # delete: deleteCloudInitSecret in destroy, after the VM.
+    verbs: ["get", "create", "update", "delete"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

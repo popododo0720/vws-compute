@@ -38,7 +38,11 @@ type MachineSpec struct {
 	VCPUs          int
 	MemoryMiB      int
 	AuthorizedKeys []string
-	Power          Power
+	// UserData is the instance's user data, opaque text for the guest's
+	// cloud-init. Like AuthorizedKeys, it is read only when the machine is
+	// created.
+	UserData string
+	Power    Power
 	// RebootEpoch is a level. A running machine whose last applied epoch is
 	// behind it reboots once and records it. Booting a machine applies the
 	// epoch without an extra reboot.
