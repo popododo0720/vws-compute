@@ -45,6 +45,8 @@ const (
 	// subnet of the pod's default interface. It is set on the VM template,
 	// so the virt-launcher pod carries it.
 	AnnotationLogicalSwitch = "ovn.kubernetes.io/logical_switch"
+	// LabelInstance names the instance an object belongs to.
+	LabelInstance = "vws.io/instance"
 
 	runAlways = "Always"
 	runHalted = "Halted"
@@ -181,7 +183,9 @@ func (a *Agent) destroy(ctx context.Context, name string) error {
 	if err := client.IgnoreNotFound(err); err != nil {
 		return fmt.Errorf("machine %s: delete VirtualMachine: %w", vm.GetName(), err)
 	}
-	return nil
+	// The user-data Secret goes after the VM, so a retry after a failure
+	// here deletes it then.
+	return a.deleteCloudInitSecret(ctx, name)
 }
 
 func (a *Agent) create(ctx context.Context, spec hypervisor.MachineSpec) error {
@@ -222,18 +226,23 @@ func (a *Agent) create(ctx context.Context, spec hypervisor.MachineSpec) error {
 		}
 		volumes = []any{map[string]any{"name": "rootdisk", "persistentVolumeClaim": map[string]any{"claimName": spec.BootClaim}}}
 	}
-	if len(spec.AuthorizedKeys) > 0 {
-		keys, err := json.Marshal(spec.AuthorizedKeys)
-		if err != nil {
-			return hypervisor.Permanent(err)
+	userData, err := renderUserData(spec.AuthorizedKeys, spec.UserData)
+	if err != nil {
+		return fmt.Errorf("machine %s: cloud-init: %w", spec.Name, err)
+	}
+	if userData != "" {
+		// NoCloud reads the user data from a Secret, so up to 32 KiB of it
+		// (more once base64 in a multipart) stays out of the VM object.
+		if err := a.ensureCloudInitSecret(ctx, spec.Name, userData); err != nil {
+			return err
 		}
 		disks = append(disks, map[string]any{"name": "cloudinitdisk", "disk": map[string]any{"bus": "virtio"}})
 		volumes = append(volumes, map[string]any{
 			"name":             "cloudinitdisk",
-			"cloudInitNoCloud": map[string]any{"userData": "#cloud-config\nssh_authorized_keys: " + string(keys) + "\n"},
+			"cloudInitNoCloud": map[string]any{"userDataSecretRef": map[string]any{"name": cloudInitSecret(spec.Name)}},
 		})
 	}
-	podMeta := map[string]any{"labels": map[string]any{"vws.io/instance": spec.Name}}
+	podMeta := map[string]any{"labels": map[string]any{LabelInstance: spec.Name}}
 	if spec.Subnet != "" {
 		// KubeVirt copies template annotations to the virt-launcher pod,
 		// and Kube-OVN puts the pod's default interface on this logical
