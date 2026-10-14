@@ -239,7 +239,7 @@ func (a *Agent) create(ctx context.Context, spec hypervisor.MachineSpec) error {
 		disks = append(disks, map[string]any{"name": "cloudinitdisk", "disk": map[string]any{"bus": "virtio"}})
 		volumes = append(volumes, map[string]any{
 			"name":             "cloudinitdisk",
-			"cloudInitNoCloud": map[string]any{"userDataSecretRef": map[string]any{"name": cloudInitSecret(spec.Name)}},
+			"cloudInitNoCloud": map[string]any{"secretRef": map[string]any{"name": cloudInitSecret(spec.Name)}},
 		})
 	}
 	podMeta := map[string]any{"labels": map[string]any{LabelInstance: spec.Name}}
