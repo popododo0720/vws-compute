@@ -1116,3 +1116,40 @@ func TestPublicImageIsReadableEverywhereInItsRegion(t *testing.T) {
 		t.Fatalf("owner: %v", err)
 	}
 }
+
+// TestPolledImageOperationNamesTheImageWhereGetImageFindsIt pins the review
+// of vws-compute#93: GetOperation has no request name, so the image name in
+// its response comes from the image's stored region, and GetImage on that
+// name succeeds.
+func TestPolledImageOperationNamesTheImageWhereGetImageFindsIt(t *testing.T) {
+	ctx := context.Background()
+	h := serve(t)
+	parent := "projects/a111111111111/regions/vws-1"
+	created, err := h.img.CreateImage(ctx, &computev1.CreateImageRequest{
+		Parent: parent, ImageId: "ami-0000000000000ddd4", RequestId: "97979797-9797-4797-8797-979797979797",
+		Image: &computev1.Image{Spec: &computev1.ImageSpec{
+			Source: &computev1.ImageSpec_Snapshot{Snapshot: parent + "/snapshots/s"},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.ops.WaitOperation(ctx, &longrunningpb.WaitOperationRequest{Name: created.GetName(), Timeout: durationpb.New(10 * time.Second)}); err != nil {
+		t.Fatal(err)
+	}
+	polled, err := h.ops.GetOperation(ctx, &longrunningpb.GetOperationRequest{Name: created.GetName()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var img computev1.Image
+	if err := anypb.UnmarshalTo(polled.GetResponse(), &img, proto.UnmarshalOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	want := parent + "/images/ami-0000000000000ddd4"
+	if img.GetName() != want {
+		t.Fatalf("polled image name %q, want %q", img.GetName(), want)
+	}
+	if _, err := h.img.GetImage(ctx, &computev1.GetImageRequest{Name: img.GetName()}); err != nil {
+		t.Fatalf("GetImage on the polled name: %v", err)
+	}
+}

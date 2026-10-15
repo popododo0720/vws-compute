@@ -369,6 +369,11 @@ func (s *server) operationResource(ctx context.Context, project, resourceName st
 		if img.Spec.Scope.Project() != project {
 			return name, nil, nil
 		}
+		if resourceName == "" && !img.Spec.Scope.IsZero() {
+			// A polled operation has no request name; the image's own scope
+			// names it where GetImage finds it.
+			name = imageResourceName(project, img.Spec.Scope.Region(), op.Target.ID)
+		}
 		return name, imagePB(img, name), nil
 	case compute.KindKeyPair:
 		id, err := compute.ParseKeyPairID(op.Target.ID)

@@ -41,6 +41,7 @@ Rules for anyone changing this repository, human or agent. A rule with an enforc
 | A commit rejects a plan whose observed generation or parked bit moved. | `storetest` conflict case and `TestStopReplansWhenTheGenerationParksBeforeCommit` |
 | Shutdown cancels an in-flight RPC instead of waiting out its timeout. | `TestStopServerCancelsHandlersAfterGrace` |
 | A request id maps to one operation across restarts, and a crash between the request index and the resource write is repaired. | `TestSameRequestIDSameOperationAcrossRestart`, `TestRepairRemovesAnOrphanedIndexAndTheRetrySucceeds`, `TestRetryAdoptsAnOrphanedIndex`, `TestRepairRestoresAMissingIndex` (envtest) |
+| A `CreateImage` request id stored before image scopes (#92) still replays, only for the scope its image holds. A polled image operation names the image in its stored region. | `TestPreUpgradeCreateImageReplaysUnderItsScope`, `TestLegacyFingerprintMatchesThePreScopeRelease`, `TestPolledImageOperationNamesTheImageWhereGetImageFindsIt` |
 | A write that loses a resourceVersion race rereads and reapplies its rule. A stale plan conflicts and leaves no index. | `TestCASConflictRetriesOnFreshState` and `TestStaleExpectLosesToACompetingCommit` (envtest) |
 | A key name and a controller-driven volume have one holder. Only a holder that exists and no longer qualifies loses it. | `storetest` key pair and volume cases, `TestRepairReleasesAClaimWhoseHolderNeverWasWritten` (envtest) |
 | Startup re-applies converged specs to the agent. | `TestRestartRebuildsTheAgent` |
