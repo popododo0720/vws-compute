@@ -48,7 +48,9 @@ func TestImageNotFoundPublishesReadyReasonAndDeletesRootDisk(t *testing.T) {
 	role := vmRole(t)
 	var dvVerbs, pvcVerbs []string
 	for _, rule := range role.Rules {
-		if len(rule.APIGroups) == 1 && rule.APIGroups[0] == "cdi.kubevirt.io" && len(rule.Resources) == 1 && rule.Resources[0] == "datavolumes" {
+		dv := len(rule.APIGroups) == 1 && rule.APIGroups[0] == "cdi.kubevirt.io" &&
+			len(rule.Resources) == 1 && rule.Resources[0] == "datavolumes"
+		if dv {
 			dvVerbs = rule.Verbs
 		}
 		if slices.Contains(rule.Resources, "persistentvolumeclaims") {
@@ -102,7 +104,8 @@ func TestImageNotFoundPublishesReadyReasonAndDeletesRootDisk(t *testing.T) {
 		Name: missing, Image: "ami-missing", VCPUs: 2, MemoryMiB: 2048, Power: hypervisor.PowerOn,
 	})
 	want := "machine " + missing + ": image ami-missing not found"
-	if err == nil || err.Error() != want || hypervisor.CauseOf(err) != hypervisor.CauseImageNotFound || !hypervisor.IsPermanent(err) {
+	if err == nil || err.Error() != want || hypervisor.CauseOf(err) != hypervisor.CauseImageNotFound ||
+		!hypervisor.IsPermanent(err) {
 		t.Fatalf("missing image = %v, want permanent ImageNotFound %q", err, want)
 	}
 	if _, err := get(t, c, "VirtualMachine", ns, missing); !apierrors.IsNotFound(err) {

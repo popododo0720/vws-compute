@@ -163,7 +163,9 @@ func ApplyReport(inst Instance, rep InstanceReport, now time.Time) (InstanceStat
 		if code == 0 {
 			code = CodeInternal
 		}
-		next.Observed = Observed{Generation: rep.Generation, Failure: &Failure{Code: code, Message: rep.Message, Reason: rep.Reason}}
+		next.Observed = Observed{Generation: rep.Generation, Failure: &Failure{
+			Code: code, Message: rep.Message, Reason: rep.Reason,
+		}}
 	case rep.State == ReportReady && spec.Power != PowerTerminated,
 		rep.State == ReportDeleting && spec.Power == PowerTerminated:
 		next.Observed = Observed{Generation: rep.Generation}

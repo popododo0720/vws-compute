@@ -110,7 +110,8 @@ func TestDeleteFromErrorSucceedsWhileBootVolumeFailed(t *testing.T) {
 			reconciler.WithVolumeDeleter(d.delete),
 			reconciler.WithClaims(func(_ context.Context, _ string) (string, error) {
 				if ready {
-					return "", hypervisor.Permanent(errors.New("volume projects/p/zones/z/volumes/root failed in storage: clone failed"))
+					return "", hypervisor.Permanent(errors.New(
+						"volume projects/p/zones/z/volumes/root failed in storage: clone failed"))
 				}
 				return "pvc-root", nil
 			}))

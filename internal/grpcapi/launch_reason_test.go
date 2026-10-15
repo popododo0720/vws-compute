@@ -39,13 +39,21 @@ func TestImageNotFoundPublishesReadyReasonAndDeletesRootDisk(t *testing.T) {
 	badVol := "projects/p/zones/z/volumes/bad"
 	missingVol := "projects/p/zones/z/volumes/missing"
 	lookup := volMap{
-		badVol:     {State: commonv1.ReconciliationState_RECONCILIATION_STATE_ERROR, Message: "clone failed"},
-		missingVol: {State: commonv1.ReconciliationState_RECONCILIATION_STATE_ERROR, Message: "clone failed", Reason: "ImageNotFound"},
+		badVol: {State: commonv1.ReconciliationState_RECONCILIATION_STATE_ERROR, Message: "clone failed"},
+		missingVol: {
+			State:   commonv1.ReconciliationState_RECONCILIATION_STATE_ERROR,
+			Message: "clone failed",
+			Reason:  "ImageNotFound",
+		},
 	}
-	rec := reconciler.New(repo, agent, reconciler.WithClock(clock), reconciler.WithReports(repo), reconciler.WithClaims(Claims(lookup)))
+	rec := reconciler.New(repo, agent,
+		reconciler.WithClock(clock),
+		reconciler.WithReports(repo),
+		reconciler.WithClaims(Claims(lookup)))
 	ctl := controller.New(repo, controller.WithClock(clock), controller.WithKick(rec.Kick))
 
-	reg, err := ctl.Submit(ctx, mustRequest(t, "register-image"), okIntent(compute.NewRegisterImage("debian-13", "https://images.example/debian-13.qcow2")))
+	reg, err := ctl.Submit(ctx, mustRequest(t, "register-image"), okIntent(
+		compute.NewRegisterImage("debian-13", "https://images.example/debian-13.qcow2")))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,7 +67,8 @@ func TestImageNotFoundPublishesReadyReasonAndDeletesRootDisk(t *testing.T) {
 		t.Fatal("the agent has an artifact for the stored image")
 	}
 
-	run, err := ctl.Submit(ctx, mustRequest(t, "run-missing"), okIntent(compute.NewRunInstance(imgID.String(), "vws.small", "")))
+	run, err := ctl.Submit(ctx, mustRequest(t, "run-missing"), okIntent(
+		compute.NewRunInstance(imgID.String(), "vws.small", "")))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -77,7 +86,8 @@ func TestImageNotFoundPublishesReadyReasonAndDeletesRootDisk(t *testing.T) {
 		t.Fatalf("failure = %+v, want FailedPrecondition ImageNotFound %q", inst.Status.Observed.Failure, wantMsg)
 	}
 
-	run2, err := ctl.Submit(ctx, mustRequest(t, "run-transient"), okIntent(compute.NewRunInstance(imgID.String(), "vws.small", "")))
+	run2, err := ctl.Submit(ctx, mustRequest(t, "run-transient"), okIntent(
+		compute.NewRunInstance(imgID.String(), "vws.small", "")))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,12 +119,13 @@ func TestImageNotFoundPublishesReadyReasonAndDeletesRootDisk(t *testing.T) {
 	if err := rec.Sweep(ctx); err != nil {
 		t.Fatal(err)
 	}
-	_, err = ctl.Submit(ctx, mustRequest(t, "create-missing"), okIntent(compute.NewCreateInstance(compute.CreateInstanceParams{
-		ID: "web-missing", Project: "p", Zone: "z", MachineType: "vws.small", Power: compute.PowerRunning,
-		Volumes: []compute.VolumeAttachment{{
-			Volume: mustVolumeRef(t, missingVol), DeviceName: "vda", Boot: true,
-		}},
-	})))
+	_, err = ctl.Submit(ctx, mustRequest(t, "create-missing"), okIntent(compute.NewCreateInstance(
+		compute.CreateInstanceParams{
+			ID: "web-missing", Project: "p", Zone: "z", MachineType: "vws.small", Power: compute.PowerRunning,
+			Volumes: []compute.VolumeAttachment{{
+				Volume: mustVolumeRef(t, missingVol), DeviceName: "vda", Boot: true,
+			}},
+		})))
 	if err != nil {
 		t.Fatal(err)
 	}
