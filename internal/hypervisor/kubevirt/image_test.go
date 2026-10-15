@@ -319,3 +319,32 @@ func TestPublicImageDataSourceIsLabeledPublic(t *testing.T) {
 		t.Fatalf("repeat wrote %d times, want 0", got)
 	}
 }
+
+// TestPublicLabelIsRemovedWhenTheImageIsNoLongerPublic pins the review of
+// vws-compute#93: an image taken out of -public-images loses vws.io/public
+// with one patch, keeps its owner labels, and a repeat writes nothing.
+func TestPublicLabelIsRemovedWhenTheImageIsNoLongerPublic(t *testing.T) {
+	c, ns, w := newClient(t)
+	ctx := context.Background()
+	spec := urlImage()
+	spec.Project, spec.Region, spec.Public = "a123456789012", "vws-1", true
+	_, _ = imageAgent(c, ns).ConvergeImage(ctx, spec)
+	if l := dataSourceLabels(t, c, ns); l[LabelPublic] != "true" {
+		t.Fatalf("labels %v", l)
+	}
+	spec.Public = false
+	before := w.n.Load()
+	_, _ = imageAgent(c, ns).ConvergeImage(ctx, spec)
+	if got := w.n.Load() - before; got != 1 {
+		t.Fatalf("unpublishing wrote %d times, want 1", got)
+	}
+	l := dataSourceLabels(t, c, ns)
+	if _, has := l[LabelPublic]; has || l[LabelProject] != "a123456789012" || l[LabelRegion] != "vws-1" || l[LabelManaged] != "true" {
+		t.Fatalf("labels %v", l)
+	}
+	before = w.n.Load()
+	_, _ = imageAgent(c, ns).ConvergeImage(ctx, spec)
+	if got := w.n.Load() - before; got != 0 {
+		t.Fatalf("repeat wrote %d times, want 0", got)
+	}
+}

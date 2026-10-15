@@ -77,6 +77,13 @@ rules:
       - create
       # delete: image.go removeImage.
       - delete
+  - apiGroups: ["cdi.kubevirt.io"]
+    resources: ["datasources"]
+    verbs:
+      # patch: image.go ensure sets and removes the DataSource authorization
+      # labels (vws.io/project, vws.io/region, vws.io/public) on an existing
+      # DataSource.
+      - patch
   - apiGroups: [""]
     resources: ["persistentvolumeclaims"]
     # get: image.go imageSize reads the bound claim capacity.

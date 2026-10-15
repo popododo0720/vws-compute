@@ -41,11 +41,11 @@ func (a *Agent) ConvergeImage(ctx context.Context, spec hypervisor.ImageSpec) (i
 	if err != nil {
 		return 0, err
 	}
-	if err := a.ensure(ctx, dvGVK, spec.Name, map[string]any{"source": source, "storage": a.imageStorage(spec)}, nil); err != nil {
+	if err := a.ensure(ctx, dvGVK, spec.Name, map[string]any{"source": source, "storage": a.imageStorage(spec)}, nil, nil); err != nil {
 		return 0, err
 	}
 	pvc := map[string]any{"name": spec.Name, "namespace": a.cfg.ImageNamespace}
-	if err := a.ensure(ctx, dsGVK, spec.Name, map[string]any{"source": map[string]any{"pvc": pvc}}, ownerLabels(spec)); err != nil {
+	if err := a.ensure(ctx, dsGVK, spec.Name, map[string]any{"source": map[string]any{"pvc": pvc}}, ownerLabels(spec), authLabels); err != nil {
 		return 0, err
 	}
 	return a.imageSize(ctx, spec.Name)
@@ -82,11 +82,18 @@ func ownerLabels(spec hypervisor.ImageSpec) map[string]string {
 	return l
 }
 
+// authLabels are the DataSource labels vws-storage authorizes a clone by.
+// Compute owns them: one that the image no longer wants, such as
+// vws.io/public after the image left -public-images, is removed.
+var authLabels = []string{LabelProject, LabelRegion, LabelPublic}
+
 // ensure creates the object unless it exists, with labels besides the
 // managed one. An existing image object keeps its spec, since an image's
-// source never changes; labels it lacks or holds with another value are set
-// with one patch, so DataSources made before owner labels get them.
-func (a *Agent) ensure(ctx context.Context, gvk schema.GroupVersionKind, name string, spec map[string]any, labels map[string]string) error {
+// source never changes. Its labels are brought to labels with one patch:
+// one it lacks or holds with another value is set, and a key in owned that
+// labels lacks is removed, so DataSources made before owner labels get them
+// and an image made private loses vws.io/public. A repeat writes nothing.
+func (a *Agent) ensure(ctx context.Context, gvk schema.GroupVersionKind, name string, spec map[string]any, labels map[string]string, owned []string) error {
 	have := a.object(gvk, name)
 	err := a.c.Get(ctx, client.ObjectKeyFromObject(have), have)
 	switch {
@@ -95,18 +102,30 @@ func (a *Agent) ensure(ctx context.Context, gvk schema.GroupVersionKind, name st
 		if cur[LabelManaged] != "true" {
 			return hypervisor.Permanent(fmt.Errorf("image %s: a %s with that name exists and is not managed here", name, gvk.Kind))
 		}
-		missing := false
+		stale := false
 		for k, v := range labels {
 			if cur[k] != v {
-				missing = true
+				stale = true
 			}
 		}
-		if !missing {
+		for _, k := range owned {
+			if _, want := labels[k]; !want {
+				if _, has := cur[k]; has {
+					stale = true
+				}
+			}
+		}
+		if !stale {
 			return nil
 		}
 		patch := client.MergeFrom(have.DeepCopy())
 		for k, v := range labels {
 			cur[k] = v
+		}
+		for _, k := range owned {
+			if _, want := labels[k]; !want {
+				delete(cur, k)
+			}
 		}
 		have.SetLabels(cur)
 		if err := a.c.Patch(ctx, have, patch); err != nil {
