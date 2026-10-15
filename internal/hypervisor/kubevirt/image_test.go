@@ -348,3 +348,41 @@ func TestPublicLabelIsRemovedWhenTheImageIsNoLongerPublic(t *testing.T) {
 		t.Fatalf("repeat wrote %d times, want 0", got)
 	}
 }
+
+// TestDeletingAnImageAMachineClonesRevokesItsLabelsFirst pins the review of
+// vws-compute#93 (ce6fc94): while a VirtualMachine still blocks removal, the
+// DataSource already lost its authorization labels, so vws-storage clones it
+// for nobody new; the retried removal writes nothing more.
+func TestDeletingAnImageAMachineClonesRevokesItsLabelsFirst(t *testing.T) {
+	c, ns, w := newClient(t)
+	ctx := context.Background()
+	a := imageAgent(c, ns)
+	img := urlImage()
+	img.Project, img.Region, img.Public = "a123456789012", "vws-1", true
+	_, _ = a.ConvergeImage(ctx, img)
+	m := spec("i-0123456789abcdef0", hypervisor.PowerOff)
+	m.Image = imageID
+	if err := a.ConvergeMachine(ctx, m); err != nil {
+		t.Fatal(err)
+	}
+	gone := hypervisor.ImageSpec{Name: imageID}
+	if _, err := a.ConvergeImage(ctx, gone); err == nil || hypervisor.IsPermanent(err) {
+		t.Fatalf("got %v, want a transient refusal", err)
+	}
+	l := dataSourceLabels(t, c, ns)
+	for _, k := range []string{LabelProject, LabelRegion, LabelPublic} {
+		if _, has := l[k]; has {
+			t.Fatalf("label %s kept while removal is blocked: %v", k, l)
+		}
+	}
+	if l[LabelManaged] != "true" {
+		t.Fatalf("managed label lost: %v", l)
+	}
+	before := w.n.Load()
+	if _, err := a.ConvergeImage(ctx, gone); err == nil {
+		t.Fatal("removal must still be refused")
+	}
+	if got := w.n.Load() - before; got != 0 {
+		t.Fatalf("retried removal wrote %d times, want 0", got)
+	}
+}

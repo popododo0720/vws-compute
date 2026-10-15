@@ -226,6 +226,12 @@ func (a *Agent) imageSize(ctx context.Context, name string) (int64, error) {
 }
 
 func (a *Agent) removeImage(ctx context.Context, name string) error {
+	// The authorization labels go first, so an image being deregistered is
+	// cloned by nobody new even while a VirtualMachine still blocks its
+	// removal and the deletion is retried (#93).
+	if err := a.revokeAuthLabels(ctx, name); err != nil {
+		return err
+	}
 	users, err := a.imageUsers(ctx, name)
 	if err != nil {
 		return err
@@ -240,6 +246,39 @@ func (a *Agent) removeImage(ctx context.Context, name string) error {
 		if err := client.IgnoreNotFound(a.c.Delete(ctx, obj, client.PropagationPolicy(metav1.DeletePropagationBackground))); err != nil {
 			return fmt.Errorf("image %s: delete %s: %w", name, gvk.Kind, err)
 		}
+	}
+	return nil
+}
+
+// revokeAuthLabels removes the authorization labels from the image's managed
+// DataSource with one patch. A missing DataSource, one not managed here, or
+// one without the labels is left alone, so a repeat writes nothing.
+func (a *Agent) revokeAuthLabels(ctx context.Context, name string) error {
+	ds := a.object(dsGVK, name)
+	if err := a.c.Get(ctx, client.ObjectKeyFromObject(ds), ds); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+		return fmt.Errorf("image %s: get DataSource: %w", name, err)
+	}
+	cur := ds.GetLabels()
+	if cur[LabelManaged] != "true" {
+		return nil
+	}
+	patch := client.MergeFrom(ds.DeepCopy())
+	changed := false
+	for _, k := range authLabels {
+		if _, has := cur[k]; has {
+			delete(cur, k)
+			changed = true
+		}
+	}
+	if !changed {
+		return nil
+	}
+	ds.SetLabels(cur)
+	if err := a.c.Patch(ctx, ds, patch); err != nil {
+		return fmt.Errorf("image %s: revoke DataSource labels: %w", name, err)
 	}
 	return nil
 }
