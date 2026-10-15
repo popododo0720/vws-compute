@@ -381,6 +381,24 @@ func FingerprintOf(in Intent) Fingerprint {
 	return fp
 }
 
+// LegacyFingerprintOf is the fingerprint a CreateImage intent had before
+// image scopes (#92), which stores written by an older release persist, with
+// the scope the intent now carries. ok is false for every other intent,
+// whose encoding did not change. A replay may accept the legacy fingerprint
+// only after checking that the stored image has this scope.
+func LegacyFingerprintOf(in Intent) (fp Fingerprint, scope ImageScope, ok bool) {
+	c, isCopy := in.(copyImage)
+	if !isCopy {
+		return Fingerprint{}, ImageScope{}, false
+	}
+	e := encoder{h: sha256.New()}
+	e.field("vws.compute.fingerprint.v1")
+	e.field(in.Kind().String())
+	c.encodeScoped(&e, false)
+	e.h.Sum(fp[:0])
+	return fp, c.scope, true
+}
+
 type encoder struct{ h hash.Hash }
 
 func (e *encoder) field(s string) {
@@ -418,10 +436,16 @@ func (in registerImage) encode(e *encoder) {
 	e.field(in.url.s)
 }
 
-func (in copyImage) encode(e *encoder) {
+func (in copyImage) encode(e *encoder) { in.encodeScoped(e, true) }
+
+// encodeScoped writes the fields; withScope false is the encoding before
+// image scopes (#92), which LegacyFingerprintOf reproduces.
+func (in copyImage) encodeScoped(e *encoder, withScope bool) {
 	e.field(in.id.s)
-	e.field(in.scope.project)
-	e.field(in.scope.region)
+	if withScope {
+		e.field(in.scope.project)
+		e.field(in.scope.region)
+	}
 	switch src := in.source.(type) {
 	case FromVolume:
 		e.field("volume")
