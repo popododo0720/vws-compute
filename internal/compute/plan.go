@@ -215,12 +215,26 @@ func admitNewImage(v View, env Env, id ImageID, scope ImageScope, family ImageNa
 	}}, nil
 }
 
-func (in copyImage) plan(v View, env Env) (Change, error) {
+// plan reads nothing. The caller's id is not the stored image id, so a
+// lookup would tell another project whether that id is taken.
+func (in copyImage) plan(_ View, env Env) (Change, error) {
+	id, err := newImageID(env.Rand)
+	if err != nil {
+		return Change{}, err
+	}
 	var meta *Metadata
 	if in.description.String() != "" || in.labels.Len() > 0 {
 		meta = &Metadata{Description: in.description, Labels: in.labels}
 	}
-	return admitNewImage(v, env, in.id, in.scope, in.family, in.source, meta)
+	return Change{Write: true, Meta: meta, Spec: ImageSpec{
+		ID:         id,
+		Scope:      in.scope,
+		Generation: 1,
+		CreatedAt:  env.Now,
+		ChangedAt:  env.Now,
+		Name:       in.family,
+		Source:     in.source,
+	}}, nil
 }
 
 func (in registerFile) plan(v View, env Env) (Change, error) {

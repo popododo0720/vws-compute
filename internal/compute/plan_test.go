@@ -156,9 +156,6 @@ func TestPlanRejects(t *testing.T) {
 			return compute.NewImportKeyPair("deploy", rsa2048Line, compute.Labels{})
 		}, compute.CodeAlreadyExists},
 		{"delete never-stored key", newView(), func() (compute.Intent, error) { return compute.NewDeleteKeyPair("ghost") }, compute.CodeNotFound},
-		{"copy taken image", newView().with(availableImage()), func() (compute.Intent, error) {
-			return compute.NewCopyImage(imageID, testImageScope, compute.FromSnapshot{Ref: ok(compute.ParseSnapshotRef("projects/demo/regions/demo/snapshots/snap"))}, "debian-13", "", compute.Labels{})
-		}, compute.CodeAlreadyExists},
 		{"file over deregistered image", newView().with(goneImage), func() (compute.Intent, error) {
 			return compute.NewRegisterFile(imageID, "/var/lib/vws/images/debian-13.qcow2", "debian-13")
 		}, compute.CodeAlreadyExists},
@@ -184,6 +181,12 @@ func TestIntentConstructorsValidate(t *testing.T) {
 		},
 		"bad copy source": func() (compute.Intent, error) {
 			return compute.NewCopyImage("debian-12", testImageScope, nil, "", "", compute.Labels{})
+		},
+		"bad copy id": func() (compute.Intent, error) {
+			vol := ok(compute.ParseVolumeRef("projects/demo/zones/demo/volumes/root"))
+			return compute.NewCopyImage(
+				"9debian", testImageScope, compute.FromVolume{Ref: vol}, "", "", compute.Labels{},
+			)
 		},
 		"bad instance id": func() (compute.Intent, error) { return compute.NewStopInstance("i-XYZ") },
 		"http image url": func() (compute.Intent, error) {
@@ -320,17 +323,33 @@ func bornState(t *testing.T, v *view, in compute.Intent, ch compute.Change) comp
 
 func TestPlanCopyAndFileImage(t *testing.T) {
 	vol := ok(compute.ParseVolumeRef("projects/demo/zones/demo/volumes/root"))
-	ch, err := plan(t, newView(), ok(compute.NewCopyImage("debian-12", testImageScope, compute.FromVolume{Ref: vol}, "debian-12", "a disk", compute.Labels{})), nil)
+	in := ok(compute.NewCopyImage(
+		"debian-12", testImageScope, compute.FromVolume{Ref: vol}, "debian-12", "a disk", compute.Labels{},
+	))
+	ch, err := plan(t, unreadImages{}, in, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	spec := ch.Spec.(compute.ImageSpec)
 	src, isVol := spec.Source.(compute.FromVolume)
-	if !ch.Write || spec.ID.String() != "debian-12" || spec.Name.String() != "debian-12" || !isVol || src.Ref != vol {
+	if !ch.Write || !mintedImageID(spec.ID) || spec.ID.String() == "debian-12" || spec.Scope != testImageScope ||
+		spec.Name.String() != "debian-12" || !isVol || src.Ref != vol {
 		t.Fatalf("copy = %+v", spec)
 	}
 	if ch.Meta == nil || ch.Meta.Description.String() != "a disk" || ch.Meta.Revision != 0 {
 		t.Fatalf("meta = %+v", ch.Meta)
+	}
+
+	held := availableImage()
+	taken := ok(compute.NewCopyImage(
+		held.Spec.ID.String(), testImageScope, compute.FromVolume{Ref: vol}, "debian-12", "", compute.Labels{},
+	))
+	again, err := plan(t, newView().with(held), taken, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := again.Spec.(compute.ImageSpec).ID; !mintedImageID(got) || got == held.Spec.ID {
+		t.Fatalf("copy of a held id = %s", got)
 	}
 
 	file, err := plan(t, newView(), ok(compute.NewRegisterFile("debian-12", "/var/lib/vws/images/debian-12.qcow2", "debian-12")), nil)
@@ -338,9 +357,30 @@ func TestPlanCopyAndFileImage(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := file.Spec.(compute.ImageSpec).Source.(compute.FromFile)
-	if got.Path.String() != "/var/lib/vws/images/debian-12.qcow2" || file.Meta != nil {
+	if file.Spec.(compute.ImageSpec).ID.String() != "debian-12" ||
+		got.Path.String() != "/var/lib/vws/images/debian-12.qcow2" || file.Meta != nil {
 		t.Fatalf("file = %+v meta %+v", file.Spec, file.Meta)
 	}
+}
+
+// unreadImages fails any image lookup. copyImage.plan must not call it.
+type unreadImages struct{ compute.View }
+
+func (unreadImages) Image(compute.ImageID) (compute.Image, error) {
+	return compute.Image{}, compute.Errorf(compute.CodeInternal, "copy does not read images")
+}
+
+func mintedImageID(id compute.ImageID) bool {
+	s := id.String()
+	if len(s) != len("img-")+17 || s[:4] != "img-" {
+		return false
+	}
+	for _, c := range s[4:] {
+		if c < '0' || (c > '9' && c < 'a') || c > 'f' {
+			return false
+		}
+	}
+	return true
 }
 
 var testImageScope, _ = compute.NewImageScope("demo", "demo")

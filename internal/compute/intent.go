@@ -52,7 +52,7 @@ type registerImage struct {
 }
 
 type copyImage struct {
-	id          ImageID
+	requested   string
 	scope       ImageScope
 	source      CopySource
 	family      ImageName
@@ -179,12 +179,12 @@ func NewRebootInstance(instanceID string) (Intent, error) {
 	return rebootInstance{instance: id}, nil
 }
 
-// NewCopyImage registers a copy of a volume or snapshot under id, the
-// caller's image id. family may be empty. Plan fails with CodeAlreadyExists
-// when any image, live or deregistered, already holds id.
+// NewCopyImage registers a copy of a volume or snapshot. id must be a
+// resource id. It is part of the request fingerprint and is not the stored
+// image id. Plan mints the stored id, so the call cannot tell whether id
+// is taken. family may be empty.
 func NewCopyImage(id string, scope ImageScope, source CopySource, family, description string, labels Labels) (Intent, error) {
-	img, err := ParseImageID(id)
-	if err != nil {
+	if _, err := ParseImageID(id); err != nil {
 		return nil, err
 	}
 	if scope.IsZero() {
@@ -194,6 +194,7 @@ func NewCopyImage(id string, scope ImageScope, source CopySource, family, descri
 		return nil, Errorf(CodeInvalid, "image source is required")
 	}
 	var name ImageName
+	var err error
 	if family != "" {
 		if name, err = ParseImageName(family); err != nil {
 			return nil, err
@@ -203,7 +204,7 @@ func NewCopyImage(id string, scope ImageScope, source CopySource, family, descri
 	if err != nil {
 		return nil, err
 	}
-	return copyImage{id: img, scope: scope, source: source, family: name, description: desc, labels: labels}, nil
+	return copyImage{requested: id, scope: scope, source: source, family: name, description: desc, labels: labels}, nil
 }
 
 // NewRegisterFile registers the disk image file at path under id. path is a
@@ -443,7 +444,7 @@ func (in copyImage) encode(e *encoder) { in.encodeScoped(e, true) }
 // encodeScoped writes the fields; withScope false is the encoding before
 // image scopes (#92), which LegacyFingerprintOf reproduces.
 func (in copyImage) encodeScoped(e *encoder, withScope bool) {
-	e.field(in.id.s)
+	e.field(in.requested)
 	if withScope {
 		e.field(in.scope.project)
 		e.field(in.scope.region)

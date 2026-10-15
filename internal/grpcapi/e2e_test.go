@@ -7,7 +7,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
-	"fmt"
 	"net"
 	"strings"
 	"sync"
@@ -443,7 +442,6 @@ func TestCreateImageRoundTrip(t *testing.T) {
 	h := serve(t)
 	parent := "projects/demo/regions/demo"
 	snap := parent + "/snapshots/snap"
-	name := parent + "/images/debian-12"
 	created, err := h.img.CreateImage(ctx, &computev1.CreateImageRequest{
 		Parent: parent, ImageId: "debian-12", RequestId: "44444444-4444-4444-8444-444444444444",
 		Image: &computev1.Image{Spec: &computev1.ImageSpec{
@@ -453,6 +451,10 @@ func TestCreateImageRoundTrip(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+	name := operationResource(t, created)
+	if !mintedImageName(parent, name) {
+		t.Fatalf("image name %s", name)
 	}
 	if _, err := h.ops.WaitOperation(ctx, &longrunningpb.WaitOperationRequest{Name: created.GetName(), Timeout: durationpb.New(10 * time.Second)}); err != nil {
 		t.Fatal(err)
@@ -475,13 +477,18 @@ func TestCreateImageRoundTrip(t *testing.T) {
 		t.Fatalf("list = %v", listed.GetImages())
 	}
 
-	_, err = h.img.CreateImage(ctx, &computev1.CreateImageRequest{
+	second, err := h.img.CreateImage(ctx, &computev1.CreateImageRequest{
 		Parent: parent, ImageId: "debian-12", RequestId: "55555555-5555-4555-8555-555555555555",
 		Image: &computev1.Image{Spec: &computev1.ImageSpec{
 			Source: &computev1.ImageSpec_Snapshot{Snapshot: snap},
 		}},
 	})
-	wantCode(t, err, codes.AlreadyExists)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if secondName := operationResource(t, second); secondName == name || !mintedImageName(parent, secondName) {
+		t.Fatalf("second image %s, first %s", secondName, name)
+	}
 
 	only, err := h.img.CreateImage(ctx, &computev1.CreateImageRequest{
 		Parent: parent, ImageId: "other-disk", RequestId: "66666666-6666-4666-8666-666666666666",
@@ -1032,17 +1039,24 @@ func TestImageOfAnotherProjectIsNotFound(t *testing.T) {
 	if _, err := h.ops.WaitOperation(ctx, &longrunningpb.WaitOperationRequest{Name: created.GetName(), Timeout: durationpb.New(10 * time.Second)}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.img.GetImage(ctx, &computev1.GetImageRequest{Name: owner + "/images/ami-0000000000000aaa1"}); err != nil {
+	stored := operationResource(t, created)
+	if _, err := h.img.GetImage(ctx, &computev1.GetImageRequest{Name: stored}); err != nil {
 		t.Fatal(err)
 	}
+	id := stored[strings.LastIndex(stored, "/")+1:]
+	_, err = h.img.GetImage(ctx, &computev1.GetImageRequest{Name: owner + "/images/ami-0000000000000aaa1"})
+	wantCode(t, err, codes.NotFound)
 	for _, parent := range []string{"projects/a222222222222/regions/vws-1", "projects/a111111111111/regions/vws-2"} {
-		_, err := h.img.GetImage(ctx, &computev1.GetImageRequest{Name: parent + "/images/ami-0000000000000aaa1"})
+		_, err := h.img.GetImage(ctx, &computev1.GetImageRequest{Name: parent + "/images/" + id})
 		wantCode(t, err, codes.NotFound)
 		_, missing := h.img.GetImage(ctx, &computev1.GetImageRequest{Name: parent + "/images/ami-0000000000000bbb2"})
-		if status.Convert(err).Message() != strings.ReplaceAll(status.Convert(missing).Message(), "bbb2", "aaa1") {
+		wantMsg := strings.ReplaceAll(status.Convert(missing).Message(), "ami-0000000000000bbb2", id)
+		if status.Convert(err).Message() != wantMsg {
 			t.Fatalf("other owner %q, absent %q", err, missing)
 		}
-		_, err = h.img.DeleteImage(ctx, &computev1.DeleteImageRequest{Name: parent + "/images/ami-0000000000000aaa1", RequestId: "93939393-9393-4393-8393-93939393939" + parent[len(parent)-1:]})
+		_, err = h.img.DeleteImage(ctx, &computev1.DeleteImageRequest{
+			Name: parent + "/images/" + id, RequestId: "93939393-9393-4393-8393-93939393939" + parent[len(parent)-1:],
+		})
 		wantCode(t, err, codes.NotFound)
 		listed, err := h.img.ListImages(ctx, &computev1.ListImagesRequest{Parent: parent})
 		if err != nil {
@@ -1060,61 +1074,83 @@ func TestImageOfAnotherProjectIsNotFound(t *testing.T) {
 // region does not see it at all.
 func TestPublicImageIsReadableEverywhereInItsRegion(t *testing.T) {
 	ctx := context.Background()
-	pub, err := compute.NewPublicImages([]string{"ami-0000000000000aaa1"})
+	repo := memstore.New()
+	ctl := controller.New(repo)
+	scope, err := compute.NewImageScope("a111111111111", "vws-1")
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := serveRepo(t, memstore.New(), grpcapi.WithPublicImages(pub))
-	owner := "projects/a111111111111/regions/vws-1"
-	for i, id := range []string{"ami-0000000000000aaa1", "ami-0000000000000ccc3"} {
-		created, err := h.img.CreateImage(ctx, &computev1.CreateImageRequest{
-			Parent: owner, ImageId: id, RequestId: fmt.Sprintf("9494949%d-9494-4494-8494-949494949494", i),
-			Image: &computev1.Image{Spec: &computev1.ImageSpec{
-				Source: &computev1.ImageSpec_Snapshot{Snapshot: owner + "/snapshots/s"},
-			}},
-		})
+	snap, err := compute.ParseSnapshotRef("projects/a111111111111/regions/vws-1/snapshots/s")
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := compute.FromSnapshot{Ref: snap}
+	mint := func(req, requested string) string {
+		t.Helper()
+		in, err := compute.NewCopyImage(requested, scope, src, "", "", compute.Labels{})
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := h.ops.WaitOperation(ctx, &longrunningpb.WaitOperationRequest{Name: created.GetName(), Timeout: durationpb.New(10 * time.Second)}); err != nil {
+		rc, err := ctl.Submit(ctx, okRequest(t, req), in)
+		if err != nil {
 			t.Fatal(err)
 		}
+		return rc.Operation.Target.ID
 	}
+	pubID := mint("94949490-9494-4494-8494-949494949494", "ami-0000000000000aaa1")
+	privID := mint("94949491-9494-4494-8494-949494949494", "ami-0000000000000ccc3")
+	pub, err := compute.NewPublicImages([]string{pubID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := serveRepo(t, repo, grpcapi.WithPublicImages(pub))
+	owner := "projects/a111111111111/regions/vws-1"
 	other := "projects/a222222222222/regions/vws-1"
-	got, err := h.img.GetImage(ctx, &computev1.GetImageRequest{Name: other + "/images/ami-0000000000000aaa1"})
+	got, err := h.img.GetImage(ctx, &computev1.GetImageRequest{Name: other + "/images/" + pubID})
 	if err != nil {
 		t.Fatalf("public image from another project: %v", err)
 	}
-	if got.GetName() != other+"/images/ami-0000000000000aaa1" {
+	if got.GetName() != other+"/images/"+pubID {
 		t.Fatalf("name %q", got.GetName())
 	}
 	listed, err := h.img.ListImages(ctx, &computev1.ListImagesRequest{Parent: other})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(listed.GetImages()) != 1 || listed.GetImages()[0].GetName() != other+"/images/ami-0000000000000aaa1" {
+	if len(listed.GetImages()) != 1 || listed.GetImages()[0].GetName() != other+"/images/"+pubID {
 		t.Fatalf("other project lists %v, want only the public image", listed.GetImages())
 	}
-	_, private := h.img.GetImage(ctx, &computev1.GetImageRequest{Name: other + "/images/ami-0000000000000ccc3"})
+	_, private := h.img.GetImage(ctx, &computev1.GetImageRequest{Name: other + "/images/" + privID})
 	wantCode(t, private, codes.NotFound)
 
-	_, err = h.img.DeleteImage(ctx, &computev1.DeleteImageRequest{Name: other + "/images/ami-0000000000000aaa1", RequestId: "95959595-9595-4595-8595-959595959595"})
+	_, err = h.img.DeleteImage(ctx, &computev1.DeleteImageRequest{
+		Name: other + "/images/" + pubID, RequestId: "95959595-9595-4595-8595-959595959595",
+	})
 	wantCode(t, err, codes.NotFound)
-	if status.Convert(err).Message() != "image "+other+"/images/ami-0000000000000aaa1 not found" {
+	if status.Convert(err).Message() != "image "+other+"/images/"+pubID+" not found" {
 		t.Fatalf("delete message %q", status.Convert(err).Message())
 	}
 	_, err = h.img.UpdateImage(ctx, &computev1.UpdateImageRequest{
 		RequestId:  "96969696-9696-4696-8696-969696969696",
 		UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"labels"}},
-		Image:      &computev1.Image{Name: other + "/images/ami-0000000000000aaa1", Labels: map[string]string{"k": "v"}},
+		Image:      &computev1.Image{Name: other + "/images/" + pubID, Labels: map[string]string{"k": "v"}},
 	})
 	wantCode(t, err, codes.NotFound)
 
-	_, err = h.img.GetImage(ctx, &computev1.GetImageRequest{Name: "projects/a222222222222/regions/vws-2/images/ami-0000000000000aaa1"})
+	_, err = h.img.GetImage(ctx, &computev1.GetImageRequest{Name: "projects/a222222222222/regions/vws-2/images/" + pubID})
 	wantCode(t, err, codes.NotFound)
-	if _, err := h.img.GetImage(ctx, &computev1.GetImageRequest{Name: owner + "/images/ami-0000000000000aaa1"}); err != nil {
+	if _, err := h.img.GetImage(ctx, &computev1.GetImageRequest{Name: owner + "/images/" + pubID}); err != nil {
 		t.Fatalf("owner: %v", err)
 	}
+}
+
+func okRequest(t *testing.T, s string) compute.RequestID {
+	t.Helper()
+	id, err := compute.ParseRequestID(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return id
 }
 
 // TestPolledImageOperationNamesTheImageWhereGetImageFindsIt pins the review
@@ -1145,13 +1181,15 @@ func TestPolledImageOperationNamesTheImageWhereGetImageFindsIt(t *testing.T) {
 	if err := anypb.UnmarshalTo(polled.GetResponse(), &img, proto.UnmarshalOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	want := parent + "/images/ami-0000000000000ddd4"
-	if img.GetName() != want {
+	want := operationResource(t, created)
+	if img.GetName() != want || !mintedImageName(parent, img.GetName()) {
 		t.Fatalf("polled image name %q, want %q", img.GetName(), want)
 	}
 	if _, err := h.img.GetImage(ctx, &computev1.GetImageRequest{Name: img.GetName()}); err != nil {
 		t.Fatalf("GetImage on the polled name: %v", err)
 	}
+	_, err = h.img.GetImage(ctx, &computev1.GetImageRequest{Name: parent + "/images/ami-0000000000000ddd4"})
+	wantCode(t, err, codes.NotFound)
 }
 
 // TestCreateImageOfAnotherProjectMatchesAnAbsentID pins vws-compute#94.
@@ -1172,7 +1210,8 @@ func TestCreateImageOfAnotherProjectMatchesAnAbsentID(t *testing.T) {
 		replay, err := h.img.CreateImage(context.Background(), createImageReq(
 			"projects/a111111111111/regions/vws-1", "ami-0000000000000aaa1", "a1a1a1a1-a1a1-4a1a-8a1a-a1a1a1a1a1a1"))
 		if err != nil || replay.GetName() != op || operationResource(t, replay) != image {
-			t.Fatalf("replay after restart = %s %s %v, want %s %s", replay.GetName(), operationResource(t, replay), err, op, image)
+			t.Fatalf("replay after restart = %s %s %v, want %s %s",
+				replay.GetName(), operationResource(t, replay), err, op, image)
 		}
 	})
 }
@@ -1195,12 +1234,14 @@ func createImageOfAnotherProjectMatchesAnAbsentID(t *testing.T, h *harness) (ope
 		t.Fatal(err)
 	}
 	if replay.GetName() != created.GetName() || operationResource(t, replay) != operationResource(t, created) {
-		t.Fatalf("replay = %s %s, want %s %s", replay.GetName(), operationResource(t, replay), created.GetName(), operationResource(t, created))
+		t.Fatalf("replay = %s %s, want %s %s",
+			replay.GetName(), operationResource(t, replay), created.GetName(), operationResource(t, created))
 	}
 
 	foreign, errForeign := h.img.CreateImage(ctx, createImageReq(other, held, "b2b2b2b2-b2b2-4b2b-8b2b-b2b2b2b2b2b2"))
 	missing, errMissing := h.img.CreateImage(ctx, createImageReq(other, absent, "c3c3c3c3-c3c3-4c3c-8c3c-c3c3c3c3c3c3"))
-	if !createImageOutcomesMatch(errForeign, errMissing, foreign, missing, held, absent) || errForeign != nil || errMissing != nil {
+	matched := createImageOutcomesMatch(errForeign, errMissing, foreign, missing, held, absent)
+	if !matched || errForeign != nil || errMissing != nil {
 		t.Fatalf("CreateImage foreign %v, absent %v", errForeign, errMissing)
 	}
 	foreignName := operationResource(t, foreign)
@@ -1211,12 +1252,17 @@ func createImageOfAnotherProjectMatchesAnAbsentID(t *testing.T, h *harness) (ope
 	_, err = h.img.GetImage(ctx, &computev1.GetImageRequest{Name: other + "/images/" + held})
 	wantCode(t, err, codes.NotFound)
 
-	foreignOnly, errForeignOnly := h.img.CreateImage(ctx, createImageValidateOnly(other, held, "d4d4d4d4-d4d4-4d4d-8d4d-d4d4d4d4d4d4"))
-	missingOnly, errMissingOnly := h.img.CreateImage(ctx, createImageValidateOnly(other, absent, "e5e5e5e5-e5e5-4e5e-8e5e-e5e5e5e5e5e5"))
-	if !createImageOutcomesMatch(errForeignOnly, errMissingOnly, foreignOnly, missingOnly, held, absent) || errForeignOnly != nil || errMissingOnly != nil {
+	foreignOnly, errForeignOnly := h.img.CreateImage(ctx,
+		createImageValidateOnly(other, held, "d4d4d4d4-d4d4-4d4d-8d4d-d4d4d4d4d4d4"))
+	missingOnly, errMissingOnly := h.img.CreateImage(ctx,
+		createImageValidateOnly(other, absent, "e5e5e5e5-e5e5-4e5e-8e5e-e5e5e5e5e5e5"))
+	onlyMatch := createImageOutcomesMatch(errForeignOnly, errMissingOnly, foreignOnly, missingOnly, held, absent)
+	if !onlyMatch || errForeignOnly != nil || errMissingOnly != nil {
 		t.Fatalf("validate_only foreign %v, absent %v", errForeignOnly, errMissingOnly)
 	}
-	if operationResource(t, foreignOnly) != other+"/images/"+held || operationResource(t, missingOnly) != other+"/images/"+absent || !foreignOnly.GetDone() || !missingOnly.GetDone() {
+	if operationResource(t, foreignOnly) != other+"/images/"+held ||
+		operationResource(t, missingOnly) != other+"/images/"+absent ||
+		!foreignOnly.GetDone() || !missingOnly.GetDone() {
 		t.Fatalf("validate_only names %s and %s", operationResource(t, foreignOnly), operationResource(t, missingOnly))
 	}
 
@@ -1239,7 +1285,8 @@ func createImageOfAnotherProjectMatchesAnAbsentID(t *testing.T, h *harness) (ope
 	_, err = h.img.GetImage(ctx, &computev1.GetImageRequest{Name: other + "/images/" + id})
 	wantCode(t, err, codes.NotFound)
 	_, absentGet := h.img.GetImage(ctx, &computev1.GetImageRequest{Name: other + "/images/ami-0000000000000ccc3"})
-	if status.Convert(err).Message() != strings.ReplaceAll(status.Convert(absentGet).Message(), "ami-0000000000000ccc3", id) {
+	wantAbsent := strings.ReplaceAll(status.Convert(absentGet).Message(), "ami-0000000000000ccc3", id)
+	if status.Convert(err).Message() != wantAbsent {
 		t.Fatalf("other project %q, absent %q", err, absentGet)
 	}
 
@@ -1257,7 +1304,9 @@ func createImageOfAnotherProjectMatchesAnAbsentID(t *testing.T, h *harness) (ope
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.ops.WaitOperation(ctx, &longrunningpb.WaitOperationRequest{Name: deleted.GetName(), Timeout: durationpb.New(10 * time.Second)}); err != nil {
+	if _, err := h.ops.WaitOperation(ctx, &longrunningpb.WaitOperationRequest{
+		Name: deleted.GetName(), Timeout: durationpb.New(10 * time.Second),
+	}); err != nil {
 		t.Fatal(err)
 	}
 	_, err = h.img.GetImage(ctx, &computev1.GetImageRequest{Name: stored})
@@ -1312,7 +1361,9 @@ func mustCreateImage(t *testing.T, h *harness, parent, id, requestID string) *lo
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.ops.WaitOperation(context.Background(), &longrunningpb.WaitOperationRequest{Name: created.GetName(), Timeout: durationpb.New(10 * time.Second)}); err != nil {
+	if _, err := h.ops.WaitOperation(context.Background(), &longrunningpb.WaitOperationRequest{
+		Name: created.GetName(), Timeout: durationpb.New(10 * time.Second),
+	}); err != nil {
 		t.Fatal(err)
 	}
 	return created
