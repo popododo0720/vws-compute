@@ -1153,3 +1153,183 @@ func TestPolledImageOperationNamesTheImageWhereGetImageFindsIt(t *testing.T) {
 		t.Fatalf("GetImage on the polled name: %v", err)
 	}
 }
+
+// TestCreateImageOfAnotherProjectMatchesAnAbsentID pins vws-compute#94.
+// CreateImage from project B, including validate_only, answers an id project A
+// already holds the same way it answers an id nobody holds. A repeated request
+// id returns the same operation. A new request id mints another image, and a
+// deregistered image is not revived.
+func TestCreateImageOfAnotherProjectMatchesAnAbsentID(t *testing.T) {
+	t.Run("memstore", func(t *testing.T) {
+		createImageOfAnotherProjectMatchesAnAbsentID(t, serve(t))
+	})
+	t.Run("envtest", func(t *testing.T) {
+		kc, ns := kubetest.Namespace(t)
+		h := serveRepo(t, kubetest.Open(t, kc, ns).WithLegacyImageScope(demoScope))
+		op, image := createImageOfAnotherProjectMatchesAnAbsentID(t, h)
+		h.stop()
+		h = serveRepo(t, kubetest.Open(t, kc, ns).WithLegacyImageScope(demoScope))
+		replay, err := h.img.CreateImage(context.Background(), createImageReq(
+			"projects/a111111111111/regions/vws-1", "ami-0000000000000aaa1", "a1a1a1a1-a1a1-4a1a-8a1a-a1a1a1a1a1a1"))
+		if err != nil || replay.GetName() != op || operationResource(t, replay) != image {
+			t.Fatalf("replay after restart = %s %s %v, want %s %s", replay.GetName(), operationResource(t, replay), err, op, image)
+		}
+	})
+}
+
+func createImageOfAnotherProjectMatchesAnAbsentID(t *testing.T, h *harness) (operation, image string) {
+	t.Helper()
+	ctx := context.Background()
+	owner := "projects/a111111111111/regions/vws-1"
+	other := "projects/a222222222222/regions/vws-1"
+	held := "ami-0000000000000aaa1"
+	absent := "ami-0000000000000bbb2"
+	req := "a1a1a1a1-a1a1-4a1a-8a1a-a1a1a1a1a1a1"
+
+	_, err := h.img.CreateImage(ctx, createImageReq(other, "9not-an-id", "acacacac-acac-4cac-8cac-acacacacacac"))
+	wantCode(t, err, codes.InvalidArgument)
+
+	created := mustCreateImage(t, h, owner, held, req)
+	replay, err := h.img.CreateImage(ctx, createImageReq(owner, held, req))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replay.GetName() != created.GetName() || operationResource(t, replay) != operationResource(t, created) {
+		t.Fatalf("replay = %s %s, want %s %s", replay.GetName(), operationResource(t, replay), created.GetName(), operationResource(t, created))
+	}
+
+	foreign, errForeign := h.img.CreateImage(ctx, createImageReq(other, held, "b2b2b2b2-b2b2-4b2b-8b2b-b2b2b2b2b2b2"))
+	missing, errMissing := h.img.CreateImage(ctx, createImageReq(other, absent, "c3c3c3c3-c3c3-4c3c-8c3c-c3c3c3c3c3c3"))
+	if !createImageOutcomesMatch(errForeign, errMissing, foreign, missing, held, absent) || errForeign != nil || errMissing != nil {
+		t.Fatalf("CreateImage foreign %v, absent %v", errForeign, errMissing)
+	}
+	foreignName := operationResource(t, foreign)
+	missingName := operationResource(t, missing)
+	if !mintedImageName(other, foreignName) || !mintedImageName(other, missingName) || foreignName == missingName {
+		t.Fatalf("foreign image %s, absent image %s", foreignName, missingName)
+	}
+	_, err = h.img.GetImage(ctx, &computev1.GetImageRequest{Name: other + "/images/" + held})
+	wantCode(t, err, codes.NotFound)
+
+	foreignOnly, errForeignOnly := h.img.CreateImage(ctx, createImageValidateOnly(other, held, "d4d4d4d4-d4d4-4d4d-8d4d-d4d4d4d4d4d4"))
+	missingOnly, errMissingOnly := h.img.CreateImage(ctx, createImageValidateOnly(other, absent, "e5e5e5e5-e5e5-4e5e-8e5e-e5e5e5e5e5e5"))
+	if !createImageOutcomesMatch(errForeignOnly, errMissingOnly, foreignOnly, missingOnly, held, absent) || errForeignOnly != nil || errMissingOnly != nil {
+		t.Fatalf("validate_only foreign %v, absent %v", errForeignOnly, errMissingOnly)
+	}
+	if operationResource(t, foreignOnly) != other+"/images/"+held || operationResource(t, missingOnly) != other+"/images/"+absent || !foreignOnly.GetDone() || !missingOnly.GetDone() {
+		t.Fatalf("validate_only names %s and %s", operationResource(t, foreignOnly), operationResource(t, missingOnly))
+	}
+
+	badFamily := createImageValidateOnly(other, held, "a9a9a9a9-a9a9-4a9a-8a9a-a9a9a9a9a9a9")
+	badFamily.GetImage().GetSpec().Family = "x"
+	_, err = h.img.CreateImage(ctx, badFamily)
+	wantCode(t, err, codes.InvalidArgument)
+	badLive := createImageReq(other, held, "abababab-abab-4bab-8bab-abababababab")
+	badLive.GetImage().GetSpec().Family = "x"
+	_, err = h.img.CreateImage(ctx, badLive)
+	wantCode(t, err, codes.InvalidArgument)
+
+	stored := operationResource(t, created)
+	if !mintedImageName(owner, stored) {
+		t.Fatalf("owner image %s", stored)
+	}
+	_, err = h.img.GetImage(ctx, &computev1.GetImageRequest{Name: owner + "/images/" + held})
+	wantCode(t, err, codes.NotFound)
+	id := stored[strings.LastIndex(stored, "/")+1:]
+	_, err = h.img.GetImage(ctx, &computev1.GetImageRequest{Name: other + "/images/" + id})
+	wantCode(t, err, codes.NotFound)
+	_, absentGet := h.img.GetImage(ctx, &computev1.GetImageRequest{Name: other + "/images/ami-0000000000000ccc3"})
+	if status.Convert(err).Message() != strings.ReplaceAll(status.Convert(absentGet).Message(), "ami-0000000000000ccc3", id) {
+		t.Fatalf("other project %q, absent %q", err, absentGet)
+	}
+
+	second, err := h.img.CreateImage(ctx, createImageReq(owner, held, "f6f6f6f6-f6f6-4f6f-8f6f-f6f6f6f6f6f6"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if secondName := operationResource(t, second); secondName == stored || !mintedImageName(owner, secondName) {
+		t.Fatalf("second image %s, first %s", secondName, stored)
+	}
+
+	deleted, err := h.img.DeleteImage(ctx, &computev1.DeleteImageRequest{
+		Name: stored, RequestId: "a7a7a7a7-a7a7-4a7a-8a7a-a7a7a7a7a7a7",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.ops.WaitOperation(ctx, &longrunningpb.WaitOperationRequest{Name: deleted.GetName(), Timeout: durationpb.New(10 * time.Second)}); err != nil {
+		t.Fatal(err)
+	}
+	_, err = h.img.GetImage(ctx, &computev1.GetImageRequest{Name: stored})
+	wantCode(t, err, codes.NotFound)
+	revived, err := h.img.CreateImage(ctx, createImageReq(owner, held, "a8a8a8a8-a8a8-4a8a-8a8a-a8a8a8a8a8a8"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	revivedName := operationResource(t, revived)
+	if revivedName == stored || !mintedImageName(owner, revivedName) {
+		t.Fatalf("after deregister %s, tombstone %s", revivedName, stored)
+	}
+	if _, err := h.img.GetImage(ctx, &computev1.GetImageRequest{Name: revivedName}); err != nil {
+		t.Fatal(err)
+	}
+	_, err = h.img.GetImage(ctx, &computev1.GetImageRequest{Name: stored})
+	wantCode(t, err, codes.NotFound)
+	return created.GetName(), stored
+}
+
+func mintedImageName(parent, name string) bool {
+	rest, ok := strings.CutPrefix(name, parent+"/images/img-")
+	if !ok || len(rest) != 17 {
+		return false
+	}
+	for _, c := range rest {
+		if c < '0' || (c > '9' && c < 'a') || c > 'f' {
+			return false
+		}
+	}
+	return true
+}
+
+func createImageReq(parent, id, requestID string) *computev1.CreateImageRequest {
+	return &computev1.CreateImageRequest{
+		Parent: parent, ImageId: id, RequestId: requestID,
+		Image: &computev1.Image{Spec: &computev1.ImageSpec{
+			Source: &computev1.ImageSpec_Snapshot{Snapshot: parent + "/snapshots/s"},
+		}},
+	}
+}
+
+func createImageValidateOnly(parent, id, requestID string) *computev1.CreateImageRequest {
+	req := createImageReq(parent, id, requestID)
+	req.ValidateOnly = true
+	return req
+}
+
+func mustCreateImage(t *testing.T, h *harness, parent, id, requestID string) *longrunningpb.Operation {
+	t.Helper()
+	created, err := h.img.CreateImage(context.Background(), createImageReq(parent, id, requestID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.ops.WaitOperation(context.Background(), &longrunningpb.WaitOperationRequest{Name: created.GetName(), Timeout: durationpb.New(10 * time.Second)}); err != nil {
+		t.Fatal(err)
+	}
+	return created
+}
+
+// createImageOutcomesMatch reports whether a CreateImage of an id another project
+// holds is indistinguishable from a CreateImage of an id nobody holds. Error text
+// may name the id, so the absent id is substituted before the compare.
+func createImageOutcomesMatch(errA, errB error, opA, opB *longrunningpb.Operation, idA, idB string) bool {
+	if status.Code(errA) != status.Code(errB) {
+		return false
+	}
+	if errA != nil || errB != nil {
+		return strings.ReplaceAll(status.Convert(errA).Message(), idA, idB) == status.Convert(errB).Message()
+	}
+	if opA == nil || opB == nil {
+		return false
+	}
+	return opA.GetError() == nil && opB.GetError() == nil
+}
