@@ -157,8 +157,10 @@ func NewUpdateInstanceSpec(instanceID string, power Power, volumes []VolumeAttac
 	if err != nil {
 		return nil, err
 	}
-	return setPower{instance: id, want: power, patch: patch, setVolumes: true,
-		volumes: append([]VolumeAttachment(nil), volumes...)}, nil
+	return setPower{
+		instance: id, want: power, patch: patch, setVolumes: true,
+		volumes: append([]VolumeAttachment(nil), volumes...),
+	}, nil
 }
 
 func newSetPower(instanceID string, want Power, patch MetadataPatch) (Intent, error) {

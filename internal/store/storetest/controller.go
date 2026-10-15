@@ -101,8 +101,10 @@ func controllerNotUnconverged(f fixture) {
 func reportSettles(f fixture) {
 	op := f.mustCreateControllerDriven("req-1", "web-1", "v1", t0)
 	f.wantState(op, compute.OperationPending)
-	ready := compute.InstanceReport{Node: "host-a", Generation: 1, State: compute.ReportReady, Power: compute.PowerRunning,
-		Interfaces: []compute.ObservedInterface{{DeviceName: "eth0", PrivateIPv4: "10.0.0.5"}}}
+	ready := compute.InstanceReport{
+		Node: "host-a", Generation: 1, State: compute.ReportReady, Power: compute.PowerRunning,
+		Interfaces: []compute.ObservedInterface{{DeviceName: "eth0", PrivateIPv4: "10.0.0.5"}},
+	}
 
 	if _, err := f.report("web-1", compute.InstanceReport{Generation: 2, State: compute.ReportReady}, t1); compute.CodeOf(err) != compute.CodeAborted {
 		f.t.Fatalf("report ahead of spec: %v", err)
