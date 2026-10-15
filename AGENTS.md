@@ -64,7 +64,7 @@ Rules for anyone changing this repository, human or agent. A rule with an enforc
 Bots are insider risks too. These rules have no exceptions. Design: `popododo0720/vws-deploy#33`.
 
 1. **Independent verification.** The bot or model that wrote a change does not verify it. Another bot or a person does. This is process, and CI cannot enforce it.
-2. **Record.** Every change is an issue, then a PR with `Closes #N`, then commits. The PR body says what changed, how it was verified, and what was not verified. No force-push or history rewrite without the user's approval.
+2. **Record.** Every change is an issue, then a PR with `Part of #N`, then commits. The PR body says what changed, how it was verified, and what was not verified. No force-push or history rewrite without the user's approval.
 3. **Failing tests.** A new feature is not tested on the happy path alone. It has at least one case each for power loss or restart, idempotent replay, and hostile or boundary input. Otherwise the PR says why one is impossible.
 4. **Least privilege.** No push to `main`. Every change is one PR from its own branch off `main`. No stacked PRs and no local merges. Tokens are scoped to this repository. RBAC covers only what the code calls, in a namespaced Role where possible (`vws-deploy` `docs/rbac.md`).
 5. **Separate audit.** The author, the verifier, and the merge decision are different. The author never merges its own PR. Merge only when the base is `main` and every check on the head commit is success.
@@ -78,7 +78,7 @@ Repository items:
 - Hostile input. A volume or request the storage service rejects makes `CreateInstance` fail and leave no row: `TestCreateInstanceVerifiesVolumes`.
 - RBAC. This service calls only the verbs listed in `vws-deploy` `docs/rbac.md` for compute.
 - No AWS account ID digits anywhere in the repository.
-- Checks: `.github/workflows/repo-guard.yml` runs `scripts/guard-agents.sh` on every pull request (base is `main`, body has `Closes #N`, this section has items 1 to 7). `.github/workflows/direct-push-watch.yml` reports a commit that reached `main` without a pull request. Detection, not a block. Both files and the script are copied as-is from `vws-deploy`.
+- Checks: `.github/workflows/repo-guard.yml` runs `scripts/guard-agents.sh` on every pull request (base is `main`, body has `Part of #N` and no closing keyword, this section has items 1 to 7). `.github/workflows/direct-push-watch.yml` reports a commit that reached `main` without a pull request. Detection, not a block. Both files and the script are copied as-is from `vws-deploy`.
 
 ## Commands
 
