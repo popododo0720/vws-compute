@@ -21,8 +21,8 @@ import (
 	"github.com/popododo0720/vws-compute/internal/hypervisor"
 )
 
-// SecretKeyUserData is the key KubeVirt reads from a cloudInitNoCloud
-// userDataSecretRef Secret.
+// SecretKeyUserData is the key KubeVirt reads from the Secret named by
+// cloudInitNoCloud.secretRef (Go field UserDataSecretRef).
 const SecretKeyUserData = "userdata"
 
 // cloudInitSecret names the Secret that holds a machine's cloud-init user
