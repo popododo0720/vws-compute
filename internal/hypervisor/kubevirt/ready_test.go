@@ -36,6 +36,7 @@ func TestPowerOnWaitsForReadyVMI(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
 			c, ns, w := newBareClient(t)
+			standardImage(t, c, ns)
 			a := New(c, Config{Namespace: ns})
 			name := "i-0123456789abcdefa"
 			s := spec(name, hypervisor.PowerOn)
@@ -64,6 +65,7 @@ func TestPowerOnWaitsForReadyVMI(t *testing.T) {
 // TestPowerOffNeedsNoInstance: a stopped machine converges without a VMI.
 func TestPowerOffNeedsNoInstance(t *testing.T) {
 	c, ns, _ := newBareClient(t)
+	standardImage(t, c, ns)
 	if err := New(c, Config{Namespace: ns}).ConvergeMachine(context.Background(), spec("i-0123456789abcdefb", hypervisor.PowerOff)); err != nil {
 		t.Fatal(err)
 	}

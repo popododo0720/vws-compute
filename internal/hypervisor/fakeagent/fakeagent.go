@@ -188,7 +188,7 @@ func (a *Agent) ConvergeMachine(ctx context.Context, spec hypervisor.MachineSpec
 	if !exists {
 		// An empty image is a machine that boots from a volume.
 		if _, ok := a.images[spec.Image]; !ok && spec.Image != "" {
-			return hypervisor.Permanent(fmt.Errorf("machine %s: image artifact %s not found", spec.Name, spec.Image))
+			return hypervisor.ImageNotFound(fmt.Errorf("machine %s: image artifact %s not found", spec.Name, spec.Image))
 		}
 		m = Machine{Image: spec.Image, BootClaim: spec.BootClaim, Subnet: spec.Subnet, UserData: spec.UserData, Power: hypervisor.PowerOff}
 		a.creations[spec.Name]++

@@ -60,11 +60,44 @@ type Observed struct {
 // resource is not retried until a new intent advances its generation.
 func (o Observed) Parked(gen int64) bool { return o.Generation == gen && o.Failure != nil }
 
+// LaunchReason is why a launch parked. Zero is LaunchInternal, which is what
+// a stored failure loads when it has no reason.
+type LaunchReason uint8
+
+const (
+	LaunchInternal LaunchReason = iota
+	LaunchImageNotFound
+)
+
+var launchTokens = [...]string{
+	LaunchInternal:      "Internal",
+	LaunchImageNotFound: "ImageNotFound",
+}
+
+// Token is the wire string for r.
+func (r LaunchReason) Token() string {
+	if int(r) < len(launchTokens) && launchTokens[r] != "" {
+		return launchTokens[r]
+	}
+	return launchTokens[LaunchInternal]
+}
+
+// ParseLaunchReason returns LaunchInternal for any token other than the known ones.
+func ParseLaunchReason(token string) LaunchReason {
+	for i, s := range launchTokens {
+		if s == token {
+			return LaunchReason(i)
+		}
+	}
+	return LaunchInternal
+}
+
 // Failure explains why a generation could not be converged. Settle copies it
 // into every operation that fails at that generation.
 type Failure struct {
 	Code    Code
 	Message string
+	Reason  LaunchReason
 }
 
 // Retry is the reconciler's durable backoff after transient agent errors.

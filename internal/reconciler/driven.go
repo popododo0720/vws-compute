@@ -57,7 +57,8 @@ func (r *Reconciler) convergeDriven(ctx context.Context, inst compute.Instance) 
 		rep.State = compute.ReportReady
 		rep.Interfaces = r.interfaces(ctx, spec)
 	case hypervisor.IsPermanent(agentErr):
-		rep.State, rep.Message, rep.Code = compute.ReportError, agentErr.Error(), compute.CodeFailedPrecondition
+		f := parkedFailure(agentErr)
+		rep.State, rep.Message, rep.Code, rep.Reason = compute.ReportError, f.Message, f.Code, f.Reason
 	default:
 		// Reconciling records the failure and leaves the generation open,
 		// so the next sweep tries again.

@@ -41,6 +41,7 @@ func TestHotplugRequiresBlockClaim(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
 			c, ns, w := newClient(t)
+			standardImage(t, c, ns)
 			a := New(c, Config{Namespace: ns})
 			claimIn(t, c, ns, "pvc-data", corev1.ReadWriteOnce, tc.mode)
 			s := spec("i-0123456789abcdef0", hypervisor.PowerOn)
@@ -75,6 +76,7 @@ func TestHotplugRequiresBlockClaim(t *testing.T) {
 func TestFilesystemVolumeAttachedBeforeStays(t *testing.T) {
 	ctx := context.Background()
 	c, ns, _ := newClient(t)
+	standardImage(t, c, ns)
 	a := New(c, Config{Namespace: ns})
 	fs := corev1.PersistentVolumeFilesystem
 	claimIn(t, c, ns, "pvc-old", corev1.ReadWriteOnce, &fs)

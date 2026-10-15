@@ -16,6 +16,17 @@ func spec(name string, p hypervisor.Power) hypervisor.MachineSpec {
 	return hypervisor.MachineSpec{Name: name, Image: "ami-0123456789abcdef0", VCPUs: 2, MemoryMiB: 2048, Power: p}
 }
 
+func standardImage(t *testing.T, c client.Client, ns string) {
+	t.Helper()
+	ds := &unstructured.Unstructured{Object: map[string]any{"spec": map[string]any{}}}
+	ds.SetGroupVersionKind(dsGVK)
+	ds.SetNamespace(ns)
+	ds.SetName("ami-0123456789abcdef0")
+	if err := c.Create(context.Background(), ds); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func get(t *testing.T, c client.Client, kind, ns, name string) (*unstructured.Unstructured, error) {
 	t.Helper()
 	u := &unstructured.Unstructured{}
@@ -49,6 +60,7 @@ func runStrategy(t *testing.T, c client.Client, ns, name string) string {
 
 func TestConvergeTwiceMakesOneObject(t *testing.T) {
 	c, ns, w := newClient(t)
+	standardImage(t, c, ns)
 	a := New(c, Config{Namespace: ns})
 	s := spec("i-0123456789abcdef0", hypervisor.PowerOn)
 	s.AuthorizedKeys = []string{"ssh-ed25519 AAAA test"}
@@ -82,6 +94,7 @@ func TestConvergeTwiceMakesOneObject(t *testing.T) {
 
 func TestPowerFlipsWithOnePatch(t *testing.T) {
 	c, ns, w := newClient(t)
+	standardImage(t, c, ns)
 	a := New(c, Config{Namespace: ns})
 	name := "i-0123456789abcdef1"
 	ctx := context.Background()
@@ -110,6 +123,7 @@ func TestPowerFlipsWithOnePatch(t *testing.T) {
 
 func TestNewAgentDoesNotDuplicate(t *testing.T) {
 	c, ns, w := newClient(t)
+	standardImage(t, c, ns)
 	s := spec("i-0123456789abcdef2", hypervisor.PowerOn)
 	if err := New(c, Config{Namespace: ns}).ConvergeMachine(context.Background(), s); err != nil {
 		t.Fatal(err)
@@ -129,6 +143,7 @@ func TestNewAgentDoesNotDuplicate(t *testing.T) {
 
 func TestConcurrentConvergeMakesOneObject(t *testing.T) {
 	c, ns, _ := newClient(t)
+	standardImage(t, c, ns)
 	s := spec("i-0123456789abcdef3", hypervisor.PowerOn)
 	var wg sync.WaitGroup
 	errs := make(chan error, 8)
@@ -158,6 +173,7 @@ func TestConcurrentConvergeMakesOneObject(t *testing.T) {
 
 func TestResizeIsOnePatch(t *testing.T) {
 	c, ns, w := newClient(t)
+	standardImage(t, c, ns)
 	a := New(c, Config{Namespace: ns})
 	s := spec("i-0123456789abcdef4", hypervisor.PowerOff)
 	if err := a.ConvergeMachine(context.Background(), s); err != nil {
@@ -187,6 +203,7 @@ func newInstance(t *testing.T, c client.Client, ns, name string) {
 
 func TestRebootOncePerEpoch(t *testing.T) {
 	c, ns, w := newBareClient(t)
+	standardImage(t, c, ns)
 	a := New(c, Config{Namespace: ns})
 	ctx := context.Background()
 	name := "i-0123456789abcdef5"
@@ -221,6 +238,7 @@ func TestRebootOncePerEpoch(t *testing.T) {
 
 func TestBootAppliesEpochWithoutReboot(t *testing.T) {
 	c, ns, w := newBareClient(t)
+	standardImage(t, c, ns)
 	a := New(c, Config{Namespace: ns})
 	ctx := context.Background()
 	name := "i-0123456789abcdef6"
@@ -247,6 +265,7 @@ func TestBootAppliesEpochWithoutReboot(t *testing.T) {
 
 func TestAbsentDeletesAndIsIdempotent(t *testing.T) {
 	c, ns, _ := newClient(t)
+	standardImage(t, c, ns)
 	a := New(c, Config{Namespace: ns})
 	ctx := context.Background()
 	name := "i-0123456789abcdef7"
@@ -268,6 +287,7 @@ func TestAbsentDeletesAndIsIdempotent(t *testing.T) {
 
 func TestPermanentErrors(t *testing.T) {
 	c, ns, _ := newClient(t)
+	standardImage(t, c, ns)
 	a := New(c, Config{Namespace: ns})
 	ctx := context.Background()
 

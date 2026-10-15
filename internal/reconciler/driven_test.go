@@ -3,6 +3,7 @@ package reconciler_test
 import (
 	"context"
 	"errors"
+	"slices"
 	"testing"
 
 	"github.com/popododo0720/vws-compute/internal/compute"
@@ -93,6 +94,64 @@ func TestDrivenInstancesWaitWithoutReports(t *testing.T) {
 		h.wantStates(compute.OperationPending, create)
 		if h.agent.Calls() != 0 {
 			h.t.Fatal("the reconciler touched a controller-driven instance without WithReports")
+		}
+	})
+}
+
+func TestDeleteFromErrorSucceedsWhileBootVolumeFailed(t *testing.T) {
+	const dataVolume = "projects/p/zones/z/volumes/data"
+	eachStore(t, func(h *harness) {
+		d := &deleter{}
+		ready := false
+		h.rec = reconciler.New(h.repo, h.agent, reconciler.WithClock(h.clock.Now), reconciler.WithReports(h.repo),
+			reconciler.WithVolumeDeleter(d.delete),
+			reconciler.WithClaims(func(_ context.Context, _ string) (string, error) {
+				if ready {
+					return "", hypervisor.Permanent(errors.New(
+						"volume projects/p/zones/z/volumes/root failed in storage: clone failed"))
+				}
+				return "pvc-root", nil
+			}))
+		h.ctl = newController(h)
+		boot := compute.VolumeAttachment{
+			Volume: ok(compute.ParseVolumeRef(bootVolume)), DeviceName: "vda", Boot: true, DeleteOnTermination: true,
+		}
+		data := compute.VolumeAttachment{Volume: ok(compute.ParseVolumeRef(dataVolume)), DeviceName: "vdb"}
+		create := h.submit("create", ok(compute.NewCreateInstance(compute.CreateInstanceParams{
+			ID: "web", Project: "p", Zone: "z", MachineType: "vws.small", Power: compute.PowerRunning,
+			Volumes: []compute.VolumeAttachment{boot, data},
+		})))
+		h.sweep()
+		h.wantStates(compute.OperationSucceeded, create)
+		if _, found := h.agent.Machine("web"); !found {
+			h.t.Fatal("machine was not created")
+		}
+		ready = true
+
+		del := h.submit("delete", ok(compute.NewTerminateInstance("web")))
+		h.sweep()
+		deleteOp := ok(h.repo.Operation(context.Background(), del.ID))
+		if deleteOp.State() != compute.OperationSucceeded {
+			h.t.Fatalf("delete operation is %s, want %s", deleteOp.State(), compute.OperationSucceeded)
+		}
+		if deleteOp.Failure() != nil {
+			h.t.Fatalf("delete failure = %+v, want nil", deleteOp.Failure())
+		}
+		id := ok(compute.ParseInstanceID("web"))
+		if !h.instance(id).Removed() {
+			h.t.Fatal("instance is not removed")
+		}
+		if _, found := h.agent.Machine("web"); found {
+			h.t.Fatal("machine survived the delete")
+		}
+
+		h.sweep()
+		h.sweep()
+		if got := d.seen(); !slices.Equal(got, []string{bootVolume}) {
+			h.t.Fatalf("deleted volumes = %v, want [%s]", got, bootVolume)
+		}
+		if !h.instance(id).Status.VolumesReleased {
+			h.t.Fatal("volumes not released")
 		}
 	})
 }

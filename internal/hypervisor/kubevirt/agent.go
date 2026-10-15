@@ -177,11 +177,12 @@ func (a *Agent) destroy(ctx context.Context, name string) error {
 	vm.SetGroupVersionKind(vmGVK)
 	vm.SetNamespace(a.cfg.Namespace)
 	vm.SetName(name)
-	// Background deletion lets the garbage collector remove the owned root
-	// disk after the VirtualMachine is gone.
 	err := a.c.Delete(ctx, vm, client.PropagationPolicy(metav1.DeletePropagationBackground))
 	if err := client.IgnoreNotFound(err); err != nil {
 		return fmt.Errorf("machine %s: delete VirtualMachine: %w", vm.GetName(), err)
+	}
+	if err := a.deleteCloneRoot(ctx, name); err != nil {
+		return err
 	}
 	// The user-data and key Secrets go after the VM, so a retry after a
 	// failure here deletes them then.
@@ -207,13 +208,29 @@ func (a *Agent) create(ctx context.Context, spec hypervisor.MachineSpec) error {
 	if spec.Power == hypervisor.PowerOn {
 		run = runAlways
 	}
-	rootDisk := spec.Name + "-root"
+	if spec.Image != "" {
+		ds := a.object(dsGVK, spec.Image)
+		err := a.c.Get(ctx, client.ObjectKeyFromObject(ds), ds)
+		if apierrors.IsNotFound(err) {
+			return hypervisor.ImageNotFound(fmt.Errorf("machine %s: image %s not found", spec.Name, spec.Image))
+		}
+		if err != nil {
+			return fmt.Errorf("machine %s: get DataSource %s: %w", spec.Name, spec.Image, err)
+		}
+	}
+	rootDisk := rootDiskName(spec.Name)
 	disks := []any{map[string]any{"name": "rootdisk", "disk": map[string]any{"bus": "virtio"}}}
 	volumes := []any{map[string]any{"name": "rootdisk", "dataVolume": map[string]any{"name": rootDisk}}}
 	var templates []any
 	if spec.Image != "" {
 		templates = []any{map[string]any{
-			"metadata": map[string]any{"name": rootDisk},
+			"metadata": map[string]any{
+				"name": rootDisk,
+				"labels": map[string]any{
+					LabelManaged:  "true",
+					LabelInstance: spec.Name,
+				},
+			},
 			"spec": map[string]any{
 				"sourceRef": map[string]any{"kind": "DataSource", "name": spec.Image, "namespace": a.cfg.ImageNamespace},
 				"storage":   map[string]any{},
@@ -297,6 +314,70 @@ func (a *Agent) create(ctx context.Context, spec hypervisor.MachineSpec) error {
 		return fmt.Errorf("machine %s: create VirtualMachine: %w", spec.Name, err)
 	}
 	return nil
+}
+
+func rootDiskName(instance string) string { return instance + "-root" }
+
+func (a *Agent) deleteCloneRoot(ctx context.Context, instance string) error {
+	name := rootDiskName(instance)
+	dvUID, err := a.deleteIfOwned(ctx, dvGVK, name, instance, "")
+	if err != nil {
+		return err
+	}
+	_, err = a.deleteIfOwned(ctx, pvcGVK, name, instance, dvUID)
+	return err
+}
+
+func (a *Agent) deleteIfOwned(
+	ctx context.Context, gvk schema.GroupVersionKind, name, instance string, dvUID types.UID,
+) (types.UID, error) {
+	var seen types.UID
+	for range 2 {
+		u := &unstructured.Unstructured{}
+		u.SetGroupVersionKind(gvk)
+		err := a.c.Get(ctx, client.ObjectKey{Namespace: a.cfg.Namespace, Name: name}, u)
+		if apierrors.IsNotFound(err) {
+			return seen, nil
+		}
+		if err != nil {
+			return "", fmt.Errorf("get %s %s: %w", gvk.Kind, name, err)
+		}
+		if !cloneOwned(u, instance, dvUID) {
+			return seen, nil
+		}
+		if seen == "" {
+			seen = u.GetUID()
+		}
+		uid := u.GetUID()
+		err = a.c.Delete(ctx, u, client.Preconditions{UID: &uid})
+		if apierrors.IsNotFound(err) {
+			return seen, nil
+		}
+		if apierrors.IsConflict(err) {
+			continue
+		}
+		if err != nil {
+			return "", fmt.Errorf("delete %s %s: %w", gvk.Kind, name, err)
+		}
+		return seen, nil
+	}
+	return seen, fmt.Errorf("delete %s %s: ownership changed", gvk.Kind, name)
+}
+
+func cloneOwned(obj metav1.Object, instance string, dvUID types.UID) bool {
+	labels := obj.GetLabels()
+	if labels[LabelManaged] == "true" && labels[LabelInstance] == instance {
+		return true
+	}
+	if dvUID == "" {
+		return false
+	}
+	for _, ref := range obj.GetOwnerReferences() {
+		if ref.Kind == dvGVK.Kind && ref.Name == rootDiskName(instance) && ref.UID == dvUID {
+			return true
+		}
+	}
+	return false
 }
 
 func memory(mib int) string { return strconv.Itoa(mib) + "Mi" }

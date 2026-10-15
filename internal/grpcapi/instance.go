@@ -342,7 +342,7 @@ func (s *server) DeleteInstance(ctx context.Context, r *computev1.DeleteInstance
 	if err != nil {
 		return nil, err
 	}
-	if _, _, err = s.liveInstance(ctx, r.GetName()); err != nil {
+	if _, err = s.storedInstance(ctx, r.GetName()); err != nil {
 		if r.GetAllowMissing() && statusNotFound(err) {
 			return doneOperation(project, r.GetName(), commonv1.OperationVerb_OPERATION_VERB_DELETE, r.GetRequestId(), nil)
 		}
@@ -350,16 +350,23 @@ func (s *server) DeleteInstance(ctx context.Context, r *computev1.DeleteInstance
 	}
 	in, err := compute.NewTerminateInstance(id)
 	rc, err := s.submit(ctx, r.GetRequestId(), in, err, check(func() error {
-		cur, _, err := s.liveInstance(ctx, r.GetName())
+		cur, err := s.storedInstance(ctx, r.GetName())
 		if err != nil {
 			return err
 		}
-		return checkEtag(r.GetEtag(), etagOf(cur.Spec.Generation, cur.Meta.Revision))
+		return etagUnlessTerminated(r.GetEtag(), cur)
 	}))
 	if err != nil {
 		return nil, err
 	}
 	return s.operationPB(ctx, project, r.GetName(), rc.Operation)
+}
+
+func etagUnlessTerminated(got string, cur compute.Instance) error {
+	if cur.Spec.Power == compute.PowerTerminated {
+		return nil
+	}
+	return checkEtag(got, etagOf(cur.Spec.Generation, cur.Meta.Revision))
 }
 
 func (s *server) ReportInstanceStatus(ctx context.Context, r *computev1.ReportInstanceStatusRequest) (*computev1.ReportInstanceStatusResponse, error) {
@@ -420,6 +427,12 @@ func parseInstanceReport(st *computev1.InstanceStatus) (compute.InstanceReport, 
 		rep.State = compute.ReportDeleting
 	case commonv1.ReconciliationState_RECONCILIATION_STATE_ERROR:
 		rep.State = compute.ReportError
+		for _, c := range obs.GetConditions() {
+			if c.GetType() == commonv1.ConditionType_CONDITION_TYPE_READY {
+				rep.Reason = compute.ParseLaunchReason(c.GetReason())
+				break
+			}
+		}
 	default:
 		return compute.InstanceReport{}, invalidSpec("status.observed.state is required")
 	}

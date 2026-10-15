@@ -32,7 +32,10 @@ rules:
     # the claim access modes, and for a hot-plugged volume its volumeMode,
     # before a volume is attached. A missing claim is
     # reported as transient, so a denied get would fail every attach.
-    verbs: ["get"]
+    verbs: ["get", "delete"]
+  - apiGroups: ["cdi.kubevirt.io"]
+    resources: ["datavolumes"]
+    verbs: ["get", "delete"]
   - apiGroups: [""]
     resources: ["secrets"]
     # cloudinit.go: two Secrets per machine. <instance>-cloudinit holds the
