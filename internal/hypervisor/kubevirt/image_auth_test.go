@@ -77,10 +77,13 @@ func TestParkedImageLosesThePublicLabel(t *testing.T) {
 	ctl := controller.New(repo, controller.WithClock(clk.Now))
 	scope := must(compute.NewImageScope("a123456789012", "vws-1"))
 	src := compute.FromVolume{Ref: must(compute.ParseVolumeRef("projects/a123456789012/zones/vws-1a/volumes/vol-1"))}
-	const id = "ami-0aaaaaaaaaaaaaaa1"
-	if _, err := ctl.Submit(ctx, must(compute.ParseRequestID("copy-1")), must(compute.NewCopyImage(id, scope, src, "", "", compute.Labels{}))); err != nil {
+	rc, err := ctl.Submit(ctx, must(compute.ParseRequestID("copy-1")), must(compute.NewCopyImage(
+		"ami-0aaaaaaaaaaaaaaa1", scope, src, "", "", compute.Labels{},
+	)))
+	if err != nil {
 		t.Fatal(err)
 	}
+	id := rc.Operation.Target.ID
 	// The image never converges and is parked after GiveUpAfter.
 	agent := fakeagent.New()
 	agent.Fail(id, errTransient, errTransient)

@@ -15,8 +15,9 @@ type InstanceID struct{ s string }
 
 // ImageID is the image resource path segment. It uses the
 // vws.common.v1.ResourceId grammar: a lowercase letter, then up to 62 more
-// characters from [a-z0-9-], not ending in a hyphen. Capture still mints
-// "img-" plus 17 lowercase hex digits, which is one of those ids.
+// characters from [a-z0-9-], not ending in a hyphen. Capture and CreateImage
+// mint "img-" plus 17 lowercase hex digits. Seed registration keeps the
+// caller's id.
 type ImageID struct{ s string }
 
 // KeyPairID identifies one incarnation of a key pair: "key-" followed by 17
