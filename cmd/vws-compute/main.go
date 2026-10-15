@@ -72,7 +72,7 @@ func run(ctx context.Context, cfg config) error {
 	if err != nil {
 		return err
 	}
-	var opts []grpcapi.Option
+	opts := []grpcapi.Option{grpcapi.WithPublicImages(cfg.publicImages)}
 	var lookup grpcapi.VolumeLookup
 	if storage != "" {
 		// The connection is lazy: the storage service may come up after this
@@ -96,7 +96,7 @@ func run(ctx context.Context, cfg config) error {
 	var hl *grpcapi.Health
 	ready := func() bool { return hl != nil && hl.Serving() }
 	metrics := obs.NewMetrics(ready)
-	recOpts := []reconciler.Option{reconciler.WithReports(repo), reconciler.WithSweepObserver(metrics.Sweep)}
+	recOpts := []reconciler.Option{reconciler.WithReports(repo), reconciler.WithSweepObserver(metrics.Sweep), reconciler.WithPublicImages(cfg.publicImages)}
 	if lookup != nil {
 		recOpts = append(recOpts, reconciler.WithClaims(grpcapi.Claims(lookup)))
 		if del := grpcapi.DeleteVolumes(lookup); del != nil {

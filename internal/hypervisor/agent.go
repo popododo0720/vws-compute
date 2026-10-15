@@ -76,6 +76,8 @@ type ImageSpec struct {
 	// of no project.
 	Project string
 	Region  string
+	// Public lets every project in Region clone the image (vws.io/public).
+	Public bool
 	// Present false means the artifact must not exist.
 	Present bool
 	// Exactly one source is set. SourceMachine is the instance ID whose root

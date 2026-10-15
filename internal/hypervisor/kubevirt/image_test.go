@@ -294,3 +294,28 @@ func TestDataSourceCarriesItsOwner(t *testing.T) {
 		t.Fatalf("repeat wrote %d times, want 0", got)
 	}
 }
+
+func TestPublicImageDataSourceIsLabeledPublic(t *testing.T) {
+	c, ns, w := newClient(t)
+	ctx := context.Background()
+	spec := urlImage()
+	spec.Project, spec.Region = "a123456789012", "vws-1"
+	_, _ = imageAgent(c, ns).ConvergeImage(ctx, spec)
+	if l := dataSourceLabels(t, c, ns); l[LabelPublic] != "" {
+		t.Fatalf("private image labeled public: %v", l)
+	}
+	spec.Public = true
+	before := w.n.Load()
+	_, _ = imageAgent(c, ns).ConvergeImage(ctx, spec)
+	if got := w.n.Load() - before; got != 1 {
+		t.Fatalf("public label wrote %d times, want 1", got)
+	}
+	if l := dataSourceLabels(t, c, ns); l[LabelPublic] != "true" || l[LabelProject] != "a123456789012" {
+		t.Fatalf("labels %v", l)
+	}
+	before = w.n.Load()
+	_, _ = imageAgent(c, ns).ConvergeImage(ctx, spec)
+	if got := w.n.Load() - before; got != 0 {
+		t.Fatalf("repeat wrote %d times, want 0", got)
+	}
+}

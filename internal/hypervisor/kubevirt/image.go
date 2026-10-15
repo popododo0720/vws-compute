@@ -65,15 +65,21 @@ func (a *Agent) object(gvk schema.GroupVersionKind, name string) *unstructured.U
 const (
 	LabelProject = "vws.io/project"
 	LabelRegion  = "vws.io/region"
+	LabelPublic  = "vws.io/public"
 )
 
-// ownerLabels are the owner labels of the image's DataSource. An image of no
+// ownerLabels are the owner labels of the image's DataSource, with
+// vws.io/public=true for a public image. An image of no
 // project has none, so vws-storage clones it for nobody.
 func ownerLabels(spec hypervisor.ImageSpec) map[string]string {
 	if spec.Project == "" {
 		return nil
 	}
-	return map[string]string{LabelProject: spec.Project, LabelRegion: spec.Region}
+	l := map[string]string{LabelProject: spec.Project, LabelRegion: spec.Region}
+	if spec.Public {
+		l[LabelPublic] = "true"
+	}
+	return l
 }
 
 // ensure creates the object unless it exists, with labels besides the

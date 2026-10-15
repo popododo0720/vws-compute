@@ -33,6 +33,7 @@ const (
 )
 
 type Reconciler struct {
+	public   compute.PublicImages
 	store    store.StatusStore
 	reports  store.ReportStore
 	agent    hypervisor.Agent
@@ -47,6 +48,9 @@ type Reconciler struct {
 }
 
 type Option func(*Reconciler)
+
+// WithPublicImages marks the listed images public on their DataSource.
+func WithPublicImages(p compute.PublicImages) Option { return func(r *Reconciler) { r.public = p } }
 
 func WithClock(now func() time.Time) Option { return func(r *Reconciler) { r.now = now } }
 func WithInterval(d time.Duration) Option   { return func(r *Reconciler) { r.interval = d } }
@@ -313,7 +317,7 @@ func (r *Reconciler) Restore(ctx context.Context) error {
 		if !img.Available() {
 			return nil
 		}
-		_, err := r.agent.ConvergeImage(ctx, imageSpec(img.Spec))
+		_, err := r.agent.ConvergeImage(ctx, r.imageSpec(img.Spec))
 		return err
 	}); err != nil {
 		errs = append(errs, err)
@@ -434,7 +438,7 @@ func (r *Reconciler) convergeImage(ctx context.Context, ref compute.Ref) error {
 	if img.Status.Observed.Generation >= spec.Generation {
 		return nil
 	}
-	want := imageSpec(spec)
+	want := r.imageSpec(spec)
 	size, agentErr := r.agent.ConvergeImage(ctx, want)
 	if ctx.Err() != nil {
 		return ctx.Err()
@@ -565,8 +569,8 @@ func machineState(p hypervisor.Power) compute.MachineState {
 	return compute.MachineAbsent
 }
 
-func imageSpec(s compute.ImageSpec) hypervisor.ImageSpec {
-	i := hypervisor.ImageSpec{Name: s.ID.String(), Project: s.Scope.Project(), Region: s.Scope.Region(), Present: !s.Deregistered}
+func (r *Reconciler) imageSpec(s compute.ImageSpec) hypervisor.ImageSpec {
+	i := hypervisor.ImageSpec{Name: s.ID.String(), Project: s.Scope.Project(), Region: s.Scope.Region(), Public: r.public.Has(s.ID), Present: !s.Deregistered}
 	switch src := s.Source.(type) {
 	case compute.FromURL:
 		i.SourceURL = src.URL.String()

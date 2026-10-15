@@ -122,3 +122,19 @@ func TestParseConfigLegacyImageScope(t *testing.T) {
 		}
 	}
 }
+
+func TestParseConfigPublicImages(t *testing.T) {
+	c, err := parseConfig(nil, envOf(map[string]string{"VWS_PUBLIC_IMAGES": "ami-0123456789abcdef0, ami-0ab0b1240a0000001"}), io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(c.publicImages) != 2 {
+		t.Fatalf("public = %v", c.publicImages)
+	}
+	if c, err = parseConfig(nil, envOf(nil), io.Discard); err != nil || len(c.publicImages) != 0 {
+		t.Fatalf("default public = %v, %v", c.publicImages, err)
+	}
+	if _, err := parseConfig([]string{"-public-images", "not an id"}, envOf(nil), io.Discard); err == nil {
+		t.Fatal("bad id accepted")
+	}
+}

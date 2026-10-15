@@ -13,7 +13,7 @@ Rules for anyone changing this repository, human or agent. A rule with an enforc
 | `internal/reconciler` | The loop that converges the agent toward desired state. |
 | `internal/hypervisor` | The agent contract. `fakeagent` implements it in memory. `kubevirt` implements it with KubeVirt `VirtualMachine` objects. |
 | `internal/grpcapi` | The gRPC edge. Wire stubs come from `github.com/popododo0720/vws-proto`. |
-| `cmd/vws-compute` | Wiring, flags (`-hypervisor`, `-vm-namespace`, `-image-namespace`, `-storage` is the vws-storage address, `-legacy-image-scope` owns images stored without a project), and the `-seed-images` loader. |
+| `cmd/vws-compute` | Wiring, flags (`-hypervisor`, `-vm-namespace`, `-image-namespace`, `-storage` is the vws-storage address, `-legacy-image-scope` owns images stored without a project, `-public-images` lists public images), and the `-seed-images` loader. |
 
 ## Rules
 
@@ -46,6 +46,7 @@ Rules for anyone changing this repository, human or agent. A rule with an enforc
 | Startup re-applies converged specs to the agent. | `TestRestartRebuildsTheAgent` |
 | A seed file registers each image once. A restart with the same file writes nothing, and a changed path stops startup. | `TestSeedIsIdempotentAcrossRestarts` |
 | An image belongs to the project and region that created it. `GetImage`, `ListImages`, and `DeleteImage` from any other project or region see `NOT_FOUND`, as for no image. A record from before scopes takes `-legacy-image-scope`. | `TestImageOfAnotherProjectIsNotFound`, `TestImageScopeRoundTripsAndLegacyRecordsTakeTheDefault` |
+| An image in `-public-images` is read and listed by every project in its region, as an AWS public AMI. Update and delete stay with the owner; others see `NOT_FOUND`. Its `DataSource` carries `vws.io/public=true`. | `TestPublicImageIsReadableEverywhereInItsRegion`, `TestParseConfigPublicImages`, `TestPublicImageDataSourceIsLabeledPublic` (envtest) |
 | `CreateImage` stores a volume or snapshot source and `GetImage` returns it. A disk path is registered only by `-seed-images`. | `TestCreateImageRoundTrip` and `TestSeededImageLaunchStopStartTerminate` |
 | A new RPC on `InstanceService`, `ImageService`, or `KeyPairService` fails to build until it is served. | `server` embeds the three `Unsafe...ServiceServer` types |
 | Only `internal/grpcapi` calls `ReportInstanceStatus`. This service places nothing: kube-scheduler does. | `TestArchitectureRules` |

@@ -54,6 +54,8 @@ type config struct {
 	// legacyImageScope owns images stored without a project and region: those
 	// written before #92 and seed images.
 	legacyImageScope compute.ImageScope
+	// publicImages are readable by every project in their region.
+	publicImages compute.PublicImages
 }
 
 func parseConfig(args []string, getenv func(string) string, errOut io.Writer) (config, error) {
@@ -76,6 +78,7 @@ func parseConfig(args []string, getenv func(string) string, errOut io.Writer) (c
 	fs.StringVar(&c.vmNamespace, "vm-namespace", env("VWS_VM_NAMESPACE", "vws-vms"), "namespace of VirtualMachines, VirtualMachineInstances, and volume PVCs (env VWS_VM_NAMESPACE)")
 	fs.StringVar(&c.imageNamespace, "image-namespace", env("VWS_IMAGE_NAMESPACE", "vws-images"), "namespace of CDI DataVolumes and DataSources (env VWS_IMAGE_NAMESPACE)")
 	legacyScope := fs.String("legacy-image-scope", env("VWS_LEGACY_IMAGE_SCOPE", ""), "projects/{project}/regions/{region} that owns images stored without one (pre-#92 records, seed images); empty leaves them in no project, invisible to every caller (env VWS_LEGACY_IMAGE_SCOPE)")
+	publicIDs := fs.String("public-images", env("VWS_PUBLIC_IMAGES", ""), "comma-separated image ids readable by every project in the image's region, such as seed images; changing or deleting them stays with the owner (env VWS_PUBLIC_IMAGES)")
 	if err := fs.Parse(args); err != nil {
 		return config{}, fmt.Errorf("flags: %w", err)
 	}
@@ -93,6 +96,17 @@ func parseConfig(args []string, getenv func(string) string, errOut io.Writer) (c
 		}
 		c.legacyImageScope = sc
 	}
+	var ids []string
+	for _, id := range strings.Split(*publicIDs, ",") {
+		if id = strings.TrimSpace(id); id != "" {
+			ids = append(ids, id)
+		}
+	}
+	pub, err := compute.NewPublicImages(ids)
+	if err != nil {
+		return config{}, fmt.Errorf("-public-images: %w", err)
+	}
+	c.publicImages = pub
 	switch c.hypervisor {
 	case hypervisorFake:
 	case hypervisorKubeVirt:

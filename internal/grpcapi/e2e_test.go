@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"net"
 	"strings"
 	"sync"
@@ -1050,5 +1051,68 @@ func TestImageOfAnotherProjectIsNotFound(t *testing.T) {
 		if len(listed.GetImages()) != 0 {
 			t.Fatalf("%s lists %v", parent, listed.GetImages())
 		}
+	}
+}
+
+// TestPublicImageIsReadableEverywhereInItsRegion: a public image is listed
+// and read from every project in its region, while update and delete from
+// another project get the same NotFound as a private image, and another
+// region does not see it at all.
+func TestPublicImageIsReadableEverywhereInItsRegion(t *testing.T) {
+	ctx := context.Background()
+	pub, err := compute.NewPublicImages([]string{"ami-0000000000000aaa1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := serveRepo(t, memstore.New(), grpcapi.WithPublicImages(pub))
+	owner := "projects/a111111111111/regions/vws-1"
+	for i, id := range []string{"ami-0000000000000aaa1", "ami-0000000000000ccc3"} {
+		created, err := h.img.CreateImage(ctx, &computev1.CreateImageRequest{
+			Parent: owner, ImageId: id, RequestId: fmt.Sprintf("9494949%d-9494-4494-8494-949494949494", i),
+			Image: &computev1.Image{Spec: &computev1.ImageSpec{
+				Source: &computev1.ImageSpec_Snapshot{Snapshot: owner + "/snapshots/s"},
+			}},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := h.ops.WaitOperation(ctx, &longrunningpb.WaitOperationRequest{Name: created.GetName(), Timeout: durationpb.New(10 * time.Second)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	other := "projects/a222222222222/regions/vws-1"
+	got, err := h.img.GetImage(ctx, &computev1.GetImageRequest{Name: other + "/images/ami-0000000000000aaa1"})
+	if err != nil {
+		t.Fatalf("public image from another project: %v", err)
+	}
+	if got.GetName() != other+"/images/ami-0000000000000aaa1" {
+		t.Fatalf("name %q", got.GetName())
+	}
+	listed, err := h.img.ListImages(ctx, &computev1.ListImagesRequest{Parent: other})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listed.GetImages()) != 1 || listed.GetImages()[0].GetName() != other+"/images/ami-0000000000000aaa1" {
+		t.Fatalf("other project lists %v, want only the public image", listed.GetImages())
+	}
+	_, private := h.img.GetImage(ctx, &computev1.GetImageRequest{Name: other + "/images/ami-0000000000000ccc3"})
+	wantCode(t, private, codes.NotFound)
+
+	_, err = h.img.DeleteImage(ctx, &computev1.DeleteImageRequest{Name: other + "/images/ami-0000000000000aaa1", RequestId: "95959595-9595-4595-8595-959595959595"})
+	wantCode(t, err, codes.NotFound)
+	if status.Convert(err).Message() != "image "+other+"/images/ami-0000000000000aaa1 not found" {
+		t.Fatalf("delete message %q", status.Convert(err).Message())
+	}
+	_, err = h.img.UpdateImage(ctx, &computev1.UpdateImageRequest{
+		RequestId:  "96969696-9696-4696-8696-969696969696",
+		UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"labels"}},
+		Image:      &computev1.Image{Name: other + "/images/ami-0000000000000aaa1", Labels: map[string]string{"k": "v"}},
+	})
+	wantCode(t, err, codes.NotFound)
+
+	_, err = h.img.GetImage(ctx, &computev1.GetImageRequest{Name: "projects/a222222222222/regions/vws-2/images/ami-0000000000000aaa1"})
+	wantCode(t, err, codes.NotFound)
+	if _, err := h.img.GetImage(ctx, &computev1.GetImageRequest{Name: owner + "/images/ami-0000000000000aaa1"}); err != nil {
+		t.Fatalf("owner: %v", err)
 	}
 }

@@ -13,7 +13,7 @@ import (
 )
 
 func (s *server) GetImage(ctx context.Context, r *computev1.GetImageRequest) (*computev1.Image, error) {
-	img, name, err := s.liveImage(ctx, r.GetName())
+	img, name, err := s.readableImage(ctx, r.GetName())
 	if err != nil {
 		return nil, err
 	}
@@ -33,7 +33,7 @@ func (s *server) ListImages(ctx context.Context, r *computev1.ListImagesRequest)
 			return nil, toStatus(err)
 		}
 		for _, img := range page.Items {
-			if img.Lifecycle() == compute.ImageDeregistered || !inScope(img, project, region) {
+			if img.Lifecycle() == compute.ImageDeregistered || !s.readable(img, project, region) {
 				continue
 			}
 			matched = append(matched, img)
@@ -235,9 +235,30 @@ func inScope(img compute.Image, project, region string) bool {
 	return !sc.IsZero() && sc.Project() == project && sc.Region() == region
 }
 
-// liveImage reads the image the name addresses. An image of another project
-// or region answers exactly like a missing one (#92).
+// readable reports whether a caller in project and region may read img: it
+// owns it, or img is public and in that region.
+func (s *server) readable(img compute.Image, project, region string) bool {
+	if inScope(img, project, region) {
+		return true
+	}
+	sc := img.Spec.Scope
+	return s.public.Has(img.Spec.ID) && !sc.IsZero() && sc.Region() == region
+}
+
+// liveImage reads the image the name addresses for its owner, as a change,
+// delete, or status report needs. An image of another project or region,
+// public or not, answers exactly like a missing one (#92).
 func (s *server) liveImage(ctx context.Context, name string) (compute.Image, string, error) {
+	return s.lookupImage(ctx, name, inScope)
+}
+
+// readableImage reads the image the name addresses for a read, which a
+// public image of the same region also allows.
+func (s *server) readableImage(ctx context.Context, name string) (compute.Image, string, error) {
+	return s.lookupImage(ctx, name, s.readable)
+}
+
+func (s *server) lookupImage(ctx context.Context, name string, allowed func(compute.Image, string, string) bool) (compute.Image, string, error) {
 	project, region, id, err := parseImageName(name)
 	if err != nil {
 		return compute.Image{}, "", err
@@ -253,7 +274,7 @@ func (s *server) liveImage(ctx context.Context, name string) (compute.Image, str
 	if err != nil {
 		return compute.Image{}, name, toStatus(err)
 	}
-	if img.Lifecycle() == compute.ImageDeregistered || !inScope(img, project, region) {
+	if img.Lifecycle() == compute.ImageDeregistered || !allowed(img, project, region) {
 		return compute.Image{}, name, notFound("image " + name + " not found")
 	}
 	return img, name, nil

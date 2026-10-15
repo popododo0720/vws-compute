@@ -119,3 +119,27 @@ func (i Image) Lifecycle() ImageLifecycle {
 
 // Available reports whether instances may launch from i.
 func (i Image) Available() bool { return i.Lifecycle() == ImageAvailable }
+
+// PublicImages is the operator's list of public images, such as seed images.
+// A public image is readable from every project in its region, as an AWS
+// public AMI is. Changing or deleting it stays with its owner.
+type PublicImages map[ImageID]struct{}
+
+// NewPublicImages parses image ids. An empty list makes no image public.
+func NewPublicImages(ids []string) (PublicImages, error) {
+	p := PublicImages{}
+	for _, raw := range ids {
+		id, err := ParseImageID(raw)
+		if err != nil {
+			return nil, err
+		}
+		p[id] = struct{}{}
+	}
+	return p, nil
+}
+
+// Has reports whether id is public. A nil list has none.
+func (p PublicImages) Has(id ImageID) bool {
+	_, ok := p[id]
+	return ok
+}
