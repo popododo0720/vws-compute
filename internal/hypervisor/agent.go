@@ -71,6 +71,11 @@ type Volume struct {
 type ImageSpec struct {
 	// Name is the image ID.
 	Name string
+	// Project and Region own the image. The DataSource carries them as
+	// labels so vws-storage clones it only for that owner. Empty for an image
+	// of no project.
+	Project string
+	Region  string
 	// Present false means the artifact must not exist.
 	Present bool
 	// Exactly one source is set. SourceMachine is the instance ID whose root

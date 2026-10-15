@@ -254,3 +254,43 @@ func TestImagePermanentErrors(t *testing.T) {
 		t.Fatal("a rejected spec created a DataVolume")
 	}
 }
+
+func dataSourceLabels(t *testing.T, c client.Client, ns string) map[string]string {
+	t.Helper()
+	u := &unstructured.Unstructured{}
+	u.SetGroupVersionKind(dsGVK)
+	if err := c.Get(context.Background(), client.ObjectKey{Namespace: ns, Name: imageID}, u); err != nil {
+		t.Fatal(err)
+	}
+	return u.GetLabels()
+}
+
+// TestDataSourceCarriesItsOwner pins vws-compute#92: the DataSource carries
+// the image's project and region, which vws-storage requires before it clones
+// it. A DataSource made before the labels gets them with one patch, and a
+// repeat writes nothing.
+func TestDataSourceCarriesItsOwner(t *testing.T) {
+	c, ns, w := newClient(t)
+	ctx := context.Background()
+	unowned := urlImage()
+	_, _ = imageAgent(c, ns).ConvergeImage(ctx, unowned)
+	if l := dataSourceLabels(t, c, ns); l[LabelProject] != "" || l[LabelRegion] != "" {
+		t.Fatalf("an image of no project got owner labels %v", l)
+	}
+
+	owned := unowned
+	owned.Project, owned.Region = "a123456789012", "vws-1"
+	before := w.n.Load()
+	_, _ = imageAgent(c, ns).ConvergeImage(ctx, owned)
+	if got := w.n.Load() - before; got != 1 {
+		t.Fatalf("labeling wrote %d times, want 1", got)
+	}
+	if l := dataSourceLabels(t, c, ns); l[LabelProject] != "a123456789012" || l[LabelRegion] != "vws-1" || l[LabelManaged] != "true" {
+		t.Fatalf("labels %v", l)
+	}
+	before = w.n.Load()
+	_, _ = imageAgent(c, ns).ConvergeImage(ctx, owned)
+	if got := w.n.Load() - before; got != 0 {
+		t.Fatalf("repeat wrote %d times, want 0", got)
+	}
+}

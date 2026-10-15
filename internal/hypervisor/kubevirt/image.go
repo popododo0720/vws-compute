@@ -41,11 +41,11 @@ func (a *Agent) ConvergeImage(ctx context.Context, spec hypervisor.ImageSpec) (i
 	if err != nil {
 		return 0, err
 	}
-	if err := a.ensure(ctx, dvGVK, spec.Name, map[string]any{"source": source, "storage": a.imageStorage(spec)}); err != nil {
+	if err := a.ensure(ctx, dvGVK, spec.Name, map[string]any{"source": source, "storage": a.imageStorage(spec)}, nil); err != nil {
 		return 0, err
 	}
 	pvc := map[string]any{"name": spec.Name, "namespace": a.cfg.ImageNamespace}
-	if err := a.ensure(ctx, dsGVK, spec.Name, map[string]any{"source": map[string]any{"pvc": pvc}}); err != nil {
+	if err := a.ensure(ctx, dsGVK, spec.Name, map[string]any{"source": map[string]any{"pvc": pvc}}, ownerLabels(spec)); err != nil {
 		return 0, err
 	}
 	return a.imageSize(ctx, spec.Name)
@@ -59,15 +59,52 @@ func (a *Agent) object(gvk schema.GroupVersionKind, name string) *unstructured.U
 	return u
 }
 
-// ensure creates the object unless it exists. An existing image object is
-// left alone, since an image's source never changes.
-func (a *Agent) ensure(ctx context.Context, gvk schema.GroupVersionKind, name string, spec map[string]any) error {
+// LabelProject and LabelRegion name the owner of an image DataSource.
+// vws-storage clones a DataSource only for the project and region on these
+// labels (vws-storage#89).
+const (
+	LabelProject = "vws.io/project"
+	LabelRegion  = "vws.io/region"
+)
+
+// ownerLabels are the owner labels of the image's DataSource. An image of no
+// project has none, so vws-storage clones it for nobody.
+func ownerLabels(spec hypervisor.ImageSpec) map[string]string {
+	if spec.Project == "" {
+		return nil
+	}
+	return map[string]string{LabelProject: spec.Project, LabelRegion: spec.Region}
+}
+
+// ensure creates the object unless it exists, with labels besides the
+// managed one. An existing image object keeps its spec, since an image's
+// source never changes; labels it lacks or holds with another value are set
+// with one patch, so DataSources made before owner labels get them.
+func (a *Agent) ensure(ctx context.Context, gvk schema.GroupVersionKind, name string, spec map[string]any, labels map[string]string) error {
 	have := a.object(gvk, name)
 	err := a.c.Get(ctx, client.ObjectKeyFromObject(have), have)
 	switch {
 	case err == nil:
-		if have.GetLabels()[LabelManaged] != "true" {
+		cur := have.GetLabels()
+		if cur[LabelManaged] != "true" {
 			return hypervisor.Permanent(fmt.Errorf("image %s: a %s with that name exists and is not managed here", name, gvk.Kind))
+		}
+		missing := false
+		for k, v := range labels {
+			if cur[k] != v {
+				missing = true
+			}
+		}
+		if !missing {
+			return nil
+		}
+		patch := client.MergeFrom(have.DeepCopy())
+		for k, v := range labels {
+			cur[k] = v
+		}
+		have.SetLabels(cur)
+		if err := a.c.Patch(ctx, have, patch); err != nil {
+			return fmt.Errorf("image %s: label %s: %w", name, gvk.Kind, err)
 		}
 		return nil
 	case !apierrors.IsNotFound(err):
@@ -75,7 +112,11 @@ func (a *Agent) ensure(ctx context.Context, gvk schema.GroupVersionKind, name st
 	}
 	want := a.object(gvk, name)
 	want.Object["spec"] = spec
-	want.SetLabels(map[string]string{LabelManaged: "true"})
+	all := map[string]string{LabelManaged: "true"}
+	for k, v := range labels {
+		all[k] = v
+	}
+	want.SetLabels(all)
 	// Losing a create race means another caller made the same object.
 	if err := client.IgnoreAlreadyExists(a.c.Create(ctx, want)); err != nil {
 		return fmt.Errorf("image %s: create %s: %w", name, gvk.Kind, err)

@@ -566,7 +566,7 @@ func machineState(p hypervisor.Power) compute.MachineState {
 }
 
 func imageSpec(s compute.ImageSpec) hypervisor.ImageSpec {
-	i := hypervisor.ImageSpec{Name: s.ID.String(), Present: !s.Deregistered}
+	i := hypervisor.ImageSpec{Name: s.ID.String(), Project: s.Scope.Project(), Region: s.Scope.Region(), Present: !s.Deregistered}
 	switch src := s.Source.(type) {
 	case compute.FromURL:
 		i.SourceURL = src.URL.String()
