@@ -64,27 +64,31 @@ func (s *server) CreateImage(ctx context.Context, r *computev1.CreateImageReques
 	if err != nil {
 		return nil, err
 	}
-	if err := validateResourceID(r.GetImageId()); err != nil {
-		return nil, err
-	}
 	name := imageResourceName(project, region, r.GetImageId())
-	body := r.GetImage()
-	if err := validateCreateImage(name, body); err != nil {
-		return nil, err
-	}
-	id, err := compute.ParseImageID(r.GetImageId())
+	in, err := copyImageIntent(project, region, r.GetImageId(), r.GetImage())
 	if err != nil {
-		return nil, invalidID("image_id " + r.GetImageId() + " is not a resource id")
+		return nil, err
 	}
 	if r.GetValidateOnly() {
-		_, err := s.read.Image(ctx, id)
-		if err == nil {
-			return nil, alreadyExists("image " + name + " already exists")
-		}
-		if compute.CodeOf(err) != compute.CodeNotFound {
-			return nil, toStatus(err)
-		}
 		return doneOperation(project, name, commonv1.OperationVerb_OPERATION_VERB_CREATE, r.GetRequestId(), nil)
+	}
+	rc, err := s.submit(ctx, r.GetRequestId(), in, nil, nil)
+	if err != nil {
+		return nil, err
+	}
+	return s.operationPB(ctx, project, "", rc.Operation)
+}
+
+// copyImageIntent parses a CreateImage request into an intent. It does not
+// read the store, so validate_only and the submitting call fail on the same
+// inputs and neither can see another project's image.
+func copyImageIntent(project, region, imageID string, body *computev1.Image) (compute.Intent, error) {
+	if err := validateResourceID(imageID); err != nil {
+		return nil, err
+	}
+	name := imageResourceName(project, region, imageID)
+	if err := validateCreateImage(name, body); err != nil {
+		return nil, err
 	}
 	src, err := copySource(body.GetSpec())
 	if err != nil {
@@ -98,12 +102,13 @@ func (s *server) CreateImage(ctx context.Context, r *computev1.CreateImageReques
 	if err != nil {
 		return nil, toStatus(err)
 	}
-	in, err := compute.NewCopyImage(id.String(), scope, src, body.GetSpec().GetFamily(), body.GetSpec().GetDescription(), labels)
-	rc, err := s.submit(ctx, r.GetRequestId(), in, err, nil)
+	in, err := compute.NewCopyImage(
+		imageID, scope, src, body.GetSpec().GetFamily(), body.GetSpec().GetDescription(), labels,
+	)
 	if err != nil {
-		return nil, err
+		return nil, toStatus(err)
 	}
-	return s.operationPB(ctx, project, name, rc.Operation)
+	return in, nil
 }
 
 func copySource(spec *computev1.ImageSpec) (compute.CopySource, error) {
