@@ -265,124 +265,76 @@ func dataSourceLabels(t *testing.T, c client.Client, ns string) map[string]strin
 	return u.GetLabels()
 }
 
-// TestDataSourceCarriesItsOwner pins vws-compute#92: the DataSource carries
-// the image's project and region, which vws-storage requires before it clones
-// it. A DataSource made before the labels gets them with one patch, and a
-// repeat writes nothing.
-func TestDataSourceCarriesItsOwner(t *testing.T) {
-	c, ns, w := newClient(t)
-	ctx := context.Background()
-	unowned := urlImage()
-	_, _ = imageAgent(c, ns).ConvergeImage(ctx, unowned)
-	if l := dataSourceLabels(t, c, ns); l[LabelProject] != "" || l[LabelRegion] != "" {
-		t.Fatalf("an image of no project got owner labels %v", l)
-	}
-
-	owned := unowned
-	owned.Project, owned.Region = "a123456789012", "vws-1"
-	before := w.n.Load()
-	_, _ = imageAgent(c, ns).ConvergeImage(ctx, owned)
-	if got := w.n.Load() - before; got != 1 {
-		t.Fatalf("labeling wrote %d times, want 1", got)
-	}
-	if l := dataSourceLabels(t, c, ns); l[LabelProject] != "a123456789012" || l[LabelRegion] != "vws-1" || l[LabelManaged] != "true" {
-		t.Fatalf("labels %v", l)
-	}
-	before = w.n.Load()
-	_, _ = imageAgent(c, ns).ConvergeImage(ctx, owned)
-	if got := w.n.Load() - before; got != 0 {
-		t.Fatalf("repeat wrote %d times, want 0", got)
+// TestNewDataSourceCarriesOnlyTheManagedLabel pins vws-compute#93: the
+// converge path writes no authorization label; AuthorizeImages does.
+func TestNewDataSourceCarriesOnlyTheManagedLabel(t *testing.T) {
+	c, ns, _ := newClient(t)
+	_, _ = imageAgent(c, ns).ConvergeImage(context.Background(), urlImage())
+	if l := dataSourceLabels(t, c, ns); len(l) != 1 || l[LabelManaged] != "true" {
+		t.Fatalf("labels %v, want only %s", l, LabelManaged)
 	}
 }
 
-func TestPublicImageDataSourceIsLabeledPublic(t *testing.T) {
-	c, ns, w := newClient(t)
-	ctx := context.Background()
-	spec := urlImage()
-	spec.Project, spec.Region = "a123456789012", "vws-1"
-	_, _ = imageAgent(c, ns).ConvergeImage(ctx, spec)
-	if l := dataSourceLabels(t, c, ns); l[LabelPublic] != "" {
-		t.Fatalf("private image labeled public: %v", l)
-	}
-	spec.Public = true
-	before := w.n.Load()
-	_, _ = imageAgent(c, ns).ConvergeImage(ctx, spec)
-	if got := w.n.Load() - before; got != 1 {
-		t.Fatalf("public label wrote %d times, want 1", got)
-	}
-	if l := dataSourceLabels(t, c, ns); l[LabelPublic] != "true" || l[LabelProject] != "a123456789012" {
-		t.Fatalf("labels %v", l)
-	}
-	before = w.n.Load()
-	_, _ = imageAgent(c, ns).ConvergeImage(ctx, spec)
-	if got := w.n.Load() - before; got != 0 {
-		t.Fatalf("repeat wrote %d times, want 0", got)
-	}
-}
-
-// TestPublicLabelIsRemovedWhenTheImageIsNoLongerPublic pins the review of
-// vws-compute#93: an image taken out of -public-images loses vws.io/public
-// with one patch, keeps its owner labels, and a repeat writes nothing.
-func TestPublicLabelIsRemovedWhenTheImageIsNoLongerPublic(t *testing.T) {
-	c, ns, w := newClient(t)
-	ctx := context.Background()
-	spec := urlImage()
-	spec.Project, spec.Region, spec.Public = "a123456789012", "vws-1", true
-	_, _ = imageAgent(c, ns).ConvergeImage(ctx, spec)
-	if l := dataSourceLabels(t, c, ns); l[LabelPublic] != "true" {
-		t.Fatalf("labels %v", l)
-	}
-	spec.Public = false
-	before := w.n.Load()
-	_, _ = imageAgent(c, ns).ConvergeImage(ctx, spec)
-	if got := w.n.Load() - before; got != 1 {
-		t.Fatalf("unpublishing wrote %d times, want 1", got)
-	}
-	l := dataSourceLabels(t, c, ns)
-	if _, has := l[LabelPublic]; has || l[LabelProject] != "a123456789012" || l[LabelRegion] != "vws-1" || l[LabelManaged] != "true" {
-		t.Fatalf("labels %v", l)
-	}
-	before = w.n.Load()
-	_, _ = imageAgent(c, ns).ConvergeImage(ctx, spec)
-	if got := w.n.Load() - before; got != 0 {
-		t.Fatalf("repeat wrote %d times, want 0", got)
-	}
-}
-
-// TestDeletingAnImageAMachineClonesRevokesItsLabelsFirst pins the review of
-// vws-compute#93 (ce6fc94): while a VirtualMachine still blocks removal, the
-// DataSource already lost its authorization labels, so vws-storage clones it
-// for nobody new; the retried removal writes nothing more.
-func TestDeletingAnImageAMachineClonesRevokesItsLabelsFirst(t *testing.T) {
-	c, ns, w := newClient(t)
-	ctx := context.Background()
-	a := imageAgent(c, ns)
-	img := urlImage()
-	img.Project, img.Region, img.Public = "a123456789012", "vws-1", true
-	_, _ = a.ConvergeImage(ctx, img)
-	m := spec("i-0123456789abcdef0", hypervisor.PowerOff)
-	m.Image = imageID
-	if err := a.ConvergeMachine(ctx, m); err != nil {
-		t.Fatal(err)
-	}
-	gone := hypervisor.ImageSpec{Name: imageID}
-	if _, err := a.ConvergeImage(ctx, gone); err == nil || hypervisor.IsPermanent(err) {
-		t.Fatalf("got %v, want a transient refusal", err)
-	}
-	l := dataSourceLabels(t, c, ns)
-	for _, k := range []string{LabelProject, LabelRegion, LabelPublic} {
-		if _, has := l[k]; has {
-			t.Fatalf("label %s kept while removal is blocked: %v", k, l)
-		}
-	}
-	if l[LabelManaged] != "true" {
-		t.Fatalf("managed label lost: %v", l)
-	}
-	before := w.n.Load()
-	if _, err := a.ConvergeImage(ctx, gone); err == nil {
-		t.Fatal("removal must still be refused")
-	}
-	if got := w.n.Load() - before; got != 0 {
-		t.Fatalf("retried removal wrote %d times, want 0", got)
+// TestAuthorizeImages covers the DataSource label states AuthorizeImages
+// meets: each ends at exactly the wanted labels, with one patch when it
+// differs and none when it matches. A DataSource not managed here is not
+// touched.
+func TestAuthorizeImages(t *testing.T) {
+	owner := hypervisor.ImageAuth{Project: "a123456789012", Region: "vws-1"}
+	public := owner
+	public.Public = true
+	full := map[string]string{LabelProject: "a123456789012", LabelRegion: "vws-1", LabelPublic: "true"}
+	for _, tc := range []struct {
+		name    string
+		managed bool
+		have    map[string]string
+		auth    hypervisor.ImageAuth
+		want    map[string]string
+		writes  int64
+	}{
+		{"public to private", true, full, owner, map[string]string{LabelProject: "a123456789012", LabelRegion: "vws-1"}, 1},
+		{"private to public", true, map[string]string{LabelProject: "a123456789012", LabelRegion: "vws-1"}, public, full, 1},
+		{"unlabeled gets its owner", true, nil, owner, map[string]string{LabelProject: "a123456789012", LabelRegion: "vws-1"}, 1},
+		{"no record or deregistered loses all", true, full, hypervisor.ImageAuth{}, map[string]string{}, 1},
+		{"other owner is replaced", true, map[string]string{LabelProject: "a999999999999", LabelRegion: "vws-2"}, owner, map[string]string{LabelProject: "a123456789012", LabelRegion: "vws-1"}, 1},
+		{"matching writes nothing", true, full, public, full, 0},
+		{"unmanaged is left alone", false, full, hypervisor.ImageAuth{}, full, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c, ns, w := newClient(t)
+			ctx := context.Background()
+			ds := &unstructured.Unstructured{}
+			ds.SetGroupVersionKind(dsGVK)
+			ds.SetNamespace(ns)
+			ds.SetName(imageID)
+			l := map[string]string{"other": "kept"}
+			if tc.managed {
+				l[LabelManaged] = "true"
+			}
+			for k, v := range tc.have {
+				l[k] = v
+			}
+			ds.SetLabels(l)
+			ds.Object["spec"] = map[string]any{"source": map[string]any{"pvc": map[string]any{"name": imageID, "namespace": ns}}}
+			if err := c.Create(ctx, ds); err != nil {
+				t.Fatal(err)
+			}
+			before := w.n.Load()
+			if err := imageAgent(c, ns).AuthorizeImages(ctx, func(string) hypervisor.ImageAuth { return tc.auth }); err != nil {
+				t.Fatal(err)
+			}
+			if got := w.n.Load() - before; got != tc.writes {
+				t.Fatalf("wrote %d times, want %d", got, tc.writes)
+			}
+			got := dataSourceLabels(t, c, ns)
+			if got["other"] != "kept" {
+				t.Fatalf("unrelated label lost: %v", got)
+			}
+			for _, k := range authKeys {
+				if got[k] != tc.want[k] {
+					t.Fatalf("labels %v, want auth labels %v", got, tc.want)
+				}
+			}
+		})
 	}
 }

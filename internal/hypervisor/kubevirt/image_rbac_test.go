@@ -11,10 +11,11 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	utilyaml "k8s.io/apimachinery/pkg/util/yaml"
 	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	"github.com/popododo0720/vws-compute/internal/hypervisor"
 )
 
 // imageRole reads the image namespace Role from the supplied RBAC manifest.
@@ -44,7 +45,7 @@ func imageRole(t *testing.T) rbacv1.Role {
 // TestImageRoleLetsTheAgentLabelAnExistingDataSource pins the review of
 // vws-compute#93: with only the supplied image Role, the agent adopts an
 // existing managed DataSource without owner labels and labels it, which
-// needs patch on datasources.
+// needs list and patch on datasources.
 func TestImageRoleLetsTheAgentLabelAnExistingDataSource(t *testing.T) {
 	admin, ns, _ := newClient(t)
 	ctx := context.Background()
@@ -74,21 +75,21 @@ func TestImageRoleLetsTheAgentLabelAnExistingDataSource(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := limited.List(ctx, &unstructured.UnstructuredList{Object: map[string]any{"apiVersion": "cdi.kubevirt.io/v1beta1", "kind": "DataSourceList"}}, client.InNamespace(ns)); err == nil {
-		t.Skip("envtest does not enforce RBAC here (list was allowed without a grant)")
+	if err := limited.List(ctx, &corev1.ConfigMapList{}, client.InNamespace(ns)); err == nil {
+		t.Skip("envtest does not enforce RBAC here (a configmap list was allowed without a grant)")
 	}
-	spec.Project, spec.Region, spec.Public = "a123456789012", "vws-1", true
-	if _, err := imageAgent(limited, ns).ConvergeImage(ctx, spec); err != nil {
+	az := imageAgent(limited, ns)
+	public := hypervisor.ImageAuth{Project: "a123456789012", Region: "vws-1", Public: true}
+	if err := az.AuthorizeImages(ctx, func(string) hypervisor.ImageAuth { return public }); err != nil {
 		t.Fatalf("labeling with the supplied Role: %v", err)
 	}
 	if l := dataSourceLabels(t, admin, ns); l[LabelProject] != "a123456789012" || l[LabelPublic] != "true" {
 		t.Fatalf("labels %v", l)
 	}
-	spec.Public = false
-	if _, err := imageAgent(limited, ns).ConvergeImage(ctx, spec); err != nil {
+	if err := az.AuthorizeImages(ctx, func(string) hypervisor.ImageAuth { return hypervisor.ImageAuth{} }); err != nil {
 		t.Fatalf("unlabeling with the supplied Role: %v", err)
 	}
-	if l := dataSourceLabels(t, admin, ns); l[LabelPublic] != "" {
-		t.Fatalf("public label kept: %v", l)
+	if l := dataSourceLabels(t, admin, ns); l[LabelPublic] != "" || l[LabelProject] != "" {
+		t.Fatalf("labels kept: %v", l)
 	}
 }

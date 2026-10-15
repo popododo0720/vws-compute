@@ -80,9 +80,11 @@ rules:
   - apiGroups: ["cdi.kubevirt.io"]
     resources: ["datasources"]
     verbs:
-      # patch: image.go ensure sets and removes the DataSource authorization
-      # labels (vws.io/project, vws.io/region, vws.io/public) on an existing
-      # DataSource.
+      # list: image_auth.go AuthorizeImages reads every managed DataSource
+      # on each sweep.
+      - list
+      # patch: image_auth.go AuthorizeImages sets and removes the DataSource
+      # authorization labels (vws.io/project, vws.io/region, vws.io/public).
       - patch
   - apiGroups: [""]
     resources: ["persistentvolumeclaims"]

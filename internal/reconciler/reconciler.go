@@ -30,8 +30,6 @@ const (
 	// GiveUpAfter is how long after a spec generation was committed the
 	// reconciler keeps retrying transient failures before parking it.
 	GiveUpAfter = 15 * time.Minute
-	// MaxRestoreBackoff caps the wait between Restore attempts in Run.
-	MaxRestoreBackoff = 2 * time.Minute
 )
 
 type Reconciler struct {
@@ -51,7 +49,7 @@ type Reconciler struct {
 
 type Option func(*Reconciler)
 
-// WithPublicImages marks the listed images public on their DataSource.
+// WithPublicImages marks the listed images public in ImageAuth.
 func WithPublicImages(p compute.PublicImages) Option { return func(r *Reconciler) { r.public = p } }
 
 func WithClock(now func() time.Time) Option { return func(r *Reconciler) { r.now = now } }
@@ -114,27 +112,12 @@ func (r *Reconciler) Kick() {
 // that lost its memory (the in-memory fake, after a restart) catches up
 // to the repository before new work is accepted.
 func (r *Reconciler) Run(ctx context.Context) error {
-	// Restore is retried until it succeeds. It is the only path that
-	// re-applies a converged image's DataSource authorization labels, so a
-	// failed attempt would otherwise leave a revoked image public (#93).
-	// Retrying beside the sweeps, with a capped backoff, keeps the API
-	// serving while the cluster is briefly unreachable; failing startup
-	// instead would crash-loop the whole service over one label patch.
-	restorePending, restoreAt, restoreDelay := true, time.Time{}, r.interval
+	if err := r.Restore(ctx); err != nil && ctx.Err() == nil {
+		r.log.WarnContext(ctx, "restore agent", slog.Any("err", err))
+	}
 	tick := time.NewTicker(r.interval)
 	defer tick.Stop()
 	for {
-		if restorePending && !r.now().Before(restoreAt) {
-			err := r.Restore(ctx)
-			switch {
-			case err == nil:
-				restorePending = false
-			case ctx.Err() == nil:
-				r.log.WarnContext(ctx, "restore agent; retrying", slog.Any("err", err), slog.Duration("retry_in", restoreDelay))
-				restoreAt = r.now().Add(restoreDelay)
-				restoreDelay = min(2*restoreDelay, MaxRestoreBackoff)
-			}
-		}
 		err := r.Sweep(ctx)
 		switch {
 		case ctx.Err() != nil:
@@ -165,6 +148,21 @@ func (r *Reconciler) Run(ctx context.Context) error {
 // destroyed, and a launch runs before its image is deregistered. One global
 // kind order cannot do both.
 func (r *Reconciler) Sweep(ctx context.Context) error {
+	err := r.sweep(ctx)
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	// Every sweep authorizes image artifacts, after the converge pass so a
+	// DataSource created in it is authorized at once, and even when that
+	// pass returned early: no failure elsewhere may keep a stale grant.
+	aerr := r.authorizeImages(ctx)
+	if aerr == nil {
+		return err // unwrapped, so onlyNotReady still sees its errors
+	}
+	return errors.Join(err, aerr)
+}
+
+func (r *Reconciler) sweep(ctx context.Context) error {
 	due, err := r.store.Unconverged(ctx, r.now())
 	if err != nil {
 		return err
@@ -228,6 +226,41 @@ func (r *Reconciler) Sweep(ctx context.Context) error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// ImageAuth is the only source of an image artifact's clone authorization:
+// it reads the store record and the public list and nothing else. No record
+// (nil) or a deregistered one lets nobody clone; an image of no project
+// belongs to nobody. Image state (pending, parked, Available, source gone)
+// plays no part, so no state can keep a stale grant.
+func ImageAuth(img *compute.Image, public compute.PublicImages) hypervisor.ImageAuth {
+	if img == nil || img.Spec.Deregistered || img.Spec.Scope.IsZero() {
+		return hypervisor.ImageAuth{}
+	}
+	return hypervisor.ImageAuth{Project: img.Spec.Scope.Project(), Region: img.Spec.Scope.Region(), Public: public.Has(img.Spec.ID)}
+}
+
+// authorizeImages applies ImageAuth to every image artifact the agent
+// manages, including ones the store has no record of, on every sweep.
+func (r *Reconciler) authorizeImages(ctx context.Context) error {
+	az, ok := r.agent.(hypervisor.ImageAuthorizer)
+	if !ok {
+		return nil
+	}
+	imgs := map[string]compute.Image{}
+	if err := r.eachImage(ctx, func(img compute.Image) error {
+		imgs[img.Spec.ID.String()] = img
+		return nil
+	}); err != nil {
+		return err
+	}
+	return az.AuthorizeImages(ctx, func(name string) hypervisor.ImageAuth {
+		img, ok := imgs[name]
+		if !ok {
+			return ImageAuth(nil, r.public)
+		}
+		return ImageAuth(&img, r.public)
+	})
 }
 
 // held is the lagging resources a sweep must not destroy out from under.
@@ -334,7 +367,7 @@ func (r *Reconciler) Restore(ctx context.Context) error {
 		if !img.Available() {
 			return nil
 		}
-		_, err := r.agent.ConvergeImage(ctx, r.imageSpec(img.Spec))
+		_, err := r.agent.ConvergeImage(ctx, imageSpec(img.Spec))
 		return err
 	}); err != nil {
 		errs = append(errs, err)
@@ -455,7 +488,7 @@ func (r *Reconciler) convergeImage(ctx context.Context, ref compute.Ref) error {
 	if img.Status.Observed.Generation >= spec.Generation {
 		return nil
 	}
-	want := r.imageSpec(spec)
+	want := imageSpec(spec)
 	size, agentErr := r.agent.ConvergeImage(ctx, want)
 	if ctx.Err() != nil {
 		return ctx.Err()
@@ -586,8 +619,8 @@ func machineState(p hypervisor.Power) compute.MachineState {
 	return compute.MachineAbsent
 }
 
-func (r *Reconciler) imageSpec(s compute.ImageSpec) hypervisor.ImageSpec {
-	i := hypervisor.ImageSpec{Name: s.ID.String(), Project: s.Scope.Project(), Region: s.Scope.Region(), Public: r.public.Has(s.ID), Present: !s.Deregistered}
+func imageSpec(s compute.ImageSpec) hypervisor.ImageSpec {
+	i := hypervisor.ImageSpec{Name: s.ID.String(), Present: !s.Deregistered}
 	switch src := s.Source.(type) {
 	case compute.FromURL:
 		i.SourceURL = src.URL.String()

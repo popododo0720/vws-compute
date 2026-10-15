@@ -41,11 +41,11 @@ func (a *Agent) ConvergeImage(ctx context.Context, spec hypervisor.ImageSpec) (i
 	if err != nil {
 		return 0, err
 	}
-	if err := a.ensure(ctx, dvGVK, spec.Name, map[string]any{"source": source, "storage": a.imageStorage(spec)}, nil, nil); err != nil {
+	if err := a.ensure(ctx, dvGVK, spec.Name, map[string]any{"source": source, "storage": a.imageStorage(spec)}); err != nil {
 		return 0, err
 	}
 	pvc := map[string]any{"name": spec.Name, "namespace": a.cfg.ImageNamespace}
-	if err := a.ensure(ctx, dsGVK, spec.Name, map[string]any{"source": map[string]any{"pvc": pvc}}, ownerLabels(spec), authLabels); err != nil {
+	if err := a.ensure(ctx, dsGVK, spec.Name, map[string]any{"source": map[string]any{"pvc": pvc}}); err != nil {
 		return 0, err
 	}
 	return a.imageSize(ctx, spec.Name)
@@ -59,77 +59,17 @@ func (a *Agent) object(gvk schema.GroupVersionKind, name string) *unstructured.U
 	return u
 }
 
-// LabelProject and LabelRegion name the owner of an image DataSource.
-// vws-storage clones a DataSource only for the project and region on these
-// labels (vws-storage#89).
-const (
-	LabelProject = "vws.io/project"
-	LabelRegion  = "vws.io/region"
-	LabelPublic  = "vws.io/public"
-)
-
-// ownerLabels are the owner labels of the image's DataSource, with
-// vws.io/public=true for a public image. An image of no
-// project has none, so vws-storage clones it for nobody.
-func ownerLabels(spec hypervisor.ImageSpec) map[string]string {
-	if spec.Project == "" {
-		return nil
-	}
-	l := map[string]string{LabelProject: spec.Project, LabelRegion: spec.Region}
-	if spec.Public {
-		l[LabelPublic] = "true"
-	}
-	return l
-}
-
-// authLabels are the DataSource labels vws-storage authorizes a clone by.
-// Compute owns them: one that the image no longer wants, such as
-// vws.io/public after the image left -public-images, is removed.
-var authLabels = []string{LabelProject, LabelRegion, LabelPublic}
-
-// ensure creates the object unless it exists, with labels besides the
-// managed one. An existing image object keeps its spec, since an image's
-// source never changes. Its labels are brought to labels with one patch:
-// one it lacks or holds with another value is set, and a key in owned that
-// labels lacks is removed, so DataSources made before owner labels get them
-// and an image made private loses vws.io/public. A repeat writes nothing.
-func (a *Agent) ensure(ctx context.Context, gvk schema.GroupVersionKind, name string, spec map[string]any, labels map[string]string, owned []string) error {
+// ensure creates the object unless it exists, with only the managed label.
+// An existing image object keeps its spec, since an image's source never
+// changes, and its labels: the authorization labels of a DataSource are
+// AuthorizeImages's alone.
+func (a *Agent) ensure(ctx context.Context, gvk schema.GroupVersionKind, name string, spec map[string]any) error {
 	have := a.object(gvk, name)
 	err := a.c.Get(ctx, client.ObjectKeyFromObject(have), have)
 	switch {
 	case err == nil:
-		cur := have.GetLabels()
-		if cur[LabelManaged] != "true" {
+		if have.GetLabels()[LabelManaged] != "true" {
 			return hypervisor.Permanent(fmt.Errorf("image %s: a %s with that name exists and is not managed here", name, gvk.Kind))
-		}
-		stale := false
-		for k, v := range labels {
-			if cur[k] != v {
-				stale = true
-			}
-		}
-		for _, k := range owned {
-			if _, want := labels[k]; !want {
-				if _, has := cur[k]; has {
-					stale = true
-				}
-			}
-		}
-		if !stale {
-			return nil
-		}
-		patch := client.MergeFrom(have.DeepCopy())
-		for k, v := range labels {
-			cur[k] = v
-		}
-		for _, k := range owned {
-			if _, want := labels[k]; !want {
-				delete(cur, k)
-			}
-		}
-		have.SetLabels(cur)
-		if err := a.c.Patch(ctx, have, patch); err != nil {
-			return fmt.Errorf("image %s: label %s: %w", name, gvk.Kind, err)
 		}
 		return nil
 	case !apierrors.IsNotFound(err):
@@ -137,11 +77,7 @@ func (a *Agent) ensure(ctx context.Context, gvk schema.GroupVersionKind, name st
 	}
 	want := a.object(gvk, name)
 	want.Object["spec"] = spec
-	all := map[string]string{LabelManaged: "true"}
-	for k, v := range labels {
-		all[k] = v
-	}
-	want.SetLabels(all)
+	want.SetLabels(map[string]string{LabelManaged: "true"})
 	// Losing a create race means another caller made the same object.
 	if err := client.IgnoreAlreadyExists(a.c.Create(ctx, want)); err != nil {
 		return fmt.Errorf("image %s: create %s: %w", name, gvk.Kind, err)
@@ -226,12 +162,6 @@ func (a *Agent) imageSize(ctx context.Context, name string) (int64, error) {
 }
 
 func (a *Agent) removeImage(ctx context.Context, name string) error {
-	// The authorization labels go first, so an image being deregistered is
-	// cloned by nobody new even while a VirtualMachine still blocks its
-	// removal and the deletion is retried (#93).
-	if err := a.revokeAuthLabels(ctx, name); err != nil {
-		return err
-	}
 	users, err := a.imageUsers(ctx, name)
 	if err != nil {
 		return err
@@ -246,39 +176,6 @@ func (a *Agent) removeImage(ctx context.Context, name string) error {
 		if err := client.IgnoreNotFound(a.c.Delete(ctx, obj, client.PropagationPolicy(metav1.DeletePropagationBackground))); err != nil {
 			return fmt.Errorf("image %s: delete %s: %w", name, gvk.Kind, err)
 		}
-	}
-	return nil
-}
-
-// revokeAuthLabels removes the authorization labels from the image's managed
-// DataSource with one patch. A missing DataSource, one not managed here, or
-// one without the labels is left alone, so a repeat writes nothing.
-func (a *Agent) revokeAuthLabels(ctx context.Context, name string) error {
-	ds := a.object(dsGVK, name)
-	if err := a.c.Get(ctx, client.ObjectKeyFromObject(ds), ds); err != nil {
-		if apierrors.IsNotFound(err) {
-			return nil
-		}
-		return fmt.Errorf("image %s: get DataSource: %w", name, err)
-	}
-	cur := ds.GetLabels()
-	if cur[LabelManaged] != "true" {
-		return nil
-	}
-	patch := client.MergeFrom(ds.DeepCopy())
-	changed := false
-	for _, k := range authLabels {
-		if _, has := cur[k]; has {
-			delete(cur, k)
-			changed = true
-		}
-	}
-	if !changed {
-		return nil
-	}
-	ds.SetLabels(cur)
-	if err := a.c.Patch(ctx, ds, patch); err != nil {
-		return fmt.Errorf("image %s: revoke DataSource labels: %w", name, err)
 	}
 	return nil
 }
