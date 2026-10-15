@@ -39,9 +39,28 @@ func (FromSnapshot) isImageSource() {}
 func (FromVolume) isCopySource()   {}
 func (FromSnapshot) isCopySource() {}
 
+// ImageScope is the project and region an image belongs to: the parent it
+// was created under. The zero scope belongs to no project; it is an image
+// written before scopes existed or registered by seed, and no caller sees it.
+type ImageScope struct{ project, region string }
+
+// NewImageScope validates both ids.
+func NewImageScope(project, region string) (ImageScope, error) {
+	if !validResourceID(project) || !validResourceID(region) {
+		return ImageScope{}, Errorf(CodeInvalid, "invalid image project or region")
+	}
+	return ImageScope{project: project, region: region}, nil
+}
+
+func (s ImageScope) Project() string { return s.project }
+func (s ImageScope) Region() string  { return s.region }
+func (s ImageScope) IsZero() bool    { return s.project == "" }
+
 // ImageSpec is the desired state of one image at one generation.
 type ImageSpec struct {
-	ID         ImageID
+	ID ImageID
+	// Scope is set once at creation and never changes.
+	Scope      ImageScope
 	Generation int64
 	CreatedAt  time.Time
 	ChangedAt  time.Time
@@ -100,3 +119,27 @@ func (i Image) Lifecycle() ImageLifecycle {
 
 // Available reports whether instances may launch from i.
 func (i Image) Available() bool { return i.Lifecycle() == ImageAvailable }
+
+// PublicImages is the operator's list of public images, such as seed images.
+// A public image is readable from every project in its region, as an AWS
+// public AMI is. Changing or deleting it stays with its owner.
+type PublicImages map[ImageID]struct{}
+
+// NewPublicImages parses image ids. An empty list makes no image public.
+func NewPublicImages(ids []string) (PublicImages, error) {
+	p := PublicImages{}
+	for _, raw := range ids {
+		id, err := ParseImageID(raw)
+		if err != nil {
+			return nil, err
+		}
+		p[id] = struct{}{}
+	}
+	return p, nil
+}
+
+// Has reports whether id is public. A nil list has none.
+func (p PublicImages) Has(id ImageID) bool {
+	_, ok := p[id]
+	return ok
+}

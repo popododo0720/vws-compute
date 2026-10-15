@@ -55,6 +55,10 @@ type Option func(*server)
 // reconciler.WithClaims(Claims(v)) to resolve it.
 func WithVolumes(v VolumeLookup) Option { return func(s *server) { s.volumes = v } }
 
+// WithPublicImages makes the listed images readable by every project in the
+// image's region. Changing or deleting them stays with their owner.
+func WithPublicImages(p compute.PublicImages) Option { return func(s *server) { s.public = p } }
+
 // Register adds InstanceService, ImageService, KeyPairService,
 // and google.longrunning.Operations to s. ctl is the only desired-state
 // write path, r the read path, and r's report method the only write path for
@@ -84,6 +88,7 @@ type server struct {
 	reports store.ReportStore
 	clock   func() time.Time
 	volumes VolumeLookup
+	public  compute.PublicImages
 }
 
 func (s *server) GetOperation(ctx context.Context, r *longrunningpb.GetOperationRequest) (*longrunningpb.Operation, error) {

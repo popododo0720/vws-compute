@@ -59,8 +59,10 @@ func (a *Agent) object(gvk schema.GroupVersionKind, name string) *unstructured.U
 	return u
 }
 
-// ensure creates the object unless it exists. An existing image object is
-// left alone, since an image's source never changes.
+// ensure creates the object unless it exists, with only the managed label.
+// An existing image object keeps its spec, since an image's source never
+// changes, and its labels: the authorization labels of a DataSource are
+// AuthorizeImages's alone.
 func (a *Agent) ensure(ctx context.Context, gvk schema.GroupVersionKind, name string, spec map[string]any) error {
 	have := a.object(gvk, name)
 	err := a.c.Get(ctx, client.ObjectKeyFromObject(have), have)

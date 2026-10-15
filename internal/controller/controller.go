@@ -123,10 +123,27 @@ func (c *Controller) replay(ctx context.Context, req compute.RequestID, in compu
 		return Receipt{}, false, nil
 	case err != nil:
 		return Receipt{}, false, err
-	case op.Fingerprint != compute.FingerprintOf(in):
+	case op.Fingerprint != compute.FingerprintOf(in) && !c.legacyReplay(ctx, op, in):
 		return Receipt{}, false, compute.Errorf(compute.CodeRequestMismatch, "request id %s was used for a different request", req)
 	}
 	return Receipt{Operation: op}, true, nil
+}
+
+// legacyReplay reports whether op is in, persisted by a release before image
+// scopes (#92) with the fingerprint of that time. The image op made must
+// now hold in's scope (the legacy scope, for a pre-#92 record), so a request
+// id from one project still never replays into another.
+func (c *Controller) legacyReplay(ctx context.Context, op compute.Operation, in compute.Intent) bool {
+	fp, scope, ok := compute.LegacyFingerprintOf(in)
+	if !ok || op.Fingerprint != fp || op.Target.Kind != compute.KindImage {
+		return false
+	}
+	id, err := compute.ParseImageID(op.Target.ID)
+	if err != nil {
+		return false
+	}
+	img, err := c.store.Image(ctx, id)
+	return err == nil && !scope.IsZero() && img.Spec.Scope == scope
 }
 
 // recordingView is the compute.View a plan reads through. It records the

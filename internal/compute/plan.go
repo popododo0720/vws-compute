@@ -196,7 +196,7 @@ func (in rebootInstance) plan(v View, env Env) (Change, error) {
 // plan refuses an id that any image already holds, including a tombstone,
 // and writes generation 1. Two callers of the same id race at commit: the
 // loser gets a conflict, replans, and then sees the winner.
-func admitNewImage(v View, env Env, id ImageID, family ImageName, src ImageSource, meta *Metadata) (Change, error) {
+func admitNewImage(v View, env Env, id ImageID, scope ImageScope, family ImageName, src ImageSource, meta *Metadata) (Change, error) {
 	_, err := v.Image(id)
 	switch {
 	case err == nil:
@@ -206,6 +206,7 @@ func admitNewImage(v View, env Env, id ImageID, family ImageName, src ImageSourc
 	}
 	return Change{Write: true, Meta: meta, Spec: ImageSpec{
 		ID:         id,
+		Scope:      scope,
 		Generation: 1,
 		CreatedAt:  env.Now,
 		ChangedAt:  env.Now,
@@ -219,11 +220,11 @@ func (in copyImage) plan(v View, env Env) (Change, error) {
 	if in.description.String() != "" || in.labels.Len() > 0 {
 		meta = &Metadata{Description: in.description, Labels: in.labels}
 	}
-	return admitNewImage(v, env, in.id, in.family, in.source, meta)
+	return admitNewImage(v, env, in.id, in.scope, in.family, in.source, meta)
 }
 
 func (in registerFile) plan(v View, env Env) (Change, error) {
-	return admitNewImage(v, env, in.id, in.family, FromFile{Path: in.path}, nil)
+	return admitNewImage(v, env, in.id, ImageScope{}, in.family, FromFile{Path: in.path}, nil)
 }
 
 // plan reads nothing: a URL image depends on no other resource.

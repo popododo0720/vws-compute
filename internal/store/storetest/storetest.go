@@ -683,8 +683,8 @@ func imageSourcesRoundTrip(f fixture) {
 	snapSpec := imageSpec(6, 1)
 	snapSpec.Source = compute.FromSnapshot{Ref: snap}
 	f.mustCommit("src-file", ok(compute.NewRegisterFile(imageID(4).String(), "/var/lib/vws/images/debian-12.qcow2", "debian-13")), fileSpec, true)
-	f.mustCommit("src-vol", ok(compute.NewCopyImage(imageID(5).String(), compute.FromVolume{Ref: vol}, "", "", compute.Labels{})), volSpec, true)
-	f.mustCommit("src-snap", ok(compute.NewCopyImage(imageID(6).String(), compute.FromSnapshot{Ref: snap}, "debian-13", "", compute.Labels{})), snapSpec, true)
+	f.mustCommit("src-vol", ok(compute.NewCopyImage(imageID(5).String(), testImageScope, compute.FromVolume{Ref: vol}, "", "", compute.Labels{})), volSpec, true)
+	f.mustCommit("src-snap", ok(compute.NewCopyImage(imageID(6).String(), testImageScope, compute.FromSnapshot{Ref: snap}, "debian-13", "", compute.Labels{})), snapSpec, true)
 	for _, spec := range []compute.ImageSpec{fileSpec, volSpec, snapSpec} {
 		got := ok(f.s.Image(ctx, spec.ID))
 		if !reflect.DeepEqual(got.Spec, spec) {
@@ -692,3 +692,11 @@ func imageSourcesRoundTrip(f fixture) {
 		}
 	}
 }
+
+var testImageScope = func() compute.ImageScope {
+	sc, err := compute.NewImageScope("demo", "demo")
+	if err != nil {
+		panic(err)
+	}
+	return sc
+}()

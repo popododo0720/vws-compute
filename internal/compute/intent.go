@@ -53,6 +53,7 @@ type registerImage struct {
 
 type copyImage struct {
 	id          ImageID
+	scope       ImageScope
 	source      CopySource
 	family      ImageName
 	description Description
@@ -179,10 +180,13 @@ func NewRebootInstance(instanceID string) (Intent, error) {
 // NewCopyImage registers a copy of a volume or snapshot under id, the
 // caller's image id. family may be empty. Plan fails with CodeAlreadyExists
 // when any image, live or deregistered, already holds id.
-func NewCopyImage(id string, source CopySource, family, description string, labels Labels) (Intent, error) {
+func NewCopyImage(id string, scope ImageScope, source CopySource, family, description string, labels Labels) (Intent, error) {
 	img, err := ParseImageID(id)
 	if err != nil {
 		return nil, err
+	}
+	if scope.IsZero() {
+		return nil, Errorf(CodeInvalid, "image project and region are required")
 	}
 	if source == nil {
 		return nil, Errorf(CodeInvalid, "image source is required")
@@ -197,7 +201,7 @@ func NewCopyImage(id string, source CopySource, family, description string, labe
 	if err != nil {
 		return nil, err
 	}
-	return copyImage{id: img, source: source, family: name, description: desc, labels: labels}, nil
+	return copyImage{id: img, scope: scope, source: source, family: name, description: desc, labels: labels}, nil
 }
 
 // NewRegisterFile registers the disk image file at path under id. path is a
@@ -377,6 +381,24 @@ func FingerprintOf(in Intent) Fingerprint {
 	return fp
 }
 
+// LegacyFingerprintOf is the fingerprint a CreateImage intent had before
+// image scopes (#92), which stores written by an older release persist, with
+// the scope the intent now carries. ok is false for every other intent,
+// whose encoding did not change. A replay may accept the legacy fingerprint
+// only after checking that the stored image has this scope.
+func LegacyFingerprintOf(in Intent) (fp Fingerprint, scope ImageScope, ok bool) {
+	c, isCopy := in.(copyImage)
+	if !isCopy {
+		return Fingerprint{}, ImageScope{}, false
+	}
+	e := encoder{h: sha256.New()}
+	e.field("vws.compute.fingerprint.v1")
+	e.field(in.Kind().String())
+	c.encodeScoped(&e, false)
+	e.h.Sum(fp[:0])
+	return fp, c.scope, true
+}
+
 type encoder struct{ h hash.Hash }
 
 func (e *encoder) field(s string) {
@@ -414,8 +436,16 @@ func (in registerImage) encode(e *encoder) {
 	e.field(in.url.s)
 }
 
-func (in copyImage) encode(e *encoder) {
+func (in copyImage) encode(e *encoder) { in.encodeScoped(e, true) }
+
+// encodeScoped writes the fields; withScope false is the encoding before
+// image scopes (#92), which LegacyFingerprintOf reproduces.
+func (in copyImage) encodeScoped(e *encoder, withScope bool) {
 	e.field(in.id.s)
+	if withScope {
+		e.field(in.scope.project)
+		e.field(in.scope.region)
+	}
 	switch src := in.source.(type) {
 	case FromVolume:
 		e.field("volume")

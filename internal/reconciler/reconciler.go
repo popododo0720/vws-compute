@@ -33,6 +33,7 @@ const (
 )
 
 type Reconciler struct {
+	public   compute.PublicImages
 	store    store.StatusStore
 	reports  store.ReportStore
 	agent    hypervisor.Agent
@@ -47,6 +48,9 @@ type Reconciler struct {
 }
 
 type Option func(*Reconciler)
+
+// WithPublicImages marks the listed images public in ImageAuth.
+func WithPublicImages(p compute.PublicImages) Option { return func(r *Reconciler) { r.public = p } }
 
 func WithClock(now func() time.Time) Option { return func(r *Reconciler) { r.now = now } }
 func WithInterval(d time.Duration) Option   { return func(r *Reconciler) { r.interval = d } }
@@ -144,6 +148,21 @@ func (r *Reconciler) Run(ctx context.Context) error {
 // destroyed, and a launch runs before its image is deregistered. One global
 // kind order cannot do both.
 func (r *Reconciler) Sweep(ctx context.Context) error {
+	err := r.sweep(ctx)
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	// Every sweep authorizes image artifacts, after the converge pass so a
+	// DataSource created in it is authorized at once, and even when that
+	// pass returned early: no failure elsewhere may keep a stale grant.
+	aerr := r.authorizeImages(ctx)
+	if aerr == nil {
+		return err // unwrapped, so onlyNotReady still sees its errors
+	}
+	return errors.Join(err, aerr)
+}
+
+func (r *Reconciler) sweep(ctx context.Context) error {
 	due, err := r.store.Unconverged(ctx, r.now())
 	if err != nil {
 		return err
@@ -207,6 +226,41 @@ func (r *Reconciler) Sweep(ctx context.Context) error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// ImageAuth is the only source of an image artifact's clone authorization:
+// it reads the store record and the public list and nothing else. No record
+// (nil) or a deregistered one lets nobody clone; an image of no project
+// belongs to nobody. Image state (pending, parked, Available, source gone)
+// plays no part, so no state can keep a stale grant.
+func ImageAuth(img *compute.Image, public compute.PublicImages) hypervisor.ImageAuth {
+	if img == nil || img.Spec.Deregistered || img.Spec.Scope.IsZero() {
+		return hypervisor.ImageAuth{}
+	}
+	return hypervisor.ImageAuth{Project: img.Spec.Scope.Project(), Region: img.Spec.Scope.Region(), Public: public.Has(img.Spec.ID)}
+}
+
+// authorizeImages applies ImageAuth to every image artifact the agent
+// manages, including ones the store has no record of, on every sweep.
+func (r *Reconciler) authorizeImages(ctx context.Context) error {
+	az, ok := r.agent.(hypervisor.ImageAuthorizer)
+	if !ok {
+		return nil
+	}
+	imgs := map[string]compute.Image{}
+	if err := r.eachImage(ctx, func(img compute.Image) error {
+		imgs[img.Spec.ID.String()] = img
+		return nil
+	}); err != nil {
+		return err
+	}
+	return az.AuthorizeImages(ctx, func(name string) hypervisor.ImageAuth {
+		img, ok := imgs[name]
+		if !ok {
+			return ImageAuth(nil, r.public)
+		}
+		return ImageAuth(&img, r.public)
+	})
 }
 
 // held is the lagging resources a sweep must not destroy out from under.

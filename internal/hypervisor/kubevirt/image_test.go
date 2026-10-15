@@ -254,3 +254,87 @@ func TestImagePermanentErrors(t *testing.T) {
 		t.Fatal("a rejected spec created a DataVolume")
 	}
 }
+
+func dataSourceLabels(t *testing.T, c client.Client, ns string) map[string]string {
+	t.Helper()
+	u := &unstructured.Unstructured{}
+	u.SetGroupVersionKind(dsGVK)
+	if err := c.Get(context.Background(), client.ObjectKey{Namespace: ns, Name: imageID}, u); err != nil {
+		t.Fatal(err)
+	}
+	return u.GetLabels()
+}
+
+// TestNewDataSourceCarriesOnlyTheManagedLabel pins vws-compute#93: the
+// converge path writes no authorization label; AuthorizeImages does.
+func TestNewDataSourceCarriesOnlyTheManagedLabel(t *testing.T) {
+	c, ns, _ := newClient(t)
+	_, _ = imageAgent(c, ns).ConvergeImage(context.Background(), urlImage())
+	if l := dataSourceLabels(t, c, ns); len(l) != 1 || l[LabelManaged] != "true" {
+		t.Fatalf("labels %v, want only %s", l, LabelManaged)
+	}
+}
+
+// TestAuthorizeImages covers the DataSource label states AuthorizeImages
+// meets: each ends at exactly the wanted labels, with one patch when it
+// differs and none when it matches. A DataSource not managed here is not
+// touched.
+func TestAuthorizeImages(t *testing.T) {
+	owner := hypervisor.ImageAuth{Project: "a123456789012", Region: "vws-1"}
+	public := owner
+	public.Public = true
+	full := map[string]string{LabelProject: "a123456789012", LabelRegion: "vws-1", LabelPublic: "true"}
+	for _, tc := range []struct {
+		name    string
+		managed bool
+		have    map[string]string
+		auth    hypervisor.ImageAuth
+		want    map[string]string
+		writes  int64
+	}{
+		{"public to private", true, full, owner, map[string]string{LabelProject: "a123456789012", LabelRegion: "vws-1"}, 1},
+		{"private to public", true, map[string]string{LabelProject: "a123456789012", LabelRegion: "vws-1"}, public, full, 1},
+		{"unlabeled gets its owner", true, nil, owner, map[string]string{LabelProject: "a123456789012", LabelRegion: "vws-1"}, 1},
+		{"no record or deregistered loses all", true, full, hypervisor.ImageAuth{}, map[string]string{}, 1},
+		{"other owner is replaced", true, map[string]string{LabelProject: "a999999999999", LabelRegion: "vws-2"}, owner, map[string]string{LabelProject: "a123456789012", LabelRegion: "vws-1"}, 1},
+		{"matching writes nothing", true, full, public, full, 0},
+		{"unmanaged is left alone", false, full, hypervisor.ImageAuth{}, full, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c, ns, w := newClient(t)
+			ctx := context.Background()
+			ds := &unstructured.Unstructured{}
+			ds.SetGroupVersionKind(dsGVK)
+			ds.SetNamespace(ns)
+			ds.SetName(imageID)
+			l := map[string]string{"other": "kept"}
+			if tc.managed {
+				l[LabelManaged] = "true"
+			}
+			for k, v := range tc.have {
+				l[k] = v
+			}
+			ds.SetLabels(l)
+			ds.Object["spec"] = map[string]any{"source": map[string]any{"pvc": map[string]any{"name": imageID, "namespace": ns}}}
+			if err := c.Create(ctx, ds); err != nil {
+				t.Fatal(err)
+			}
+			before := w.n.Load()
+			if err := imageAgent(c, ns).AuthorizeImages(ctx, func(string) hypervisor.ImageAuth { return tc.auth }); err != nil {
+				t.Fatal(err)
+			}
+			if got := w.n.Load() - before; got != tc.writes {
+				t.Fatalf("wrote %d times, want %d", got, tc.writes)
+			}
+			got := dataSourceLabels(t, c, ns)
+			if got["other"] != "kept" {
+				t.Fatalf("unrelated label lost: %v", got)
+			}
+			for _, k := range authKeys {
+				if got[k] != tc.want[k] {
+					t.Fatalf("labels %v, want auth labels %v", got, tc.want)
+				}
+			}
+		})
+	}
+}

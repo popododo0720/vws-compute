@@ -83,6 +83,24 @@ type ImageSpec struct {
 	SourceSnapshot string
 }
 
+// ImageAuth is who may clone an image artifact: the project and region that
+// own it, and with Public every project in Region. The zero value lets
+// nobody clone it.
+type ImageAuth struct {
+	Project string
+	Region  string
+	Public  bool
+}
+
+// ImageAuthorizer is an Agent whose image artifacts carry their clone
+// authorization (the kubevirt agent's DataSource labels). AuthorizeImages
+// brings every image artifact the agent manages, whatever its state, to
+// auth(name) and is a no-op when they already match. An artifact auth does
+// not know gets the zero ImageAuth.
+type ImageAuthorizer interface {
+	AuthorizeImages(ctx context.Context, auth func(name string) ImageAuth) error
+}
+
 // Agent converges machines and images. A nil error means the spec is fully
 // applied. An error wrapped by Permanent means retrying the same spec cannot
 // succeed. Any other error is transient and the caller retries the same spec

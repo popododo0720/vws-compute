@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"net"
 	"strings"
 	"sync"
@@ -52,7 +53,7 @@ type harness struct {
 
 func serve(t *testing.T) *harness {
 	t.Helper()
-	return serveRepo(t, memstore.New())
+	return serveRepo(t, memstore.New().WithLegacyImageScope(demoScope))
 }
 
 func serveRepo(t *testing.T, repo store.Repository, opts ...grpcapi.Option) *harness {
@@ -946,7 +947,7 @@ func TestUpdateResponsesKeepTheCallersLocation(t *testing.T) {
 func TestMetadataSurvivesRestart(t *testing.T) {
 	ctx := context.Background()
 	kc, ns := kubetest.Namespace(t)
-	h := serveRepo(t, kubetest.Open(t, kc, ns))
+	h := serveRepo(t, kubetest.Open(t, kc, ns).WithLegacyImageScope(demoScope))
 	line, _ := ed25519Line(t)
 	parent := "projects/a12345/regions/us-east1"
 	name := parent + "/keyPairs/console"
@@ -1005,5 +1006,150 @@ func TestMetadataSurvivesRestart(t *testing.T) {
 	if err != nil || img.GetLabels()["vws-fingerprint"] != "img" || img.GetSpec().GetDescription() != "kept\nacross restart" ||
 		img.GetStatus().GetObserved().GetState() != commonv1.ReconciliationState_RECONCILIATION_STATE_READY {
 		t.Fatalf("image after restart = desc %q labels %v state %s err %v", img.GetSpec().GetDescription(), img.GetLabels(), img.GetStatus().GetObserved().GetState(), err)
+	}
+}
+
+// demoScope is the scope a test harness gives images registered without one,
+// as -legacy-image-scope does in production.
+var demoScope, _ = compute.NewImageScope("demo", "demo")
+
+// TestImageOfAnotherProjectIsNotFound pins vws-compute#92: an image is read,
+// listed, and deleted only under the project and region that created it, and
+// another owner sees the same NotFound as for no image at all.
+func TestImageOfAnotherProjectIsNotFound(t *testing.T) {
+	ctx := context.Background()
+	h := serve(t)
+	owner := "projects/a111111111111/regions/vws-1"
+	created, err := h.img.CreateImage(ctx, &computev1.CreateImageRequest{
+		Parent: owner, ImageId: "ami-0000000000000aaa1", RequestId: "92929292-9292-4292-8292-929292929292",
+		Image: &computev1.Image{Spec: &computev1.ImageSpec{
+			Source: &computev1.ImageSpec_Snapshot{Snapshot: owner + "/snapshots/s"},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.ops.WaitOperation(ctx, &longrunningpb.WaitOperationRequest{Name: created.GetName(), Timeout: durationpb.New(10 * time.Second)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.img.GetImage(ctx, &computev1.GetImageRequest{Name: owner + "/images/ami-0000000000000aaa1"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, parent := range []string{"projects/a222222222222/regions/vws-1", "projects/a111111111111/regions/vws-2"} {
+		_, err := h.img.GetImage(ctx, &computev1.GetImageRequest{Name: parent + "/images/ami-0000000000000aaa1"})
+		wantCode(t, err, codes.NotFound)
+		_, missing := h.img.GetImage(ctx, &computev1.GetImageRequest{Name: parent + "/images/ami-0000000000000bbb2"})
+		if status.Convert(err).Message() != strings.ReplaceAll(status.Convert(missing).Message(), "bbb2", "aaa1") {
+			t.Fatalf("other owner %q, absent %q", err, missing)
+		}
+		_, err = h.img.DeleteImage(ctx, &computev1.DeleteImageRequest{Name: parent + "/images/ami-0000000000000aaa1", RequestId: "93939393-9393-4393-8393-93939393939" + parent[len(parent)-1:]})
+		wantCode(t, err, codes.NotFound)
+		listed, err := h.img.ListImages(ctx, &computev1.ListImagesRequest{Parent: parent})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(listed.GetImages()) != 0 {
+			t.Fatalf("%s lists %v", parent, listed.GetImages())
+		}
+	}
+}
+
+// TestPublicImageIsReadableEverywhereInItsRegion: a public image is listed
+// and read from every project in its region, while update and delete from
+// another project get the same NotFound as a private image, and another
+// region does not see it at all.
+func TestPublicImageIsReadableEverywhereInItsRegion(t *testing.T) {
+	ctx := context.Background()
+	pub, err := compute.NewPublicImages([]string{"ami-0000000000000aaa1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := serveRepo(t, memstore.New(), grpcapi.WithPublicImages(pub))
+	owner := "projects/a111111111111/regions/vws-1"
+	for i, id := range []string{"ami-0000000000000aaa1", "ami-0000000000000ccc3"} {
+		created, err := h.img.CreateImage(ctx, &computev1.CreateImageRequest{
+			Parent: owner, ImageId: id, RequestId: fmt.Sprintf("9494949%d-9494-4494-8494-949494949494", i),
+			Image: &computev1.Image{Spec: &computev1.ImageSpec{
+				Source: &computev1.ImageSpec_Snapshot{Snapshot: owner + "/snapshots/s"},
+			}},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := h.ops.WaitOperation(ctx, &longrunningpb.WaitOperationRequest{Name: created.GetName(), Timeout: durationpb.New(10 * time.Second)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	other := "projects/a222222222222/regions/vws-1"
+	got, err := h.img.GetImage(ctx, &computev1.GetImageRequest{Name: other + "/images/ami-0000000000000aaa1"})
+	if err != nil {
+		t.Fatalf("public image from another project: %v", err)
+	}
+	if got.GetName() != other+"/images/ami-0000000000000aaa1" {
+		t.Fatalf("name %q", got.GetName())
+	}
+	listed, err := h.img.ListImages(ctx, &computev1.ListImagesRequest{Parent: other})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listed.GetImages()) != 1 || listed.GetImages()[0].GetName() != other+"/images/ami-0000000000000aaa1" {
+		t.Fatalf("other project lists %v, want only the public image", listed.GetImages())
+	}
+	_, private := h.img.GetImage(ctx, &computev1.GetImageRequest{Name: other + "/images/ami-0000000000000ccc3"})
+	wantCode(t, private, codes.NotFound)
+
+	_, err = h.img.DeleteImage(ctx, &computev1.DeleteImageRequest{Name: other + "/images/ami-0000000000000aaa1", RequestId: "95959595-9595-4595-8595-959595959595"})
+	wantCode(t, err, codes.NotFound)
+	if status.Convert(err).Message() != "image "+other+"/images/ami-0000000000000aaa1 not found" {
+		t.Fatalf("delete message %q", status.Convert(err).Message())
+	}
+	_, err = h.img.UpdateImage(ctx, &computev1.UpdateImageRequest{
+		RequestId:  "96969696-9696-4696-8696-969696969696",
+		UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"labels"}},
+		Image:      &computev1.Image{Name: other + "/images/ami-0000000000000aaa1", Labels: map[string]string{"k": "v"}},
+	})
+	wantCode(t, err, codes.NotFound)
+
+	_, err = h.img.GetImage(ctx, &computev1.GetImageRequest{Name: "projects/a222222222222/regions/vws-2/images/ami-0000000000000aaa1"})
+	wantCode(t, err, codes.NotFound)
+	if _, err := h.img.GetImage(ctx, &computev1.GetImageRequest{Name: owner + "/images/ami-0000000000000aaa1"}); err != nil {
+		t.Fatalf("owner: %v", err)
+	}
+}
+
+// TestPolledImageOperationNamesTheImageWhereGetImageFindsIt pins the review
+// of vws-compute#93: GetOperation has no request name, so the image name in
+// its response comes from the image's stored region, and GetImage on that
+// name succeeds.
+func TestPolledImageOperationNamesTheImageWhereGetImageFindsIt(t *testing.T) {
+	ctx := context.Background()
+	h := serve(t)
+	parent := "projects/a111111111111/regions/vws-1"
+	created, err := h.img.CreateImage(ctx, &computev1.CreateImageRequest{
+		Parent: parent, ImageId: "ami-0000000000000ddd4", RequestId: "97979797-9797-4797-8797-979797979797",
+		Image: &computev1.Image{Spec: &computev1.ImageSpec{
+			Source: &computev1.ImageSpec_Snapshot{Snapshot: parent + "/snapshots/s"},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.ops.WaitOperation(ctx, &longrunningpb.WaitOperationRequest{Name: created.GetName(), Timeout: durationpb.New(10 * time.Second)}); err != nil {
+		t.Fatal(err)
+	}
+	polled, err := h.ops.GetOperation(ctx, &longrunningpb.GetOperationRequest{Name: created.GetName()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var img computev1.Image
+	if err := anypb.UnmarshalTo(polled.GetResponse(), &img, proto.UnmarshalOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	want := parent + "/images/ami-0000000000000ddd4"
+	if img.GetName() != want {
+		t.Fatalf("polled image name %q, want %q", img.GetName(), want)
+	}
+	if _, err := h.img.GetImage(ctx, &computev1.GetImageRequest{Name: img.GetName()}); err != nil {
+		t.Fatalf("GetImage on the polled name: %v", err)
 	}
 }
