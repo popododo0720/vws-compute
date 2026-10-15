@@ -35,13 +35,16 @@ rules:
     verbs: ["get"]
   - apiGroups: [""]
     resources: ["secrets"]
-    # cloudinit.go: the cloud-init user data of a machine, Secret
-    # <instance>-cloudinit, referenced by cloudInitNoCloud.secretRef.
-    # create: ensureCloudInitSecret before the VM is created.
-    # get: ensureCloudInitSecret on a retried create, deleteCloudInitSecret
-    # to check the managed label.
-    # update: ensureCloudInitSecret when a retried create renders other data.
-    # delete: deleteCloudInitSecret in destroy, after the VM.
+    # cloudinit.go: two Secrets per machine. <instance>-cloudinit holds the
+    # cloud-init user data, referenced by cloudInitNoCloud.secretRef.
+    # <instance>-ssh-keys holds the key pair's public keys, referenced by
+    # accessCredentials (noCloud), so KubeVirt puts them in the NoCloud
+    # meta-data public-keys (#83).
+    # create: ensureSecret before the VM is created.
+    # get: ensureSecret on a retried create, deleteSecret to check the
+    # managed label.
+    # update: ensureSecret when a retried create renders other data.
+    # delete: deleteSecret in destroy, after the VM.
     verbs: ["get", "create", "update", "delete"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1

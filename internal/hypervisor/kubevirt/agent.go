@@ -183,9 +183,12 @@ func (a *Agent) destroy(ctx context.Context, name string) error {
 	if err := client.IgnoreNotFound(err); err != nil {
 		return fmt.Errorf("machine %s: delete VirtualMachine: %w", vm.GetName(), err)
 	}
-	// The user-data Secret goes after the VM, so a retry after a failure
-	// here deletes it then.
-	return a.deleteCloudInitSecret(ctx, name)
+	// The user-data and key Secrets go after the VM, so a retry after a
+	// failure here deletes them then.
+	if err := a.deleteCloudInitSecret(ctx, name); err != nil {
+		return err
+	}
+	return a.deleteSecret(ctx, name, sshKeysSecret(name))
 }
 
 func (a *Agent) create(ctx context.Context, spec hypervisor.MachineSpec) error {
@@ -242,6 +245,20 @@ func (a *Agent) create(ctx context.Context, spec hypervisor.MachineSpec) error {
 			"cloudInitNoCloud": map[string]any{"secretRef": map[string]any{"name": cloudInitSecret(spec.Name)}},
 		})
 	}
+	var access []any
+	if len(spec.AuthorizedKeys) > 0 {
+		// The keys also go in the NoCloud meta-data as public-keys (EC2
+		// delivers a key pair through instance meta-data). KubeVirt requires
+		// a cloudInitNoCloud volume for this; the keys-only user data above
+		// guarantees one.
+		if err := a.ensureSecret(ctx, spec.Name, sshKeysSecret(spec.Name), keysData(spec.AuthorizedKeys)); err != nil {
+			return err
+		}
+		access = []any{map[string]any{"sshPublicKey": map[string]any{
+			"source":            map[string]any{"secret": map[string]any{"secretName": sshKeysSecret(spec.Name)}},
+			"propagationMethod": map[string]any{"noCloud": map[string]any{}},
+		}}}
+	}
 	podMeta := map[string]any{"labels": map[string]any{LabelInstance: spec.Name}}
 	if spec.Subnet != "" {
 		// KubeVirt copies template annotations to the virt-launcher pod,
@@ -265,6 +282,9 @@ func (a *Agent) create(ctx context.Context, spec hypervisor.MachineSpec) error {
 			},
 		},
 	}}
+	if access != nil {
+		vm.Object["spec"].(map[string]any)["template"].(map[string]any)["spec"].(map[string]any)["accessCredentials"] = access //nolint:errcheck // built above as maps
+	}
 	if templates != nil {
 		vm.Object["spec"].(map[string]any)["dataVolumeTemplates"] = templates //nolint:errcheck // built above as a map
 	}

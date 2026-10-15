@@ -3,13 +3,10 @@ package kubevirt
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
-	"errors"
-	"io"
-	"mime"
-	"mime/multipart"
+	"fmt"
 	"net"
+	"sort"
 	"strings"
 	"testing"
 
@@ -34,76 +31,51 @@ const (
 	testScript = "#!/bin/sh\necho vws-user-data > /var/tmp/vws-user-data\n"
 )
 
-// parts splits rendered multipart user data into decoded parts.
-func parts(t *testing.T, rendered string) []struct{ typ, merge, body string } {
-	t.Helper()
-	head, body, ok := strings.Cut(rendered, "\r\n\r\n")
-	if !ok {
-		t.Fatalf("no header block in %q", rendered)
-	}
-	ct := strings.TrimPrefix(strings.Split(head, "\r\n")[0], "Content-Type: ")
-	media, params, err := mime.ParseMediaType(ct)
-	if err != nil || media != "multipart/mixed" {
-		t.Fatalf("content type %q: %v", ct, err)
-	}
-	r := multipart.NewReader(strings.NewReader(body), params["boundary"])
-	var out []struct{ typ, merge, body string }
-	for {
-		p, err := r.NextPart()
-		if errors.Is(err, io.EOF) {
-			return out
+func TestRenderUserData(t *testing.T) {
+	keyConfig := "#cloud-config\nssh_authorized_keys: [\"" + testKey + "\"]\n"
+	mimeUser := "Content-Type: multipart/mixed; boundary=x\n\n--x--\n"
+	for _, tc := range []struct {
+		name string
+		keys []string
+		user string
+		want string
+	}{
+		{"neither", nil, "", ""},
+		{"user data only", nil, testScript, testScript},
+		{"key only", []string{testKey}, "", keyConfig},
+		{"key and script: script unchanged", []string{testKey}, testScript, testScript},
+		{"key and cloud-config: unchanged", []string{testKey}, "#cloud-config\nruncmd: [true]\n", "#cloud-config\nruncmd: [true]\n"},
+		{"key and MIME user data: unchanged, no longer refused", []string{testKey}, mimeUser, mimeUser},
+	} {
+		got, err := renderUserData(tc.keys, tc.user)
+		if err != nil || got != tc.want {
+			t.Errorf("%s: renderUserData = %q, %v; want %q", tc.name, got, err, tc.want)
 		}
-		if err != nil {
-			t.Fatal(err)
-		}
-		raw, err := io.ReadAll(p)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if p.Header.Get("Content-Transfer-Encoding") == "base64" {
-			if raw, err = base64.StdEncoding.DecodeString(strings.ReplaceAll(string(raw), "\r\n", "")); err != nil {
-				t.Fatal(err)
-			}
-		}
-		typ, _, _ := mime.ParseMediaType(p.Header.Get("Content-Type")) //nolint:errcheck // checked by comparison
-		out = append(out, struct{ typ, merge, body string }{typ, p.Header.Get("Merge-Type"), string(raw)})
 	}
 }
 
-func TestRenderUserData(t *testing.T) {
-	if got, err := renderUserData(nil, ""); err != nil || got != "" {
-		t.Fatalf("nothing = %q, %v", got, err)
+func TestKeysData(t *testing.T) {
+	if keysData(nil) != nil {
+		t.Fatal("no keys must give no Secret data")
 	}
-	if got, err := renderUserData(nil, testScript); err != nil || got != testScript {
-		t.Fatalf("user data alone = %q, %v; want it unchanged", got, err)
+	keys := make([]string, 12)
+	for i := range keys {
+		keys[i] = fmt.Sprintf("ssh-ed25519 AAAA%02d", i)
 	}
-	got, err := renderUserData([]string{testKey}, "")
-	if err != nil || got != "#cloud-config\nssh_authorized_keys: [\""+testKey+"\"]\n" {
-		t.Fatalf("key alone = %q, %v", got, err)
+	data := keysData(keys)
+	names := make([]string, 0, len(data))
+	for k := range data {
+		names = append(names, k)
 	}
-
-	for _, user := range []string{testScript, "#cloud-config\nssh_authorized_keys: [\"ssh-rsa AAAA user\"]\n", "no prefix\r\n--vws-tricky\r\n"} {
-		got, err := renderUserData([]string{testKey}, user)
-		if err != nil {
-			t.Fatal(err)
+	sort.Strings(names) // KubeVirt numbers the keys in file-name order
+	// Entry "0" is the placeholder CirrOS skips; the keys follow from "1".
+	if len(names) != len(keys)+1 || names[0] != keysPlaceholderName || !strings.HasPrefix(string(data[names[0]]), "#") {
+		t.Fatalf("entries %v: want the comment placeholder first, then one per key", names)
+	}
+	for i, n := range names[1:] {
+		if string(data[n]) != keys[i] {
+			t.Fatalf("entry %d (%s) = %q, want %q: file-name order must keep the key order", i, n, data[n], keys[i])
 		}
-		again, _ := renderUserData([]string{testKey}, user) //nolint:errcheck // same input as above
-		if again != got {
-			t.Fatal("rendering is not stable")
-		}
-		ps := parts(t, got)
-		if len(ps) != 2 || ps[0].body != user || !strings.Contains(ps[1].body, testKey) || ps[1].typ != "text/cloud-config" || ps[1].merge != keyMergeType {
-			t.Fatalf("parts of %q = %+v", user, ps)
-		}
-		if want := userContentType(user); ps[0].typ != want {
-			t.Fatalf("user part type = %q, want %q", ps[0].typ, want)
-		}
-	}
-	if userContentType(testScript) != "text/x-shellscript" || userContentType("#cloud-config\n") != "text/cloud-config" {
-		t.Fatal("content types")
-	}
-	if _, err := renderUserData([]string{testKey}, "Content-Type: multipart/mixed; boundary=x\n\n--x--\n"); err == nil {
-		t.Fatal("MIME user data with a key was accepted")
 	}
 }
 
@@ -134,103 +106,167 @@ func strictVolumes(t *testing.T, vm *unstructured.Unstructured) []kubevirtv1.Vol
 	return out
 }
 
-// TestKeyAndUserDataReachCloudInit drives CreateInstance with a key pair and
-// user data through the gRPC API and the reconciler to this agent on
-// envtest. The VirtualMachine reads NoCloud user data from Secret
-// web-1-cloudinit, which holds the user's script unchanged plus a
-// cloud-config part with the key. Terminate deletes the Secret. On main the
-// user data never reached the guest: the VM inlined a cloud-config with only
-// the key.
+// strictAccessCredentials decodes the VM template's accessCredentials into
+// the KubeVirt v1.9.0 type, failing on unknown fields.
+func strictAccessCredentials(t *testing.T, vm *unstructured.Unstructured) []kubevirtv1.AccessCredential {
+	t.Helper()
+	raw, ok, err := unstructured.NestedSlice(vm.Object, "spec", "template", "spec", "accessCredentials")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		return nil
+	}
+	out := make([]kubevirtv1.AccessCredential, 0, len(raw))
+	for _, r := range raw {
+		b, err := json.Marshal(r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		dec := json.NewDecoder(bytes.NewReader(b))
+		dec.DisallowUnknownFields()
+		var ac kubevirtv1.AccessCredential
+		if err := dec.Decode(&ac); err != nil {
+			t.Fatalf("not a valid KubeVirt v1.9.0 AccessCredential: %v\n%s", err, b)
+		}
+		out = append(out, ac)
+	}
+	return out
+}
+
+// TestKeyAndUserDataReachCloudInit drives CreateInstance through the gRPC API
+// and the reconciler to this agent on envtest, for a key pair only, user
+// data only, and both. The user-data Secret holds the user's data unchanged
+// (or, for a key alone, a key cloud-config). With a key pair, the VM's
+// accessCredentials name Secret <id>-ssh-keys with noCloud propagation, so
+// KubeVirt puts the key in the NoCloud meta-data public-keys. Terminate
+// deletes both Secrets.
 func TestKeyAndUserDataReachCloudInit(t *testing.T) {
-	ctx := context.Background()
-	c, ns, _ := newClient(t)
-	claim(t, c, ns, "pvc-root-1", corev1.ReadWriteOnce)
-	repo := memstore.New()
-	rec := reconciler.New(repo, New(c, Config{Namespace: ns, ImageNamespace: ns}), reconciler.WithReports(repo))
-	srv := grpc.NewServer()
-	grpcapi.Register(srv, controller.New(repo), repo, grpcapi.WithVolumes(claimStorage{claim: "pvc-root-1"}))
-	lis, err := (&net.ListenConfig{}).Listen(ctx, "tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	go func() { _ = srv.Serve(lis) }()
-	t.Cleanup(srv.Stop)
-	cc, err := grpc.NewClient(lis.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = cc.Close() })
-
-	if _, err := computev1.NewKeyPairServiceClient(cc).CreateKeyPair(ctx, &computev1.CreateKeyPairRequest{
-		Parent: "projects/demo/regions/demo", KeyPairId: "deploy", RequestId: "c1c1c1c1-c1c1-41c1-81c1-c1c1c1c1c1c1",
-		KeyPair: &computev1.KeyPair{Spec: &computev1.KeyPairSpec{PublicKey: testKey}},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	ins := computev1.NewInstanceServiceClient(cc)
-	if _, err := ins.CreateInstance(ctx, &computev1.CreateInstanceRequest{
-		Parent: "projects/demo/zones/z1", InstanceId: "web-1", RequestId: "c2c2c2c2-c2c2-42c2-82c2-c2c2c2c2c2c2",
-		Instance: &computev1.Instance{Spec: &computev1.InstanceSpec{
-			MachineType: "vws.small", Power: computev1.InstancePower_INSTANCE_POWER_RUNNING,
-			KeyPair:  "projects/demo/regions/demo/keyPairs/deploy",
-			UserData: testScript,
-			Volumes:  []*computev1.VolumeAttachment{{Volume: "projects/demo/zones/z1/volumes/root-1", DeviceName: "vda", Boot: true}},
-		}},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if err := rec.Sweep(ctx); err != nil {
-		t.Fatal(err)
-	}
-
-	vm, err := get(t, c, "VirtualMachine", ns, "web-1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	// Decode the rendered volumes strictly into the KubeVirt v1.9.0 API
-	// types: a field KubeVirt does not know (such as the old
-	// cloudInitNoCloud.userDataSecretRef, which its webhook ignores and then
-	// rejects the VM for having no user data source) fails here.
-	vols := strictVolumes(t, vm)
-	var ref string
-	for _, v := range vols {
-		if v.Name != "cloudinitdisk" {
-			continue
-		}
-		if v.CloudInitNoCloud == nil || v.CloudInitNoCloud.UserDataSecretRef == nil {
-			t.Fatalf("cloudinitdisk has no cloudInitNoCloud.secretRef: %+v", v)
-		}
-		if v.CloudInitNoCloud.UserData != "" || v.CloudInitNoCloud.UserDataBase64 != "" {
-			t.Fatal("user data is inlined in the VirtualMachine")
-		}
-		ref = v.CloudInitNoCloud.UserDataSecretRef.Name
-	}
-	if ref != "web-1-cloudinit" {
-		t.Fatalf("cloudinitdisk secretRef = %q, want web-1-cloudinit (volumes %+v)", ref, vols)
-	}
-	var sec corev1.Secret
-	if err := c.Get(ctx, client.ObjectKey{Namespace: ns, Name: ref}, &sec); err != nil {
-		t.Fatal(err)
-	}
-	ps := parts(t, string(sec.Data[SecretKeyUserData]))
 	keyBlob := strings.Join(strings.Fields(testKey)[:2], " ") // the stored key drops the comment
-	if len(ps) != 2 || ps[0].body != testScript || ps[0].typ != "text/x-shellscript" || !strings.Contains(ps[1].body, keyBlob) {
-		t.Fatalf("cloud-init parts = %+v", ps)
-	}
-	if sec.Labels[LabelManaged] != "true" || sec.Labels[LabelInstance] != "web-1" {
-		t.Fatalf("secret labels = %v", sec.Labels)
-	}
+	for i, tc := range []struct {
+		name     string
+		key      bool
+		user     string
+		wantUser string
+	}{
+		{"key pair only", true, "", "#cloud-config\nssh_authorized_keys: [\"" + keyBlob + "\"]\n"},
+		{"user data only", false, testScript, testScript},
+		{"key pair and user data", true, testScript, testScript},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			c, ns, _ := newClient(t)
+			claim(t, c, ns, "pvc-root-1", corev1.ReadWriteOnce)
+			repo := memstore.New()
+			rec := reconciler.New(repo, New(c, Config{Namespace: ns, ImageNamespace: ns}), reconciler.WithReports(repo))
+			srv := grpc.NewServer()
+			grpcapi.Register(srv, controller.New(repo), repo, grpcapi.WithVolumes(claimStorage{claim: "pvc-root-1"}))
+			lis, err := (&net.ListenConfig{}).Listen(ctx, "tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			go func() { _ = srv.Serve(lis) }()
+			t.Cleanup(srv.Stop)
+			cc, err := grpc.NewClient(lis.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = cc.Close() })
 
-	if _, err := ins.DeleteInstance(ctx, &computev1.DeleteInstanceRequest{
-		Name: "projects/demo/zones/z1/instances/web-1", RequestId: "c3c3c3c3-c3c3-43c3-83c3-c3c3c3c3c3c3",
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if err := rec.Sweep(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if err := c.Get(ctx, client.ObjectKey{Namespace: ns, Name: ref}, &sec); !apierrors.IsNotFound(err) {
-		t.Fatalf("secret after terminate: %v, want not found", err)
+			spec := &computev1.InstanceSpec{
+				MachineType: "vws.small", Power: computev1.InstancePower_INSTANCE_POWER_RUNNING,
+				UserData: tc.user,
+				Volumes:  []*computev1.VolumeAttachment{{Volume: "projects/demo/zones/z1/volumes/root-1", DeviceName: "vda", Boot: true}},
+			}
+			if tc.key {
+				if _, err := computev1.NewKeyPairServiceClient(cc).CreateKeyPair(ctx, &computev1.CreateKeyPairRequest{
+					Parent: "projects/demo/regions/demo", KeyPairId: "deploy", RequestId: fmt.Sprintf("c1c1c1c1-c1c1-41c1-81c1-c1c1c1c1c1c%d", i),
+					KeyPair: &computev1.KeyPair{Spec: &computev1.KeyPairSpec{PublicKey: testKey}},
+				}); err != nil {
+					t.Fatal(err)
+				}
+				spec.KeyPair = "projects/demo/regions/demo/keyPairs/deploy"
+			}
+			ins := computev1.NewInstanceServiceClient(cc)
+			if _, err := ins.CreateInstance(ctx, &computev1.CreateInstanceRequest{
+				Parent: "projects/demo/zones/z1", InstanceId: "web-1", RequestId: fmt.Sprintf("c2c2c2c2-c2c2-42c2-82c2-c2c2c2c2c2c%d", i),
+				Instance: &computev1.Instance{Spec: spec},
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if err := rec.Sweep(ctx); err != nil {
+				t.Fatal(err)
+			}
+
+			vm, err := get(t, c, "VirtualMachine", ns, "web-1")
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Strict decoding into the KubeVirt v1.9.0 types: a field KubeVirt
+			// does not know (such as the old userDataSecretRef) fails here.
+			var ref string
+			for _, v := range strictVolumes(t, vm) {
+				if v.Name != "cloudinitdisk" {
+					continue
+				}
+				if v.CloudInitNoCloud == nil || v.CloudInitNoCloud.UserDataSecretRef == nil {
+					t.Fatalf("cloudinitdisk has no cloudInitNoCloud.secretRef: %+v", v)
+				}
+				if v.CloudInitNoCloud.UserData != "" || v.CloudInitNoCloud.UserDataBase64 != "" {
+					t.Fatal("user data is inlined in the VirtualMachine")
+				}
+				ref = v.CloudInitNoCloud.UserDataSecretRef.Name
+			}
+			if ref != "web-1-cloudinit" {
+				t.Fatalf("cloudinitdisk secretRef = %q, want web-1-cloudinit", ref)
+			}
+			var sec corev1.Secret
+			if err := c.Get(ctx, client.ObjectKey{Namespace: ns, Name: ref}, &sec); err != nil {
+				t.Fatal(err)
+			}
+			if got := string(sec.Data[SecretKeyUserData]); got != tc.wantUser {
+				t.Fatalf("user data = %q, want %q", got, tc.wantUser)
+			}
+			if sec.Labels[LabelManaged] != "true" || sec.Labels[LabelInstance] != "web-1" {
+				t.Fatalf("secret labels = %v", sec.Labels)
+			}
+
+			acs := strictAccessCredentials(t, vm)
+			var keys corev1.Secret
+			keysErr := c.Get(ctx, client.ObjectKey{Namespace: ns, Name: "web-1-ssh-keys"}, &keys)
+			if !tc.key {
+				if len(acs) != 0 || !apierrors.IsNotFound(keysErr) {
+					t.Fatalf("no key pair: accessCredentials = %+v, keys secret err = %v", acs, keysErr)
+				}
+			} else {
+				if len(acs) != 1 || acs[0].SSHPublicKey == nil || acs[0].SSHPublicKey.Source.Secret == nil ||
+					acs[0].SSHPublicKey.Source.Secret.SecretName != "web-1-ssh-keys" ||
+					acs[0].SSHPublicKey.PropagationMethod.NoCloud == nil ||
+					acs[0].SSHPublicKey.PropagationMethod.ConfigDrive != nil || acs[0].SSHPublicKey.PropagationMethod.QemuGuestAgent != nil {
+					t.Fatalf("accessCredentials = %+v, want one sshPublicKey from web-1-ssh-keys with noCloud propagation", acs)
+				}
+				if keysErr != nil {
+					t.Fatal(keysErr)
+				}
+				if len(keys.Data) != 2 || string(keys.Data[keysPlaceholderName]) != keysPlaceholderValue || string(keys.Data["key-000"]) != keyBlob || keys.Labels[LabelManaged] != "true" || keys.Labels[LabelInstance] != "web-1" {
+					t.Fatalf("keys secret = %v %v", keys.Labels, keys.Data)
+				}
+			}
+
+			if _, err := ins.DeleteInstance(ctx, &computev1.DeleteInstanceRequest{
+				Name: "projects/demo/zones/z1/instances/web-1", RequestId: fmt.Sprintf("c3c3c3c3-c3c3-43c3-83c3-c3c3c3c3c3c%d", i),
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if err := rec.Sweep(ctx); err != nil {
+				t.Fatal(err)
+			}
+			for _, n := range []string{ref, "web-1-ssh-keys"} {
+				if err := c.Get(ctx, client.ObjectKey{Namespace: ns, Name: n}, &sec); !apierrors.IsNotFound(err) {
+					t.Fatalf("secret %s after terminate: %v, want not found", n, err)
+				}
+			}
+		})
 	}
 }
 
@@ -255,6 +291,22 @@ func TestCloudInitSecretIsOursOnly(t *testing.T) {
 	var got corev1.Secret
 	if err := c.Get(ctx, client.ObjectKeyFromObject(foreign), &got); err != nil || string(got.Data[SecretKeyUserData]) != "theirs" {
 		t.Fatalf("foreign secret after delete = %v, %v", got.Data, err)
+	}
+	// The same holds for the keys Secret.
+	fk := &corev1.Secret{}
+	fk.Name, fk.Namespace = sshKeysSecret("web-9"), ns
+	fk.Data = map[string][]byte{"theirs": []byte("ssh-ed25519 AAAA theirs")}
+	if err := c.Create(ctx, fk); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.ensureSecret(ctx, "web-9", fk.Name, keysData([]string{testKey})); err == nil {
+		t.Fatal("overwrote a foreign keys secret")
+	}
+	if err := a.deleteSecret(ctx, "web-9", fk.Name); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Get(ctx, client.ObjectKeyFromObject(fk), &got); err != nil || len(got.Data) != 1 {
+		t.Fatalf("foreign keys secret after delete = %v, %v", got.Data, err)
 	}
 	// A retried create converges our own Secret to the new data.
 	if err := a.ensureCloudInitSecret(ctx, "web-8", "one"); err != nil {
