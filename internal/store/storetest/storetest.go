@@ -118,7 +118,8 @@ func runIntent(typ string) compute.Intent {
 	return ok(compute.NewRunInstance(imageID(1).String(), typ, ""))
 }
 
-func stopIntent(n int) compute.Intent  { return ok(compute.NewStopInstance(instanceID(n).String())) }
+func stopIntent(n int) compute.Intent { return ok(compute.NewStopInstance(instanceID(n).String())) }
+
 func startIntent(n int) compute.Intent { return ok(compute.NewStartInstance(instanceID(n).String())) }
 
 func (f fixture) commit(req string, in compute.Intent, spec compute.Spec, write bool, expect ...store.Version) (compute.Operation, error) {

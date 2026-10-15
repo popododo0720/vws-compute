@@ -146,7 +146,8 @@ func TestUnreportedDeleteStaysUntilTheControllerReports(t *testing.T) {
 	_, err = h.inst.ReportInstanceStatus(ctx, &computev1.ReportInstanceStatusRequest{
 		Name: name,
 		Status: &computev1.InstanceStatus{Observed: &commonv1.ObservedState{
-			State: commonv1.ReconciliationState_RECONCILIATION_STATE_DELETING, Generation: 2}},
+			State: commonv1.ReconciliationState_RECONCILIATION_STATE_DELETING, Generation: 2,
+		}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -171,7 +172,8 @@ func TestControllerStateSurvivesRestart(t *testing.T) {
 	if _, err := h.inst.ReportInstanceStatus(ctx, &computev1.ReportInstanceStatusRequest{
 		Name: name,
 		Status: &computev1.InstanceStatus{Observed: &commonv1.ObservedState{
-			State: commonv1.ReconciliationState_RECONCILIATION_STATE_READY, Generation: 1, Node: "host-a"}},
+			State: commonv1.ReconciliationState_RECONCILIATION_STATE_READY, Generation: 1, Node: "host-a",
+		}},
 	}); err != nil {
 		t.Fatal(err)
 	}

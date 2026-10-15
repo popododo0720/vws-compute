@@ -52,10 +52,16 @@ var packageRules = []struct {
 	why    string
 }{
 	{"internal/hypervisor", isModule, "the agent contract imports nothing from this module"},
-	{"internal/hypervisor/fakeagent", func(imp string) bool { return isModule(imp) && imp != module+"/internal/hypervisor" },
-		"the fake agent sees only the agent contract"},
-	{"internal/hypervisor/kubevirt", func(imp string) bool { return isModule(imp) && imp != module+"/internal/hypervisor" },
-		"the KubeVirt agent sees only the agent contract"},
+	{
+		"internal/hypervisor/fakeagent",
+		func(imp string) bool { return isModule(imp) && imp != module+"/internal/hypervisor" },
+		"the fake agent sees only the agent contract",
+	},
+	{
+		"internal/hypervisor/kubevirt",
+		func(imp string) bool { return isModule(imp) && imp != module+"/internal/hypervisor" },
+		"the KubeVirt agent sees only the agent contract",
+	},
 	{"internal/compute", func(imp string) bool {
 		return isModule(imp) || hasPrefix("google.golang.org/grpc", "google.golang.org/protobuf",
 			"google.golang.org/genproto", "database/sql", "modernc.org/sqlite")(imp)
@@ -70,8 +76,16 @@ var ownerRules = []struct {
 	why    string
 }{
 	{hasPrefix("database/sql", "modernc.org/sqlite"), nil, "no SQL: state lives in ConfigMaps"},
-	{hasPrefix("google.golang.org/protobuf", "google.golang.org/genproto", "github.com/popododo0720/vws-proto", "cloud.google.com/go/longrunning"),
-		[]string{"internal/grpcapi"}, "wire types stay in grpcapi"},
+	{
+		hasPrefix(
+			"google.golang.org/protobuf",
+			"google.golang.org/genproto",
+			"github.com/popododo0720/vws-proto",
+			"cloud.google.com/go/longrunning",
+		),
+		[]string{"internal/grpcapi"},
+		"wire types stay in grpcapi",
+	},
 	{hasPrefix("google.golang.org/grpc"), []string{"internal/grpcapi", "cmd/vws-compute"}, "gRPC stays at the edge"},
 	{hasPrefix("k8s.io", "sigs.k8s.io"), []string{"internal/hypervisor/kubevirt", "internal/store/kubestore"}, "Kubernetes client types stay in the KubeVirt agent and the ConfigMap store"},
 	{func(imp string) bool { return imp == "testing" }, testSupport, "production code does not import testing"},
