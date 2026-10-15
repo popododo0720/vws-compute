@@ -35,7 +35,7 @@ rules:
     verbs: ["get", "delete"]
   - apiGroups: ["cdi.kubevirt.io"]
     resources: ["datavolumes"]
-    verbs: ["delete"]
+    verbs: ["get", "delete"]
   - apiGroups: [""]
     resources: ["secrets"]
     # cloudinit.go: two Secrets per machine. <instance>-cloudinit holds the

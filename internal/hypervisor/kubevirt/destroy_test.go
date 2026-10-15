@@ -57,8 +57,8 @@ func TestVMRoleDeletesTheClonedRootDisk(t *testing.T) {
 			pvcVerbs = append(pvcVerbs, rule.Verbs...)
 		}
 	}
-	if !slices.Equal(dvVerbs, []string{"delete"}) {
-		t.Fatalf("datavolumes verbs = %v, want [delete]", dvVerbs)
+	if !slices.Equal(dvVerbs, []string{"get", "delete"}) {
+		t.Fatalf("datavolumes verbs = %v, want [get delete]", dvVerbs)
 	}
 	if !slices.Contains(pvcVerbs, "get") || !slices.Contains(pvcVerbs, "delete") {
 		t.Fatalf("persistentvolumeclaims verbs = %v, want get and delete", pvcVerbs)
@@ -70,18 +70,13 @@ func TestImageNotFoundPublishesReadyReasonAndDeletesRootDisk(t *testing.T) {
 	ctx := context.Background()
 	const inst = "i-0123456789abcdef0"
 	root := inst + "-root"
-	dv := &unstructured.Unstructured{Object: map[string]any{"spec": map[string]any{}}}
-	dv.SetGroupVersionKind(dvGVK)
-	dv.SetNamespace(ns)
-	dv.SetName(root)
-	if err := c.Create(ctx, dv); err != nil {
-		t.Fatal(err)
-	}
+	plantDV(t, c, ns, root, map[string]string{LabelManaged: "true", LabelInstance: inst})
 	claim(t, c, ns, root, corev1.ReadWriteOnce)
+	ownByDataVolume(t, c, ns, root)
 	claim(t, c, ns, "pvc-root", corev1.ReadWriteOnce)
 	// envtest stamps kubernetes.io/pvc-protection and does not run the
 	// controller that clears it, so Delete would otherwise leave the claim.
-	dropPVCProtection(t, c, ns, root)
+	dropPVCProtection(t, c, ns, "pvc-root")
 
 	a := New(c, Config{Namespace: ns, ImageNamespace: ns})
 	absent := hypervisor.MachineSpec{Name: inst, Power: hypervisor.PowerAbsent}
@@ -218,6 +213,29 @@ func plantDV(t *testing.T, c client.Client, ns, name string, labels map[string]s
 	dv.SetName(name)
 	dv.SetLabels(labels)
 	if err := c.Create(context.Background(), dv); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func ownByDataVolume(t *testing.T, c client.Client, ns, name string) {
+	t.Helper()
+	dv := &unstructured.Unstructured{}
+	dv.SetGroupVersionKind(dvGVK)
+	if err := c.Get(context.Background(), client.ObjectKey{Namespace: ns, Name: name}, dv); err != nil {
+		t.Fatal(err)
+	}
+	var pvc corev1.PersistentVolumeClaim
+	if err := c.Get(context.Background(), client.ObjectKey{Namespace: ns, Name: name}, &pvc); err != nil {
+		t.Fatal(err)
+	}
+	pvc.OwnerReferences = []metav1.OwnerReference{{
+		APIVersion: dvGVK.GroupVersion().String(),
+		Kind:       dvGVK.Kind,
+		Name:       name,
+		UID:        dv.GetUID(),
+	}}
+	pvc.Finalizers = nil
+	if err := c.Update(context.Background(), &pvc); err != nil {
 		t.Fatal(err)
 	}
 }
