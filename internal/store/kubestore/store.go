@@ -40,11 +40,21 @@ type Store struct {
 	// They do not protect the data, CAS does. They keep two racers from
 	// adopting the same orphaned index.
 	locks [64]sync.Mutex
+	// legacyImageScope is the scope of an image record written without one
+	// (before #92, or a seed image). Zero leaves such images in no project.
+	legacyImageScope compute.ImageScope
 }
 
 // New returns a store over namespace ns. It does not touch the cluster.
 // Call Repair once before serving.
 func New(c client.Client, ns string) *Store { return &Store{c: c, ns: ns} }
+
+// WithLegacyImageScope sets the scope read for image records that carry none.
+// The record is rewritten with it the next time its image changes.
+func (s *Store) WithLegacyImageScope(sc compute.ImageScope) *Store {
+	s.legacyImageScope = sc
+	return s
+}
 
 func (s *Store) Close() error { return nil }
 

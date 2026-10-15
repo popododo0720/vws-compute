@@ -127,7 +127,7 @@ func (e *entry) op(match func(compute.Operation) bool) (compute.Operation, bool)
 	return compute.Operation{}, false
 }
 
-func decode(ref compute.Ref, cm *corev1.ConfigMap) (*entry, error) {
+func decode(ref compute.Ref, cm *corev1.ConfigMap, legacy compute.ImageScope) (*entry, error) {
 	e := &entry{ref: ref, rv: cm.ResourceVersion, exists: true}
 	var rec recordJSON
 	if err := json.Unmarshal([]byte(cm.Data[recordKey]), &rec); err != nil {
@@ -144,7 +144,7 @@ func decode(ref compute.Ref, cm *corev1.ConfigMap) (*entry, error) {
 		if rec.Image == nil {
 			return nil, corrupt("image", ref.ID, errors.New("no image"))
 		}
-		e.img, err = imageFrom(rec.Image)
+		e.img, err = imageFrom(rec.Image, legacy)
 	case compute.KindKeyPair:
 		if rec.KeyPair == nil {
 			return nil, corrupt("key pair", ref.ID, errors.New("no key pair"))
@@ -204,7 +204,7 @@ func (s *Store) get(ctx context.Context, ref compute.Ref) (*entry, error) {
 	if err != nil {
 		return nil, fmt.Errorf("get %s: %w", objectName(ref), err)
 	}
-	return decode(ref, &cm)
+	return decode(ref, &cm, s.legacyImageScope)
 }
 
 // list reads every resource of one kind.
@@ -218,7 +218,7 @@ func (s *Store) list(ctx context.Context, kind compute.Kind) ([]*entry, error) {
 	for i := range cms.Items {
 		cm := &cms.Items[i]
 		id := cm.Name[len(prefix):]
-		e, err := decode(compute.Ref{Kind: kind, ID: id}, cm)
+		e, err := decode(compute.Ref{Kind: kind, ID: id}, cm, s.legacyImageScope)
 		if err != nil {
 			return nil, err
 		}

@@ -7,6 +7,9 @@ import (
 	"io"
 	"net"
 	"regexp"
+	"strings"
+
+	"github.com/popododo0720/vws-compute/internal/compute"
 )
 
 // dnsLabel is a Kubernetes namespace name (RFC 1123 label, at most 63).
@@ -48,6 +51,9 @@ type config struct {
 	hypervisor     string
 	vmNamespace    string
 	imageNamespace string
+	// legacyImageScope owns images stored without a project and region: those
+	// written before #92 and seed images.
+	legacyImageScope compute.ImageScope
 }
 
 func parseConfig(args []string, getenv func(string) string, errOut io.Writer) (config, error) {
@@ -69,11 +75,23 @@ func parseConfig(args []string, getenv func(string) string, errOut io.Writer) (c
 	fs.StringVar(&c.hypervisor, "hypervisor", env("VWS_HYPERVISOR", hypervisorFake), "fake or kubevirt (env VWS_HYPERVISOR)")
 	fs.StringVar(&c.vmNamespace, "vm-namespace", env("VWS_VM_NAMESPACE", "vws-vms"), "namespace of VirtualMachines, VirtualMachineInstances, and volume PVCs (env VWS_VM_NAMESPACE)")
 	fs.StringVar(&c.imageNamespace, "image-namespace", env("VWS_IMAGE_NAMESPACE", "vws-images"), "namespace of CDI DataVolumes and DataSources (env VWS_IMAGE_NAMESPACE)")
+	legacyScope := fs.String("legacy-image-scope", env("VWS_LEGACY_IMAGE_SCOPE", ""), "projects/{project}/regions/{region} that owns images stored without one (pre-#92 records, seed images); empty leaves them in no project, invisible to every caller (env VWS_LEGACY_IMAGE_SCOPE)")
 	if err := fs.Parse(args); err != nil {
 		return config{}, fmt.Errorf("flags: %w", err)
 	}
 	if fs.NArg() > 0 {
 		return config{}, fmt.Errorf("unexpected argument %q", fs.Arg(0))
+	}
+	if *legacyScope != "" {
+		parts := strings.Split(*legacyScope, "/")
+		if len(parts) != 4 || parts[0] != "projects" || parts[2] != "regions" {
+			return config{}, fmt.Errorf("-legacy-image-scope %q is not projects/*/regions/*", *legacyScope)
+		}
+		sc, err := compute.NewImageScope(parts[1], parts[3])
+		if err != nil {
+			return config{}, fmt.Errorf("-legacy-image-scope: %w", err)
+		}
+		c.legacyImageScope = sc
 	}
 	switch c.hypervisor {
 	case hypervisorFake:

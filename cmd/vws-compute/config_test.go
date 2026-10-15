@@ -104,3 +104,21 @@ func TestRecoveredTurnsAPanicIntoAnError(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestParseConfigLegacyImageScope(t *testing.T) {
+	c, err := parseConfig([]string{"-legacy-image-scope", "projects/a123456789012/regions/vws-1"}, envOf(nil), io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.legacyImageScope.Project() != "a123456789012" || c.legacyImageScope.Region() != "vws-1" {
+		t.Fatalf("scope = %+v", c.legacyImageScope)
+	}
+	if c, err = parseConfig(nil, envOf(nil), io.Discard); err != nil || !c.legacyImageScope.IsZero() {
+		t.Fatalf("default scope = %+v, %v", c.legacyImageScope, err)
+	}
+	for _, bad := range []string{"a123456789012", "projects/a/regions/", "projects/a/zones/b"} {
+		if _, err := parseConfig([]string{"-legacy-image-scope", bad}, envOf(nil), io.Discard); err == nil {
+			t.Fatalf("%q accepted", bad)
+		}
+	}
+}

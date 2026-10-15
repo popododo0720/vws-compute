@@ -52,7 +52,7 @@ type harness struct {
 
 func serve(t *testing.T) *harness {
 	t.Helper()
-	return serveRepo(t, memstore.New())
+	return serveRepo(t, memstore.New().WithLegacyImageScope(demoScope))
 }
 
 func serveRepo(t *testing.T, repo store.Repository, opts ...grpcapi.Option) *harness {
@@ -946,7 +946,7 @@ func TestUpdateResponsesKeepTheCallersLocation(t *testing.T) {
 func TestMetadataSurvivesRestart(t *testing.T) {
 	ctx := context.Background()
 	kc, ns := kubetest.Namespace(t)
-	h := serveRepo(t, kubetest.Open(t, kc, ns))
+	h := serveRepo(t, kubetest.Open(t, kc, ns).WithLegacyImageScope(demoScope))
 	line, _ := ed25519Line(t)
 	parent := "projects/a12345/regions/us-east1"
 	name := parent + "/keyPairs/console"
@@ -1005,5 +1005,50 @@ func TestMetadataSurvivesRestart(t *testing.T) {
 	if err != nil || img.GetLabels()["vws-fingerprint"] != "img" || img.GetSpec().GetDescription() != "kept\nacross restart" ||
 		img.GetStatus().GetObserved().GetState() != commonv1.ReconciliationState_RECONCILIATION_STATE_READY {
 		t.Fatalf("image after restart = desc %q labels %v state %s err %v", img.GetSpec().GetDescription(), img.GetLabels(), img.GetStatus().GetObserved().GetState(), err)
+	}
+}
+
+// demoScope is the scope a test harness gives images registered without one,
+// as -legacy-image-scope does in production.
+var demoScope, _ = compute.NewImageScope("demo", "demo")
+
+// TestImageOfAnotherProjectIsNotFound pins vws-compute#92: an image is read,
+// listed, and deleted only under the project and region that created it, and
+// another owner sees the same NotFound as for no image at all.
+func TestImageOfAnotherProjectIsNotFound(t *testing.T) {
+	ctx := context.Background()
+	h := serve(t)
+	owner := "projects/a111111111111/regions/vws-1"
+	created, err := h.img.CreateImage(ctx, &computev1.CreateImageRequest{
+		Parent: owner, ImageId: "ami-0000000000000aaa1", RequestId: "92929292-9292-4292-8292-929292929292",
+		Image: &computev1.Image{Spec: &computev1.ImageSpec{
+			Source: &computev1.ImageSpec_Snapshot{Snapshot: owner + "/snapshots/s"},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.ops.WaitOperation(ctx, &longrunningpb.WaitOperationRequest{Name: created.GetName(), Timeout: durationpb.New(10 * time.Second)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.img.GetImage(ctx, &computev1.GetImageRequest{Name: owner + "/images/ami-0000000000000aaa1"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, parent := range []string{"projects/a222222222222/regions/vws-1", "projects/a111111111111/regions/vws-2"} {
+		_, err := h.img.GetImage(ctx, &computev1.GetImageRequest{Name: parent + "/images/ami-0000000000000aaa1"})
+		wantCode(t, err, codes.NotFound)
+		_, missing := h.img.GetImage(ctx, &computev1.GetImageRequest{Name: parent + "/images/ami-0000000000000bbb2"})
+		if status.Convert(err).Message() != strings.ReplaceAll(status.Convert(missing).Message(), "bbb2", "aaa1") {
+			t.Fatalf("other owner %q, absent %q", err, missing)
+		}
+		_, err = h.img.DeleteImage(ctx, &computev1.DeleteImageRequest{Name: parent + "/images/ami-0000000000000aaa1", RequestId: "93939393-9393-4393-8393-93939393939" + parent[len(parent)-1:]})
+		wantCode(t, err, codes.NotFound)
+		listed, err := h.img.ListImages(ctx, &computev1.ListImagesRequest{Parent: parent})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(listed.GetImages()) != 0 {
+			t.Fatalf("%s lists %v", parent, listed.GetImages())
+		}
 	}
 }

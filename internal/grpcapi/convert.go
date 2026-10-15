@@ -366,6 +366,9 @@ func (s *server) operationResource(ctx context.Context, project, resourceName st
 			}
 			return "", nil, toStatus(err)
 		}
+		if img.Spec.Scope.Project() != project {
+			return name, nil, nil
+		}
 		return name, imagePB(img, name), nil
 	case compute.KindKeyPair:
 		id, err := compute.ParseKeyPairID(op.Target.ID)

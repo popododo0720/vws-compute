@@ -33,7 +33,7 @@ func (s *server) ListImages(ctx context.Context, r *computev1.ListImagesRequest)
 			return nil, toStatus(err)
 		}
 		for _, img := range page.Items {
-			if img.Lifecycle() == compute.ImageDeregistered {
+			if img.Lifecycle() == compute.ImageDeregistered || !inScope(img, project, region) {
 				continue
 			}
 			matched = append(matched, img)
@@ -94,7 +94,11 @@ func (s *server) CreateImage(ctx context.Context, r *computev1.CreateImageReques
 	if err != nil {
 		return nil, toStatus(err)
 	}
-	in, err := compute.NewCopyImage(id.String(), src, body.GetSpec().GetFamily(), body.GetSpec().GetDescription(), labels)
+	scope, err := compute.NewImageScope(project, region)
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	in, err := compute.NewCopyImage(id.String(), scope, src, body.GetSpec().GetFamily(), body.GetSpec().GetDescription(), labels)
 	rc, err := s.submit(ctx, r.GetRequestId(), in, err, nil)
 	if err != nil {
 		return nil, err
@@ -224,8 +228,17 @@ func (s *server) ReportImageStatus(ctx context.Context, r *computev1.ReportImage
 	return &computev1.ReportImageStatusResponse{Image: imagePB(img, name)}, nil
 }
 
+// inScope reports whether img belongs to project and region. An image of no
+// project (zero scope) belongs to none.
+func inScope(img compute.Image, project, region string) bool {
+	sc := img.Spec.Scope
+	return !sc.IsZero() && sc.Project() == project && sc.Region() == region
+}
+
+// liveImage reads the image the name addresses. An image of another project
+// or region answers exactly like a missing one (#92).
 func (s *server) liveImage(ctx context.Context, name string) (compute.Image, string, error) {
-	_, _, id, err := parseImageName(name)
+	project, region, id, err := parseImageName(name)
 	if err != nil {
 		return compute.Image{}, "", err
 	}
@@ -234,10 +247,13 @@ func (s *server) liveImage(ctx context.Context, name string) (compute.Image, str
 		return compute.Image{}, name, notFound("image " + name + " not found")
 	}
 	img, err := s.read.Image(ctx, iid)
+	if compute.CodeOf(err) == compute.CodeNotFound {
+		return compute.Image{}, name, notFound("image " + name + " not found")
+	}
 	if err != nil {
 		return compute.Image{}, name, toStatus(err)
 	}
-	if img.Lifecycle() == compute.ImageDeregistered {
+	if img.Lifecycle() == compute.ImageDeregistered || !inScope(img, project, region) {
 		return compute.Image{}, name, notFound("image " + name + " not found")
 	}
 	return img, name, nil

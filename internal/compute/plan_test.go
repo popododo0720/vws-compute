@@ -157,7 +157,7 @@ func TestPlanRejects(t *testing.T) {
 		}, compute.CodeAlreadyExists},
 		{"delete never-stored key", newView(), func() (compute.Intent, error) { return compute.NewDeleteKeyPair("ghost") }, compute.CodeNotFound},
 		{"copy taken image", newView().with(availableImage()), func() (compute.Intent, error) {
-			return compute.NewCopyImage(imageID, compute.FromSnapshot{Ref: ok(compute.ParseSnapshotRef("projects/demo/regions/demo/snapshots/snap"))}, "debian-13", "", compute.Labels{})
+			return compute.NewCopyImage(imageID, testImageScope, compute.FromSnapshot{Ref: ok(compute.ParseSnapshotRef("projects/demo/regions/demo/snapshots/snap"))}, "debian-13", "", compute.Labels{})
 		}, compute.CodeAlreadyExists},
 		{"file over deregistered image", newView().with(goneImage), func() (compute.Intent, error) {
 			return compute.NewRegisterFile(imageID, "/var/lib/vws/images/debian-13.qcow2", "debian-13")
@@ -183,7 +183,7 @@ func TestIntentConstructorsValidate(t *testing.T) {
 			return compute.NewRegisterFile("debian-12", "images/debian-12.qcow2", "debian-12")
 		},
 		"bad copy source": func() (compute.Intent, error) {
-			return compute.NewCopyImage("debian-12", nil, "", "", compute.Labels{})
+			return compute.NewCopyImage("debian-12", testImageScope, nil, "", "", compute.Labels{})
 		},
 		"bad instance id": func() (compute.Intent, error) { return compute.NewStopInstance("i-XYZ") },
 		"http image url": func() (compute.Intent, error) {
@@ -320,7 +320,7 @@ func bornState(t *testing.T, v *view, in compute.Intent, ch compute.Change) comp
 
 func TestPlanCopyAndFileImage(t *testing.T) {
 	vol := ok(compute.ParseVolumeRef("projects/demo/zones/demo/volumes/root"))
-	ch, err := plan(t, newView(), ok(compute.NewCopyImage("debian-12", compute.FromVolume{Ref: vol}, "debian-12", "a disk", compute.Labels{})), nil)
+	ch, err := plan(t, newView(), ok(compute.NewCopyImage("debian-12", testImageScope, compute.FromVolume{Ref: vol}, "debian-12", "a disk", compute.Labels{})), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -342,3 +342,5 @@ func TestPlanCopyAndFileImage(t *testing.T) {
 		t.Fatalf("file = %+v meta %+v", file.Spec, file.Meta)
 	}
 }
+
+var testImageScope, _ = compute.NewImageScope("demo", "demo")

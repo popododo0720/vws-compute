@@ -22,6 +22,7 @@ import (
 
 	"google.golang.org/grpc"
 
+	"github.com/popododo0720/vws-compute/internal/compute"
 	"github.com/popododo0720/vws-compute/internal/controller"
 	"github.com/popododo0720/vws-compute/internal/grpcapi"
 	"github.com/popododo0720/vws-compute/internal/hypervisor"
@@ -57,7 +58,7 @@ func run(ctx context.Context, cfg config) error {
 	if err != nil {
 		return err
 	}
-	repo, err := open(ctx, namespace, kubeconfig)
+	repo, err := open(ctx, namespace, kubeconfig, cfg.legacyImageScope)
 	if err != nil {
 		return err
 	}
@@ -218,11 +219,11 @@ func newAgent(cfg config) (hypervisor.Agent, error) {
 	return kubevirt.Open(cfg.kubeconfig, kubevirt.Config{Namespace: cfg.vmNamespace, ImageNamespace: cfg.imageNamespace})
 }
 
-func open(ctx context.Context, namespace, kubeconfig string) (store.Repository, error) {
+func open(ctx context.Context, namespace, kubeconfig string, legacyImageScope compute.ImageScope) (store.Repository, error) {
 	if namespace == "" {
-		return memstore.New(), nil
+		return memstore.New().WithLegacyImageScope(legacyImageScope), nil
 	}
-	repo, repaired, err := kubestore.Open(ctx, kubeconfig, namespace)
+	repo, repaired, err := kubestore.Open(ctx, kubeconfig, namespace, legacyImageScope)
 	if err != nil {
 		return nil, err
 	}

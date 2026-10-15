@@ -114,6 +114,8 @@ type instanceJSON struct {
 
 type imageJSON struct {
 	ID           string `json:"id"`
+	Project      string `json:"project,omitempty"`
+	Region       string `json:"region,omitempty"`
 	Generation   int64  `json:"generation"`
 	CreatedAt    int64  `json:"created_at"`
 	ChangedAt    int64  `json:"changed_at"`
@@ -339,7 +341,8 @@ func instanceFrom(j *instanceJSON) (compute.Instance, error) {
 func imageTo(in compute.Image) (*imageJSON, error) {
 	s, st := in.Spec, in.Status
 	j := &imageJSON{
-		ID: s.ID.String(), Generation: s.Generation, CreatedAt: nanos(s.CreatedAt), ChangedAt: nanos(s.ChangedAt),
+		ID: s.ID.String(), Project: s.Scope.Project(), Region: s.Scope.Region(),
+		Generation: s.Generation, CreatedAt: nanos(s.CreatedAt), ChangedAt: nanos(s.ChangedAt),
 		Name: s.Name.String(), Deregistered: s.Deregistered,
 		Observed: observedTo(st.Observed), Present: st.Present, SizeBytes: st.SizeBytes,
 		Retry: retryTo(st.Retry), UpdatedAt: nanos(st.UpdatedAt), Meta: metaTo(in.Meta),
@@ -382,8 +385,15 @@ func imageSourceFrom(kind, v string) (compute.ImageSource, error) {
 	return nil, fmt.Errorf("unknown image source kind %q", kind)
 }
 
-func imageFrom(j *imageJSON) (compute.Image, error) {
+// imageFrom decodes an image. A record without a project predates image
+// scopes (#92) and takes legacy, which may be zero.
+func imageFrom(j *imageJSON, legacy compute.ImageScope) (compute.Image, error) {
 	id, err1 := compute.ParseImageID(j.ID)
+	scope := legacy
+	var err6 error
+	if j.Project != "" || j.Region != "" {
+		scope, err6 = compute.NewImageScope(j.Project, j.Region)
+	}
 	var name compute.ImageName
 	var err2 error
 	if j.Name != "" {
@@ -392,12 +402,12 @@ func imageFrom(j *imageJSON) (compute.Image, error) {
 	obs, err3 := observedFrom(j.Observed)
 	src, err4 := imageSourceFrom(j.SourceKind, j.Source)
 	meta, err5 := metaFrom(j.Meta)
-	if err := errors.Join(err1, err2, err3, err4, err5); err != nil {
+	if err := errors.Join(err1, err2, err3, err4, err5, err6); err != nil {
 		return compute.Image{}, corrupt("image", j.ID, err)
 	}
 	return compute.Image{
 		Spec: compute.ImageSpec{
-			ID: id, Generation: j.Generation, CreatedAt: fromNanos(j.CreatedAt), ChangedAt: fromNanos(j.ChangedAt),
+			ID: id, Scope: scope, Generation: j.Generation, CreatedAt: fromNanos(j.CreatedAt), ChangedAt: fromNanos(j.ChangedAt),
 			Name: name, Source: src, Deregistered: j.Deregistered,
 		},
 		Status: compute.ImageStatus{

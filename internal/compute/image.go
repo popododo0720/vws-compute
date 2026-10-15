@@ -39,9 +39,28 @@ func (FromSnapshot) isImageSource() {}
 func (FromVolume) isCopySource()   {}
 func (FromSnapshot) isCopySource() {}
 
+// ImageScope is the project and region an image belongs to: the parent it
+// was created under. The zero scope belongs to no project; it is an image
+// written before scopes existed or registered by seed, and no caller sees it.
+type ImageScope struct{ project, region string }
+
+// NewImageScope validates both ids.
+func NewImageScope(project, region string) (ImageScope, error) {
+	if !validResourceID(project) || !validResourceID(region) {
+		return ImageScope{}, Errorf(CodeInvalid, "invalid image project or region")
+	}
+	return ImageScope{project: project, region: region}, nil
+}
+
+func (s ImageScope) Project() string { return s.project }
+func (s ImageScope) Region() string  { return s.region }
+func (s ImageScope) IsZero() bool    { return s.project == "" }
+
 // ImageSpec is the desired state of one image at one generation.
 type ImageSpec struct {
-	ID         ImageID
+	ID ImageID
+	// Scope is set once at creation and never changes.
+	Scope      ImageScope
 	Generation int64
 	CreatedAt  time.Time
 	ChangedAt  time.Time

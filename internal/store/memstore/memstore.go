@@ -31,6 +31,10 @@ type Store struct {
 	ops         map[compute.OperationID]compute.Operation
 	opByRequest map[compute.RequestID]compute.OperationID
 	pending     map[compute.Ref]map[compute.OperationID]struct{}
+
+	// legacyImageScope is stored for an image spec written without a scope
+	// (a seed image). Zero leaves it in no project.
+	legacyImageScope compute.ImageScope
 }
 
 type instanceRow struct {
@@ -60,6 +64,12 @@ func New() *Store {
 		opByRequest: map[compute.RequestID]compute.OperationID{},
 		pending:     map[compute.Ref]map[compute.OperationID]struct{}{},
 	}
+}
+
+// WithLegacyImageScope sets the scope stored for image specs that carry none.
+func (s *Store) WithLegacyImageScope(sc compute.ImageScope) *Store {
+	s.legacyImageScope = sc
+	return s
 }
 
 func (s *Store) Close() error { return nil }
@@ -266,6 +276,9 @@ func (s *Store) put(spec compute.Spec) error {
 			s.images[spec.ID.String()] = row
 		} else if spec.Generation > row.spec.Generation {
 			row.status.Retry = compute.Retry{}
+		}
+		if spec.Scope.IsZero() {
+			spec.Scope = s.legacyImageScope
 		}
 		row.spec = spec
 	case compute.KeyPairSpec:

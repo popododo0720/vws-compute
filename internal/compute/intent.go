@@ -53,6 +53,7 @@ type registerImage struct {
 
 type copyImage struct {
 	id          ImageID
+	scope       ImageScope
 	source      CopySource
 	family      ImageName
 	description Description
@@ -179,10 +180,13 @@ func NewRebootInstance(instanceID string) (Intent, error) {
 // NewCopyImage registers a copy of a volume or snapshot under id, the
 // caller's image id. family may be empty. Plan fails with CodeAlreadyExists
 // when any image, live or deregistered, already holds id.
-func NewCopyImage(id string, source CopySource, family, description string, labels Labels) (Intent, error) {
+func NewCopyImage(id string, scope ImageScope, source CopySource, family, description string, labels Labels) (Intent, error) {
 	img, err := ParseImageID(id)
 	if err != nil {
 		return nil, err
+	}
+	if scope.IsZero() {
+		return nil, Errorf(CodeInvalid, "image project and region are required")
 	}
 	if source == nil {
 		return nil, Errorf(CodeInvalid, "image source is required")
@@ -197,7 +201,7 @@ func NewCopyImage(id string, source CopySource, family, description string, labe
 	if err != nil {
 		return nil, err
 	}
-	return copyImage{id: img, source: source, family: name, description: desc, labels: labels}, nil
+	return copyImage{id: img, scope: scope, source: source, family: name, description: desc, labels: labels}, nil
 }
 
 // NewRegisterFile registers the disk image file at path under id. path is a
@@ -416,6 +420,8 @@ func (in registerImage) encode(e *encoder) {
 
 func (in copyImage) encode(e *encoder) {
 	e.field(in.id.s)
+	e.field(in.scope.project)
+	e.field(in.scope.region)
 	switch src := in.source.(type) {
 	case FromVolume:
 		e.field("volume")
