@@ -30,6 +30,8 @@ const (
 	// GiveUpAfter is how long after a spec generation was committed the
 	// reconciler keeps retrying transient failures before parking it.
 	GiveUpAfter = 15 * time.Minute
+	// MaxRestoreBackoff caps the wait between Restore attempts in Run.
+	MaxRestoreBackoff = 2 * time.Minute
 )
 
 type Reconciler struct {
@@ -112,12 +114,27 @@ func (r *Reconciler) Kick() {
 // that lost its memory (the in-memory fake, after a restart) catches up
 // to the repository before new work is accepted.
 func (r *Reconciler) Run(ctx context.Context) error {
-	if err := r.Restore(ctx); err != nil && ctx.Err() == nil {
-		r.log.WarnContext(ctx, "restore agent", slog.Any("err", err))
-	}
+	// Restore is retried until it succeeds. It is the only path that
+	// re-applies a converged image's DataSource authorization labels, so a
+	// failed attempt would otherwise leave a revoked image public (#93).
+	// Retrying beside the sweeps, with a capped backoff, keeps the API
+	// serving while the cluster is briefly unreachable; failing startup
+	// instead would crash-loop the whole service over one label patch.
+	restorePending, restoreAt, restoreDelay := true, time.Time{}, r.interval
 	tick := time.NewTicker(r.interval)
 	defer tick.Stop()
 	for {
+		if restorePending && !r.now().Before(restoreAt) {
+			err := r.Restore(ctx)
+			switch {
+			case err == nil:
+				restorePending = false
+			case ctx.Err() == nil:
+				r.log.WarnContext(ctx, "restore agent; retrying", slog.Any("err", err), slog.Duration("retry_in", restoreDelay))
+				restoreAt = r.now().Add(restoreDelay)
+				restoreDelay = min(2*restoreDelay, MaxRestoreBackoff)
+			}
+		}
 		err := r.Sweep(ctx)
 		switch {
 		case ctx.Err() != nil:
