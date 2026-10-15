@@ -69,7 +69,6 @@ const (
 	LaunchImageNotFound
 )
 
-// launchTokens is the only list of reason strings.
 var launchTokens = [...]string{
 	LaunchInternal:      "Internal",
 	LaunchImageNotFound: "ImageNotFound",
@@ -83,8 +82,7 @@ func (r LaunchReason) Token() string {
 	return launchTokens[LaunchInternal]
 }
 
-// ParseLaunchReason accepts a token from a proto condition or a stored byte.
-// Any other token is LaunchInternal.
+// ParseLaunchReason returns LaunchInternal for any token other than the known ones.
 func ParseLaunchReason(token string) LaunchReason {
 	for i, s := range launchTokens {
 		if s == token {

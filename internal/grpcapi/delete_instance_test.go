@@ -23,9 +23,6 @@ import (
 	"github.com/popododo0720/vws-compute/internal/store/memstore"
 )
 
-// TestSecondDeleteIsDoneAndAMissingInstanceIsNotFound deletes a ready
-// controller-driven instance, deletes it again under a new request id, and
-// refuses an id the store has never held.
 func TestSecondDeleteIsDoneAndAMissingInstanceIsNotFound(t *testing.T) {
 	ctx := context.Background()
 	const (

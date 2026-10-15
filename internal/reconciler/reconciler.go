@@ -546,33 +546,40 @@ func backoff(attempts int) time.Duration {
 // without resolved through WithClaims. A volume still provisioning is a
 // transient error, so the instance stays pending and is retried.
 func (r *Reconciler) machine(ctx context.Context, s compute.InstanceSpec) (hypervisor.MachineSpec, error) {
-	// Destroy names the machine. Resolving a failed boot volume here would
-	// park the delete.
 	if s.Power == compute.PowerTerminated {
 		return machineSpec(s), nil
 	}
-	if r.claims != nil {
-		vols := make([]compute.VolumeAttachment, len(s.Volumes))
-		copy(vols, s.Volumes)
-		for i, v := range vols {
-			if v.Claim != "" {
-				continue
-			}
-			claim, err := r.claims(ctx, v.Volume.String())
-			if err != nil {
-				if hypervisor.IsPermanent(err) {
-					return hypervisor.MachineSpec{}, err
-				}
-				return hypervisor.MachineSpec{}, fmt.Errorf("volume %s: %w", v.Volume, err)
-			}
-			if claim == "" {
-				return hypervisor.MachineSpec{}, fmt.Errorf("volume %s is still provisioning", v.Volume)
-			}
-			vols[i].Claim = claim
-		}
-		s.Volumes = vols
+	s, err := r.resolveClaims(ctx, s)
+	if err != nil {
+		return hypervisor.MachineSpec{}, err
 	}
 	return machineSpec(s), nil
+}
+
+func (r *Reconciler) resolveClaims(ctx context.Context, s compute.InstanceSpec) (compute.InstanceSpec, error) {
+	if r.claims == nil {
+		return s, nil
+	}
+	vols := make([]compute.VolumeAttachment, len(s.Volumes))
+	copy(vols, s.Volumes)
+	for i, v := range vols {
+		if v.Claim != "" {
+			continue
+		}
+		claim, err := r.claims(ctx, v.Volume.String())
+		if err != nil {
+			if hypervisor.IsPermanent(err) {
+				return compute.InstanceSpec{}, err
+			}
+			return compute.InstanceSpec{}, fmt.Errorf("volume %s: %w", v.Volume, err)
+		}
+		if claim == "" {
+			return compute.InstanceSpec{}, fmt.Errorf("volume %s is still provisioning", v.Volume)
+		}
+		vols[i].Claim = claim
+	}
+	s.Volumes = vols
+	return s, nil
 }
 
 func machineSpec(s compute.InstanceSpec) hypervisor.MachineSpec {

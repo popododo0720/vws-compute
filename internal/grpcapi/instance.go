@@ -342,10 +342,6 @@ func (s *server) DeleteInstance(ctx context.Context, r *computev1.DeleteInstance
 	if err != nil {
 		return nil, err
 	}
-	// A removed instance is still stored. Delete reads that row so a second
-	// delete can succeed. The same request replays, and a new one settles
-	// against the terminate generation. An id that was never stored is
-	// NotFound, and allow_missing covers only that.
 	if _, err = s.storedInstance(ctx, r.GetName()); err != nil {
 		if r.GetAllowMissing() && statusNotFound(err) {
 			return doneOperation(project, r.GetName(), commonv1.OperationVerb_OPERATION_VERB_DELETE, r.GetRequestId(), nil)
@@ -358,15 +354,19 @@ func (s *server) DeleteInstance(ctx context.Context, r *computev1.DeleteInstance
 		if err != nil {
 			return err
 		}
-		if cur.Spec.Power == compute.PowerTerminated {
-			return nil
-		}
-		return checkEtag(r.GetEtag(), etagOf(cur.Spec.Generation, cur.Meta.Revision))
+		return etagUnlessTerminated(r.GetEtag(), cur)
 	}))
 	if err != nil {
 		return nil, err
 	}
 	return s.operationPB(ctx, project, r.GetName(), rc.Operation)
+}
+
+func etagUnlessTerminated(got string, cur compute.Instance) error {
+	if cur.Spec.Power == compute.PowerTerminated {
+		return nil
+	}
+	return checkEtag(got, etagOf(cur.Spec.Generation, cur.Meta.Revision))
 }
 
 func (s *server) ReportInstanceStatus(ctx context.Context, r *computev1.ReportInstanceStatusRequest) (*computev1.ReportInstanceStatusResponse, error) {

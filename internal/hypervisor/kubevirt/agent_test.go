@@ -16,8 +16,6 @@ func spec(name string, p hypervisor.Power) hypervisor.MachineSpec {
 	return hypervisor.MachineSpec{Name: name, Image: "ami-0123456789abcdef0", VCPUs: 2, MemoryMiB: 2048, Power: p}
 }
 
-// standardImage is the DataSource spec() names. A launch refuses to clone
-// it when that object is missing.
 func standardImage(t *testing.T, c client.Client, ns string) {
 	t.Helper()
 	ds := &unstructured.Unstructured{Object: map[string]any{"spec": map[string]any{}}}

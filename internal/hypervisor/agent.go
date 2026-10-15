@@ -132,9 +132,7 @@ func IsPermanent(err error) bool {
 	return errors.As(err, &p)
 }
 
-// Cause is why an agent error cannot succeed on retry. It is not a domain
-// failure reason: this package cannot name that type, and the reconciler is
-// the only translator.
+// Cause is why an agent error cannot succeed on retry.
 type Cause uint8
 
 const (

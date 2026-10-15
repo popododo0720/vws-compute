@@ -27,9 +27,6 @@ func (m volMap) Volume(_ context.Context, name string) (VolumeInfo, error) {
 	return info, nil
 }
 
-// TestImageNotFoundPublishesReadyReasonAndDeletesRootDisk publishes one
-// READY/FALSE condition for a launch the agent refused, Internal after the
-// give-up deadline, and Internal for a permanent claim error with no cause.
 func TestImageNotFoundPublishesReadyReasonAndDeletesRootDisk(t *testing.T) {
 	ctx := context.Background()
 	repo := memstore.New()

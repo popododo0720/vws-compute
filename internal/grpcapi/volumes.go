@@ -35,8 +35,7 @@ type VolumeInfo struct {
 	// RECONCILIATION_STATE_ERROR, with the reason in Message.
 	State   commonv1.ReconciliationState
 	Message string
-	// Reason is the READY condition's reason token. Claims reads it for an
-	// ERROR volume and does not parse Message.
+	// Reason is the READY condition's reason token.
 	Reason string
 }
 

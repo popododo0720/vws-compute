@@ -19,8 +19,6 @@ import (
 	"github.com/popododo0720/vws-compute/internal/hypervisor"
 )
 
-// vmRole reads Role vws-compute-vms before any envtest skip, so a missing
-// verb fails even when kube-apiserver is absent.
 func vmRole(t *testing.T) rbacv1.Role {
 	t.Helper()
 	f, err := os.Open(filepath.Join("..", "..", "..", "deploy", "rbac", "kubevirt-role.yaml"))
@@ -44,7 +42,7 @@ func vmRole(t *testing.T) rbacv1.Role {
 	return rbacv1.Role{}
 }
 
-func TestImageNotFoundPublishesReadyReasonAndDeletesRootDisk(t *testing.T) {
+func TestVMRoleDeletesTheClonedRootDisk(t *testing.T) {
 	role := vmRole(t)
 	var dvVerbs, pvcVerbs []string
 	for _, rule := range role.Rules {
@@ -63,7 +61,9 @@ func TestImageNotFoundPublishesReadyReasonAndDeletesRootDisk(t *testing.T) {
 	if !slices.Contains(pvcVerbs, "get") || !slices.Contains(pvcVerbs, "delete") {
 		t.Fatalf("persistentvolumeclaims verbs = %v, want get and delete", pvcVerbs)
 	}
+}
 
+func TestImageNotFoundPublishesReadyReasonAndDeletesRootDisk(t *testing.T) {
 	c, ns, _ := newClient(t)
 	ctx := context.Background()
 	const inst = "i-0123456789abcdef0"

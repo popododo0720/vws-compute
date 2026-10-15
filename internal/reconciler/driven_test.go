@@ -98,9 +98,6 @@ func TestDrivenInstancesWaitWithoutReports(t *testing.T) {
 	})
 }
 
-// TestDeleteFromErrorSucceedsWhileBootVolumeFailed terminates an instance
-// whose boot volume has since failed in storage. The delete succeeds, the
-// machine is gone, and one later sweep deletes that volume once.
 func TestDeleteFromErrorSucceedsWhileBootVolumeFailed(t *testing.T) {
 	const dataVolume = "projects/p/zones/z/volumes/data"
 	eachStore(t, func(h *harness) {

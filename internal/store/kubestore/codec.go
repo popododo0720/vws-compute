@@ -17,9 +17,7 @@ import (
 type failureJSON struct {
 	Code    uint8  `json:"code"`
 	Message string `json:"message,omitempty"`
-	// Reason is absent on rows written before launch reasons existed, and
-	// that absence loads as 0, LaunchInternal.
-	Reason uint8 `json:"reason,omitempty"`
+	Reason  uint8  `json:"reason,omitempty"`
 }
 
 type observedJSON struct {
