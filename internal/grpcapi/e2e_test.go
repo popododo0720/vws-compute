@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"net"
+	"net/http"
 	"strings"
 	"sync"
 	"testing"
@@ -1193,9 +1194,10 @@ func TestPolledImageOperationNamesTheImageWhereGetImageFindsIt(t *testing.T) {
 }
 
 // TestCreateImageOfAnotherProjectMatchesAnAbsentID pins vws-compute#94.
-// CreateImage from project B, including validate_only, answers an id project A
-// already holds the same way it answers an id nobody holds. A repeated request
-// id returns the same operation. A new request id mints another image, and a
+// CreateImage from project B, including validate_only, answers the minted id
+// of an image project A owns the same way it answers an id nobody holds.
+// The gRPC code, HTTP status, and message match. A repeated request id
+// returns the same operation. A new request id mints another image, and a
 // deregistered image is not revived.
 func TestCreateImageOfAnotherProjectMatchesAnAbsentID(t *testing.T) {
 	t.Run("memstore", func(t *testing.T) {
@@ -1237,12 +1239,16 @@ func createImageOfAnotherProjectMatchesAnAbsentID(t *testing.T, h *harness) (ope
 		t.Fatalf("replay = %s %s, want %s %s",
 			replay.GetName(), operationResource(t, replay), created.GetName(), operationResource(t, created))
 	}
+	owned := operationResource(t, created)
+	ownedID := owned[strings.LastIndex(owned, "/")+1:]
 
-	foreign, errForeign := h.img.CreateImage(ctx, createImageReq(other, held, "b2b2b2b2-b2b2-4b2b-8b2b-b2b2b2b2b2b2"))
+	foreign, errForeign := h.img.CreateImage(ctx, createImageReq(other, ownedID, "b2b2b2b2-b2b2-4b2b-8b2b-b2b2b2b2b2b2"))
 	missing, errMissing := h.img.CreateImage(ctx, createImageReq(other, absent, "c3c3c3c3-c3c3-4c3c-8c3c-c3c3c3c3c3c3"))
-	matched := createImageOutcomesMatch(errForeign, errMissing, foreign, missing, held, absent)
+	matched := createImageOutcomesMatch(errForeign, errMissing, foreign, missing, ownedID, absent)
 	if !matched || errForeign != nil || errMissing != nil {
-		t.Fatalf("CreateImage foreign %v, absent %v", errForeign, errMissing)
+		t.Fatalf("CreateImage owned %s http %d %v, absent %s http %d %v",
+			status.Code(errForeign), grpcHTTPStatus(status.Code(errForeign)), errForeign,
+			status.Code(errMissing), grpcHTTPStatus(status.Code(errMissing)), errMissing)
 	}
 	foreignName := operationResource(t, foreign)
 	missingName := operationResource(t, missing)
@@ -1253,14 +1259,16 @@ func createImageOfAnotherProjectMatchesAnAbsentID(t *testing.T, h *harness) (ope
 	wantCode(t, err, codes.NotFound)
 
 	foreignOnly, errForeignOnly := h.img.CreateImage(ctx,
-		createImageValidateOnly(other, held, "d4d4d4d4-d4d4-4d4d-8d4d-d4d4d4d4d4d4"))
+		createImageValidateOnly(other, ownedID, "d4d4d4d4-d4d4-4d4d-8d4d-d4d4d4d4d4d4"))
 	missingOnly, errMissingOnly := h.img.CreateImage(ctx,
 		createImageValidateOnly(other, absent, "e5e5e5e5-e5e5-4e5e-8e5e-e5e5e5e5e5e5"))
-	onlyMatch := createImageOutcomesMatch(errForeignOnly, errMissingOnly, foreignOnly, missingOnly, held, absent)
+	onlyMatch := createImageOutcomesMatch(errForeignOnly, errMissingOnly, foreignOnly, missingOnly, ownedID, absent)
 	if !onlyMatch || errForeignOnly != nil || errMissingOnly != nil {
-		t.Fatalf("validate_only foreign %v, absent %v", errForeignOnly, errMissingOnly)
+		t.Fatalf("validate_only owned %s http %d %v, absent %s http %d %v",
+			status.Code(errForeignOnly), grpcHTTPStatus(status.Code(errForeignOnly)), errForeignOnly,
+			status.Code(errMissingOnly), grpcHTTPStatus(status.Code(errMissingOnly)), errMissingOnly)
 	}
-	if operationResource(t, foreignOnly) != other+"/images/"+held ||
+	if operationResource(t, foreignOnly) != other+"/images/"+ownedID ||
 		operationResource(t, missingOnly) != other+"/images/"+absent ||
 		!foreignOnly.GetDone() || !missingOnly.GetDone() {
 		t.Fatalf("validate_only names %s and %s", operationResource(t, foreignOnly), operationResource(t, missingOnly))
@@ -1275,17 +1283,16 @@ func createImageOfAnotherProjectMatchesAnAbsentID(t *testing.T, h *harness) (ope
 	_, err = h.img.CreateImage(ctx, badLive)
 	wantCode(t, err, codes.InvalidArgument)
 
-	stored := operationResource(t, created)
+	stored := owned
 	if !mintedImageName(owner, stored) {
 		t.Fatalf("owner image %s", stored)
 	}
 	_, err = h.img.GetImage(ctx, &computev1.GetImageRequest{Name: owner + "/images/" + held})
 	wantCode(t, err, codes.NotFound)
-	id := stored[strings.LastIndex(stored, "/")+1:]
-	_, err = h.img.GetImage(ctx, &computev1.GetImageRequest{Name: other + "/images/" + id})
+	_, err = h.img.GetImage(ctx, &computev1.GetImageRequest{Name: other + "/images/" + ownedID})
 	wantCode(t, err, codes.NotFound)
 	_, absentGet := h.img.GetImage(ctx, &computev1.GetImageRequest{Name: other + "/images/ami-0000000000000ccc3"})
-	wantAbsent := strings.ReplaceAll(status.Convert(absentGet).Message(), "ami-0000000000000ccc3", id)
+	wantAbsent := strings.ReplaceAll(status.Convert(absentGet).Message(), "ami-0000000000000ccc3", ownedID)
 	if status.Convert(err).Message() != wantAbsent {
 		t.Fatalf("other project %q, absent %q", err, absentGet)
 	}
@@ -1370,17 +1377,51 @@ func mustCreateImage(t *testing.T, h *harness, parent, id, requestID string) *lo
 }
 
 // createImageOutcomesMatch reports whether a CreateImage of an id another project
-// holds is indistinguishable from a CreateImage of an id nobody holds. Error text
-// may name the id, so the absent id is substituted before the compare.
+// holds is indistinguishable from a CreateImage of an id nobody holds. The gRPC
+// code, its HTTP status, and the message must match. The message may name the
+// id, so the owned id is substituted before the compare.
 func createImageOutcomesMatch(errA, errB error, opA, opB *longrunningpb.Operation, idA, idB string) bool {
-	if status.Code(errA) != status.Code(errB) {
+	codeA, codeB := status.Code(errA), status.Code(errB)
+	if codeA != codeB || grpcHTTPStatus(codeA) != grpcHTTPStatus(codeB) {
+		return false
+	}
+	msgA := strings.ReplaceAll(status.Convert(errA).Message(), idA, idB)
+	if msgA != status.Convert(errB).Message() {
 		return false
 	}
 	if errA != nil || errB != nil {
-		return strings.ReplaceAll(status.Convert(errA).Message(), idA, idB) == status.Convert(errB).Message()
+		return true
 	}
 	if opA == nil || opB == nil {
 		return false
 	}
 	return opA.GetError() == nil && opB.GetError() == nil
+}
+
+// grpcHTTPStatus is the HTTP status google.rpc.Code maps to. AWS CreateImage
+// reports a missing source and a source the caller cannot use as the same
+// client error, so the two CreateImage outcomes have to share this status too.
+func grpcHTTPStatus(code codes.Code) int {
+	switch code {
+	case codes.OK:
+		return http.StatusOK
+	case codes.InvalidArgument, codes.FailedPrecondition, codes.OutOfRange:
+		return http.StatusBadRequest
+	case codes.NotFound:
+		return http.StatusNotFound
+	case codes.AlreadyExists, codes.Aborted:
+		return http.StatusConflict
+	case codes.PermissionDenied:
+		return http.StatusForbidden
+	case codes.Unauthenticated:
+		return http.StatusUnauthorized
+	case codes.ResourceExhausted:
+		return http.StatusTooManyRequests
+	case codes.Unimplemented:
+		return http.StatusNotImplemented
+	case codes.Unavailable:
+		return http.StatusServiceUnavailable
+	default:
+		return http.StatusInternalServerError
+	}
 }
