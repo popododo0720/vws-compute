@@ -342,7 +342,11 @@ func (s *server) DeleteInstance(ctx context.Context, r *computev1.DeleteInstance
 	if err != nil {
 		return nil, err
 	}
-	if _, _, err = s.liveInstance(ctx, r.GetName()); err != nil {
+	// A removed instance is still stored. Delete reads that row so a second
+	// delete can succeed. The same request replays, and a new one settles
+	// against the terminate generation. An id that was never stored is
+	// NotFound, and allow_missing covers only that.
+	if _, err = s.storedInstance(ctx, r.GetName()); err != nil {
 		if r.GetAllowMissing() && statusNotFound(err) {
 			return doneOperation(project, r.GetName(), commonv1.OperationVerb_OPERATION_VERB_DELETE, r.GetRequestId(), nil)
 		}
@@ -350,9 +354,12 @@ func (s *server) DeleteInstance(ctx context.Context, r *computev1.DeleteInstance
 	}
 	in, err := compute.NewTerminateInstance(id)
 	rc, err := s.submit(ctx, r.GetRequestId(), in, err, check(func() error {
-		cur, _, err := s.liveInstance(ctx, r.GetName())
+		cur, err := s.storedInstance(ctx, r.GetName())
 		if err != nil {
 			return err
+		}
+		if cur.Spec.Power == compute.PowerTerminated {
+			return nil
 		}
 		return checkEtag(r.GetEtag(), etagOf(cur.Spec.Generation, cur.Meta.Revision))
 	}))
@@ -420,6 +427,12 @@ func parseInstanceReport(st *computev1.InstanceStatus) (compute.InstanceReport, 
 		rep.State = compute.ReportDeleting
 	case commonv1.ReconciliationState_RECONCILIATION_STATE_ERROR:
 		rep.State = compute.ReportError
+		for _, c := range obs.GetConditions() {
+			if c.GetType() == commonv1.ConditionType_CONDITION_TYPE_READY {
+				rep.Reason = compute.ParseLaunchReason(c.GetReason())
+				break
+			}
+		}
 	default:
 		return compute.InstanceReport{}, invalidSpec("status.observed.state is required")
 	}

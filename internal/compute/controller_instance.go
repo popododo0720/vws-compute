@@ -123,6 +123,9 @@ type InstanceReport struct {
 	// error as CodeFailedPrecondition, as it does for instances it converges
 	// without reports.
 	Code Code
+	// Reason is the launch-failure token parked with an ERROR report.
+	// Zero is LaunchInternal, including a report with no READY condition.
+	Reason LaunchReason
 }
 
 // ApplyReport returns the status that results from rep and whether it
@@ -160,7 +163,7 @@ func ApplyReport(inst Instance, rep InstanceReport, now time.Time) (InstanceStat
 		if code == 0 {
 			code = CodeInternal
 		}
-		next.Observed = Observed{Generation: rep.Generation, Failure: &Failure{Code: code, Message: rep.Message}}
+		next.Observed = Observed{Generation: rep.Generation, Failure: &Failure{Code: code, Message: rep.Message, Reason: rep.Reason}}
 	case rep.State == ReportReady && spec.Power != PowerTerminated,
 		rep.State == ReportDeleting && spec.Power == PowerTerminated:
 		next.Observed = Observed{Generation: rep.Generation}

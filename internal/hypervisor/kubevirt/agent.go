@@ -183,6 +183,12 @@ func (a *Agent) destroy(ctx context.Context, name string) error {
 	if err := client.IgnoreNotFound(err); err != nil {
 		return fmt.Errorf("machine %s: delete VirtualMachine: %w", vm.GetName(), err)
 	}
+	if err := a.deleteNamed(ctx, dvGVK, rootDiskName(name)); err != nil {
+		return err
+	}
+	if err := a.deleteNamed(ctx, pvcGVK, rootDiskName(name)); err != nil {
+		return err
+	}
 	// The user-data and key Secrets go after the VM, so a retry after a
 	// failure here deletes them then.
 	if err := a.deleteCloudInitSecret(ctx, name); err != nil {
@@ -207,7 +213,17 @@ func (a *Agent) create(ctx context.Context, spec hypervisor.MachineSpec) error {
 	if spec.Power == hypervisor.PowerOn {
 		run = runAlways
 	}
-	rootDisk := spec.Name + "-root"
+	if spec.Image != "" {
+		ds := a.object(dsGVK, spec.Image)
+		err := a.c.Get(ctx, client.ObjectKeyFromObject(ds), ds)
+		if apierrors.IsNotFound(err) {
+			return hypervisor.ImageNotFound(fmt.Errorf("machine %s: image %s not found", spec.Name, spec.Image))
+		}
+		if err != nil {
+			return fmt.Errorf("machine %s: get DataSource %s: %w", spec.Name, spec.Image, err)
+		}
+	}
+	rootDisk := rootDiskName(spec.Name)
 	disks := []any{map[string]any{"name": "rootdisk", "disk": map[string]any{"bus": "virtio"}}}
 	volumes := []any{map[string]any{"name": "rootdisk", "dataVolume": map[string]any{"name": rootDisk}}}
 	var templates []any
@@ -295,6 +311,19 @@ func (a *Agent) create(ctx context.Context, spec hypervisor.MachineSpec) error {
 	vm.SetAnnotations(map[string]string{AnnotationRebootEpoch: strconv.FormatUint(uint64(spec.RebootEpoch), 10)})
 	if err := a.c.Create(ctx, vm); err != nil {
 		return fmt.Errorf("machine %s: create VirtualMachine: %w", spec.Name, err)
+	}
+	return nil
+}
+
+func rootDiskName(instance string) string { return instance + "-root" }
+
+func (a *Agent) deleteNamed(ctx context.Context, gvk schema.GroupVersionKind, name string) error {
+	u := &unstructured.Unstructured{}
+	u.SetGroupVersionKind(gvk)
+	u.SetNamespace(a.cfg.Namespace)
+	u.SetName(name)
+	if err := client.IgnoreNotFound(a.c.Delete(ctx, u)); err != nil {
+		return fmt.Errorf("delete %s %s: %w", gvk.Kind, name, err)
 	}
 	return nil
 }

@@ -17,6 +17,9 @@ import (
 type failureJSON struct {
 	Code    uint8  `json:"code"`
 	Message string `json:"message,omitempty"`
+	// Reason is absent on rows written before launch reasons existed, and
+	// that absence loads as 0, LaunchInternal.
+	Reason uint8 `json:"reason,omitempty"`
 }
 
 type observedJSON struct {
@@ -179,7 +182,7 @@ func failureTo(f *compute.Failure) *failureJSON {
 	if f == nil {
 		return nil
 	}
-	return &failureJSON{Code: uint8(f.Code), Message: f.Message}
+	return &failureJSON{Code: uint8(f.Code), Message: f.Message, Reason: uint8(f.Reason)}
 }
 
 func failureFrom(f *failureJSON) (*compute.Failure, error) {
@@ -189,7 +192,10 @@ func failureFrom(f *failureJSON) (*compute.Failure, error) {
 	if err := inRange("failure code", int64(f.Code), int64(compute.CodeInvalid), int64(compute.CodeInternal)); err != nil {
 		return nil, err
 	}
-	return &compute.Failure{Code: compute.Code(f.Code), Message: f.Message}, nil
+	if err := inRange("failure reason", int64(f.Reason), 0, int64(compute.LaunchImageNotFound)); err != nil {
+		return nil, err
+	}
+	return &compute.Failure{Code: compute.Code(f.Code), Message: f.Message, Reason: compute.LaunchReason(f.Reason)}, nil
 }
 
 func observedTo(o compute.Observed) observedJSON {

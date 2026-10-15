@@ -220,6 +220,7 @@ func TestImageSources(t *testing.T) {
 	if exists(t, c, "DataVolume", ns, "ami-3") {
 		t.Fatal("a capture of a missing machine created a DataVolume")
 	}
+	standardImage(t, c, ns)
 	if err := a.ConvergeMachine(ctx, spec("i-0123456789abcdef0", hypervisor.PowerOn)); err != nil {
 		t.Fatal(err)
 	}

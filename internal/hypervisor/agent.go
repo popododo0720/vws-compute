@@ -132,6 +132,43 @@ func IsPermanent(err error) bool {
 	return errors.As(err, &p)
 }
 
+// Cause is why an agent error cannot succeed on retry. It is not a domain
+// failure reason: this package cannot name that type, and the reconciler is
+// the only translator.
+type Cause uint8
+
+const (
+	CauseNone Cause = iota
+	CauseImageNotFound
+)
+
+type causeError struct {
+	cause Cause
+	err   error
+}
+
+func (e *causeError) Error() string { return e.err.Error() }
+func (e *causeError) Unwrap() error { return e.err }
+
+// ImageNotFound marks err as a permanent failure because the image does not
+// exist. A nil err stays nil.
+func ImageNotFound(err error) error {
+	if err == nil {
+		return nil
+	}
+	return Permanent(&causeError{cause: CauseImageNotFound, err: err})
+}
+
+// CauseOf walks err's chain. Permanent and NotReady do not hide a cause
+// they wrap. An error with no cause is CauseNone.
+func CauseOf(err error) Cause {
+	var c *causeError
+	if errors.As(err, &c) {
+		return c.cause
+	}
+	return CauseNone
+}
+
 // NotReadyError marks a transient agent error that only says the machine is
 // still coming up: the spec is applied and nothing is wrong, the hypervisor
 // has not finished yet. Callers retry it like any transient error but need

@@ -30,6 +30,7 @@ func templateAnnotations(t *testing.T, vm *unstructured.Unstructured) map[string
 func TestSubnetSetsLogicalSwitch(t *testing.T) {
 	ctx := context.Background()
 	c, ns, _ := newClient(t)
+	standardImage(t, c, ns)
 	a := New(c, Config{Namespace: ns})
 
 	s := spec("i-0123456789abcdef0", hypervisor.PowerOn)
@@ -68,6 +69,7 @@ func TestSubnetSetsLogicalSwitch(t *testing.T) {
 func TestSubnetIsFixedAtCreation(t *testing.T) {
 	ctx := context.Background()
 	c, ns, w := newClient(t)
+	standardImage(t, c, ns)
 	a := New(c, Config{Namespace: ns})
 	s := spec("i-0123456789abcdef0", hypervisor.PowerOn)
 	s.Subnet = "subnet-a"

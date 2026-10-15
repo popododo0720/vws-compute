@@ -146,6 +146,16 @@ func instancePB(i compute.Instance, name string) *computev1.Instance {
 		}
 	}
 	status.Observed.State = state
+	if state == commonv1.ReconciliationState_RECONCILIATION_STATE_ERROR && i.Status.Observed.Failure != nil {
+		f := i.Status.Observed.Failure
+		status.Observed.Conditions = []*commonv1.Condition{{
+			Type:               commonv1.ConditionType_CONDITION_TYPE_READY,
+			State:              commonv1.ConditionState_CONDITION_STATE_FALSE,
+			Reason:             f.Reason.Token(),
+			Message:            f.Message,
+			ObservedGeneration: i.Status.Observed.Generation,
+		}}
+	}
 	out := &computev1.Instance{
 		Name:       name,
 		Uid:        i.Spec.ID.String(),

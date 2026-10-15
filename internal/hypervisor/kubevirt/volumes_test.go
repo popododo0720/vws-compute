@@ -65,6 +65,7 @@ func equal(a, b []string) bool {
 
 func TestVolumesAttachAndDetachOnARunningMachine(t *testing.T) {
 	c, ns, w := newClient(t)
+	standardImage(t, c, ns)
 	ctx := context.Background()
 	a := New(c, Config{Namespace: ns})
 	claim(t, c, ns, "data-1", corev1.ReadWriteOnce)
@@ -118,6 +119,7 @@ func TestVolumesAttachAndDetachOnARunningMachine(t *testing.T) {
 
 func TestAttachPatchesOnceAndKeepsCloudInit(t *testing.T) {
 	c, ns, w := newClient(t)
+	standardImage(t, c, ns)
 	ctx := context.Background()
 	a := New(c, Config{Namespace: ns})
 	claim(t, c, ns, "data-1", corev1.ReadWriteOnce)
@@ -158,6 +160,7 @@ func TestAttachPatchesOnceAndKeepsCloudInit(t *testing.T) {
 
 func TestSingleWriterClaimIsRefusedWhileAttachedElsewhere(t *testing.T) {
 	c, ns, _ := newClient(t)
+	standardImage(t, c, ns)
 	ctx := context.Background()
 	a := New(c, Config{Namespace: ns})
 	claim(t, c, ns, "data-1", corev1.ReadWriteOnce)
@@ -194,6 +197,7 @@ func TestSingleWriterClaimIsRefusedWhileAttachedElsewhere(t *testing.T) {
 
 func TestSharedClaimMayAttachToTwoMachines(t *testing.T) {
 	c, ns, _ := newClient(t)
+	standardImage(t, c, ns)
 	ctx := context.Background()
 	a := New(c, Config{Namespace: ns})
 	claim(t, c, ns, "shared", corev1.ReadWriteMany)
@@ -211,6 +215,7 @@ func TestSharedClaimMayAttachToTwoMachines(t *testing.T) {
 
 func TestMissingClaimIsTransientAndBadNamesPermanent(t *testing.T) {
 	c, ns, _ := newClient(t)
+	standardImage(t, c, ns)
 	ctx := context.Background()
 	a := New(c, Config{Namespace: ns})
 	s := spec("i-0123456789abcdef0", hypervisor.PowerOn)

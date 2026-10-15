@@ -13,6 +13,7 @@ import (
 	commonv1 "github.com/popododo0720/vws-proto/gen/go/vws/common/v1"
 	storagev1 "github.com/popododo0720/vws-proto/gen/go/vws/storage/v1"
 
+	"github.com/popododo0720/vws-compute/internal/compute"
 	"github.com/popododo0720/vws-compute/internal/hypervisor"
 )
 
@@ -34,6 +35,9 @@ type VolumeInfo struct {
 	// RECONCILIATION_STATE_ERROR, with the reason in Message.
 	State   commonv1.ReconciliationState
 	Message string
+	// Reason is the READY condition's reason token. Claims reads it for an
+	// ERROR volume and does not parse Message.
+	Reason string
 }
 
 // VolumeLookup reads volumes from the storage service. Any error other than
@@ -62,7 +66,17 @@ func (s storageVolumes) Volume(ctx context.Context, name string) (VolumeInfo, er
 		ClaimName: v.GetStatus().GetClaimName(),
 		State:     v.GetStatus().GetObserved().GetState(),
 		Message:   v.GetStatus().GetObserved().GetMessage(),
+		Reason:    readyReason(v.GetStatus().GetObserved().GetConditions()),
 	}, nil
+}
+
+func readyReason(conds []*commonv1.Condition) string {
+	for _, c := range conds {
+		if c.GetType() == commonv1.ConditionType_CONDITION_TYPE_READY {
+			return c.GetReason()
+		}
+	}
+	return ""
 }
 
 // DialStorage connects lazily to the storage service at addr and returns a
@@ -79,8 +93,9 @@ func DialStorage(addr string) (VolumeLookup, func() error, error) {
 // provisioning when its instance was accepted (see WithPendingClaims). It is
 // a reconciler.ClaimFunc. Still provisioning is "" and no error, so the
 // instance waits. A volume storage removed, is removing, or gave up on
-// (ERROR) will never get a claim, so that is hypervisor.Permanent and the
-// instance fails with the reason.
+// (ERROR) will never get a claim. An ERROR volume whose READY reason is
+// ImageNotFound fails as that cause; any other such volume is
+// hypervisor.Permanent. The volume message is not parsed.
 func Claims(l VolumeLookup) func(ctx context.Context, volume string) (string, error) {
 	return func(ctx context.Context, volume string) (string, error) {
 		info, err := l.Volume(ctx, volume)
@@ -92,7 +107,11 @@ func Claims(l VolumeLookup) func(ctx context.Context, volume string) (string, er
 		case info.Deleting:
 			return "", hypervisor.Permanent(fmt.Errorf("volume %s is being deleted", volume))
 		case info.State == commonv1.ReconciliationState_RECONCILIATION_STATE_ERROR:
-			return "", hypervisor.Permanent(fmt.Errorf("volume %s failed in storage: %s", volume, info.Message))
+			err := fmt.Errorf("volume %s failed in storage: %s", volume, info.Message)
+			if compute.ParseLaunchReason(info.Reason) == compute.LaunchImageNotFound {
+				return "", hypervisor.ImageNotFound(err)
+			}
+			return "", hypervisor.Permanent(err)
 		}
 		return info.ClaimName, nil
 	}
