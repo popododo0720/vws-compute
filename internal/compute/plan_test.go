@@ -197,6 +197,9 @@ func TestIntentConstructorsValidate(t *testing.T) {
 		"weak rsa import": func() (compute.Intent, error) {
 			return compute.NewImportKeyPair("weak", rsa1023Line, compute.Labels{})
 		},
+		"oversized rsa import": func() (compute.Intent, error) {
+			return compute.NewImportKeyPair("large", rsa4097Line, compute.Labels{})
+		},
 	}
 	for name, build := range cases {
 		if _, err := build(); compute.CodeOf(err) != compute.CodeInvalid {

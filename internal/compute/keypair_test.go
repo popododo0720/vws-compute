@@ -52,7 +52,7 @@ func TestParsePublicKeyRejects(t *testing.T) {
 	}
 }
 
-func TestParsePublicKeyRSABitRange(t *testing.T) {
+func TestParseImportPublicKeyRSABitRange(t *testing.T) {
 	for _, c := range []struct {
 		bits  int
 		line  string
@@ -64,17 +64,25 @@ func TestParsePublicKeyRSABitRange(t *testing.T) {
 		{4097, rsa4097Line, false},
 	} {
 		t.Run(fmt.Sprintf("rsa_%d", c.bits), func(t *testing.T) {
-			_, err := compute.ParsePublicKey(c.line)
+			_, err := compute.ParseImportPublicKey(c.line)
 			if c.valid {
 				if err != nil {
-					t.Fatalf("ParsePublicKey(%d-bit rsa): %v", c.bits, err)
+					t.Fatalf("ParseImportPublicKey(%d-bit rsa): %v", c.bits, err)
 				}
 				return
 			}
 			if compute.CodeOf(err) != compute.CodeInvalid {
-				t.Fatalf("ParsePublicKey(%d-bit rsa) err = %v, want CodeInvalid", c.bits, err)
+				t.Fatalf("ParseImportPublicKey(%d-bit rsa) err = %v, want CodeInvalid", c.bits, err)
 			}
 		})
+	}
+}
+
+func TestParsePublicKeyReadsKeysOutsideTheImportRange(t *testing.T) {
+	for _, line := range []string{rsa1023Line, rsa4097Line} {
+		if _, err := compute.ParsePublicKey(line); err != nil {
+			t.Fatalf("ParsePublicKey of a stored key: %v", err)
+		}
 	}
 }
 
