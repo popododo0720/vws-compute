@@ -21,10 +21,13 @@ const (
 	KeyRSA
 )
 
-const minRSABits = 2048
+const (
+	minRSABits = 1024
+	maxRSABits = 4096
+)
 
-// PublicKey is a parsed SSH public key: ssh-ed25519, or ssh-rsa of at least
-// 2048 bits. It is comparable, and two PublicKeys are equal iff their SSH
+// PublicKey is a parsed SSH public key: ssh-ed25519, or ssh-rsa of 1024 to
+// 4096 bits. It is comparable, and two PublicKeys are equal iff their SSH
 // wire encodings are equal.
 type PublicKey struct {
 	alg  KeyAlgorithm
@@ -51,8 +54,8 @@ func ParsePublicKey(line string) (PublicKey, error) {
 			return PublicKey{}, Errorf(CodeInvalid, "invalid public key: unreadable rsa key")
 		}
 		rk, ok := ck.CryptoPublicKey().(*rsa.PublicKey)
-		if !ok || rk.N.BitLen() < minRSABits {
-			return PublicKey{}, Errorf(CodeInvalid, "invalid public key: rsa keys need at least %d bits", minRSABits)
+		if !ok || rk.N.BitLen() < minRSABits || rk.N.BitLen() > maxRSABits {
+			return PublicKey{}, Errorf(CodeInvalid, "invalid public key: rsa keys need %d to %d bits", minRSABits, maxRSABits)
 		}
 		alg = KeyRSA
 	default:
