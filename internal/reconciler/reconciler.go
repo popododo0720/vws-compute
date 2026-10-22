@@ -601,7 +601,7 @@ func machineSpec(s compute.InstanceSpec) hypervisor.MachineSpec {
 			m.BootClaim = v.Claim
 		}
 		if !v.Boot {
-			m.Volumes = append(m.Volumes, hypervisor.Volume{Name: v.DeviceName, Claim: v.Claim})
+			m.Volumes = append(m.Volumes, hypervisor.Volume{Name: diskName(v.DeviceName), Claim: v.Claim})
 		}
 	}
 	// The first interface joins its subnet. The agent gets the subnet ID,
@@ -621,6 +621,11 @@ func machineSpec(s compute.InstanceSpec) hypervisor.MachineSpec {
 	}
 	return m
 }
+
+// diskName is the agent's disk name for a device name. EC2 clients name a
+// device by its path ("/dev/sdf", as console-api passes it on), and the
+// agent needs a DNS-1123 label, so the "/dev/" prefix is dropped: "sdf".
+func diskName(device string) string { return strings.TrimPrefix(device, "/dev/") }
 
 // subnetID is the ID at the end of a subnet resource name, or "" when name
 // has no subnets segment. The gRPC edge has already checked the shape.
