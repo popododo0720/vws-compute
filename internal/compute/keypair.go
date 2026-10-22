@@ -21,19 +21,35 @@ const (
 	KeyRSA
 )
 
-const minRSABits = 2048
+const (
+	minRSABits = 1024
+	maxRSABits = 4096
+)
 
-// PublicKey is a parsed SSH public key: ssh-ed25519, or ssh-rsa of at least
-// 2048 bits. It is comparable, and two PublicKeys are equal iff their SSH
-// wire encodings are equal.
+// PublicKey is a parsed SSH public key: ssh-ed25519, or ssh-rsa of any size.
+// It is comparable, and two PublicKeys are equal iff their SSH wire encodings
+// are equal.
 type PublicKey struct {
 	alg  KeyAlgorithm
 	wire string
 }
 
 // ParsePublicKey parses exactly one authorized_keys line without options.
-// It fails with CodeInvalid for anything else.
+// It fails with CodeInvalid for anything else. It accepts every RSA size,
+// because the store reads keys written before the import range existed.
+// ParseImportPublicKey enforces the range for a new key pair.
 func ParsePublicKey(line string) (PublicKey, error) {
+	return parsePublicKey(line, false)
+}
+
+// ParseImportPublicKey parses a key that ImportKeyPair will store. It also
+// requires an ssh-rsa key to be 1024 to 4096 bits. CreateKeyPair mints
+// ed25519, which needs no range.
+func ParseImportPublicKey(line string) (PublicKey, error) {
+	return parsePublicKey(line, true)
+}
+
+func parsePublicKey(line string, importRange bool) (PublicKey, error) {
 	pub, _, options, rest, err := ssh.ParseAuthorizedKey([]byte(line))
 	if err != nil {
 		return PublicKey{}, Errorf(CodeInvalid, "invalid public key: %v", err)
@@ -51,8 +67,11 @@ func ParsePublicKey(line string) (PublicKey, error) {
 			return PublicKey{}, Errorf(CodeInvalid, "invalid public key: unreadable rsa key")
 		}
 		rk, ok := ck.CryptoPublicKey().(*rsa.PublicKey)
-		if !ok || rk.N.BitLen() < minRSABits {
-			return PublicKey{}, Errorf(CodeInvalid, "invalid public key: rsa keys need at least %d bits", minRSABits)
+		if !ok {
+			return PublicKey{}, Errorf(CodeInvalid, "invalid public key: unreadable rsa key")
+		}
+		if importRange && (rk.N.BitLen() < minRSABits || rk.N.BitLen() > maxRSABits) {
+			return PublicKey{}, Errorf(CodeInvalid, "invalid public key: rsa keys need %d to %d bits", minRSABits, maxRSABits)
 		}
 		alg = KeyRSA
 	default:

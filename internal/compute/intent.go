@@ -277,7 +277,7 @@ func NewImportKeyPair(name, publicKey string, labels Labels) (Intent, error) {
 	if err != nil {
 		return nil, err
 	}
-	k, err := ParsePublicKey(publicKey)
+	k, err := ParseImportPublicKey(publicKey)
 	if err != nil {
 		return nil, err
 	}

@@ -216,7 +216,7 @@ func (s *server) importKeyPair(ctx context.Context, project, name string, kp *co
 	if err != nil {
 		return nil, toStatus(err)
 	}
-	if _, err := compute.ParsePublicKey(kp.GetSpec().GetPublicKey()); err != nil {
+	if _, err := compute.ParseImportPublicKey(kp.GetSpec().GetPublicKey()); err != nil {
 		return nil, toStatus(err)
 	}
 	if validateOnly {
