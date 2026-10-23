@@ -216,7 +216,12 @@ func newAgent(cfg config) (hypervisor.Agent, error) {
 	if cfg.hypervisor != hypervisorKubeVirt {
 		return fakeagent.New(), nil
 	}
-	return kubevirt.Open(cfg.kubeconfig, kubevirt.Config{Namespace: cfg.vmNamespace, ImageNamespace: cfg.imageNamespace})
+	return kubevirt.Open(cfg.kubeconfig, kubevirt.Config{
+		Namespace:         cfg.vmNamespace,
+		ImageNamespace:    cfg.imageNamespace,
+		ImageStorageClass: cfg.imageStorageClass,
+		ImageAccessMode:   cfg.imageAccessMode,
+	})
 }
 
 func open(ctx context.Context, namespace, kubeconfig string, legacyImageScope compute.ImageScope) (store.Repository, error) {

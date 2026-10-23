@@ -102,6 +102,73 @@ func TestImageIsCreatedOnceAndSizedByTheClaim(t *testing.T) {
 	}
 }
 
+// dataVolumeStorage returns the target claim spec of an image DataVolume.
+func dataVolumeStorage(t *testing.T, c client.Client, ns, name string) map[string]any {
+	t.Helper()
+	dv := &unstructured.Unstructured{}
+	dv.SetGroupVersionKind(dvGVK)
+	if err := c.Get(context.Background(), client.ObjectKey{Namespace: ns, Name: name}, dv); err != nil {
+		t.Fatal(err)
+	}
+	storage, _, err := unstructured.NestedMap(dv.Object, "spec", "storage")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return storage
+}
+
+// TestImageDataVolumeUsesTheDefaultStorageClass fails on the release before
+// #97: CDI picked the cluster default class, which rejected an image
+// DataVolume for naming no access mode.
+func TestImageDataVolumeUsesTheDefaultStorageClass(t *testing.T) {
+	c, ns, _ := newClient(t)
+	if _, err := imageAgent(c, ns).ConvergeImage(context.Background(), urlImage()); err == nil {
+		t.Fatal("want an error while CDI imports")
+	}
+	storage := dataVolumeStorage(t, c, ns, imageID)
+	if got, _, _ := unstructured.NestedString(storage, "storageClassName"); got != "ceph-block" {
+		t.Fatalf("storageClassName %q, want ceph-block", got)
+	}
+	modes, _, _ := unstructured.NestedStringSlice(storage, "accessModes")
+	if len(modes) != 1 || modes[0] != "ReadWriteOnce" {
+		t.Fatalf("accessModes %v, want [ReadWriteOnce]", modes)
+	}
+}
+
+func TestImageDataVolumeTakesItsConfiguredStorage(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		source hypervisor.ImageSpec
+		want   string
+	}{
+		{"import", urlImage(), "10Gi"},
+		{"clone", hypervisor.ImageSpec{Name: imageID, Present: true, SourceVolume: "volumes/vol-1"}, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c, ns, _ := newClient(t)
+			a := New(c, Config{
+				Namespace: ns, ImportSize: "10Gi",
+				ImageStorageClass: "fast.block", ImageAccessMode: "ReadWriteMany",
+			})
+			if _, err := a.ConvergeImage(context.Background(), tc.source); err == nil {
+				t.Fatal("want an error while CDI works")
+			}
+			storage := dataVolumeStorage(t, c, ns, imageID)
+			if got, _, _ := unstructured.NestedString(storage, "storageClassName"); got != "fast.block" {
+				t.Fatalf("storageClassName %q, want fast.block", got)
+			}
+			modes, _, _ := unstructured.NestedStringSlice(storage, "accessModes")
+			if len(modes) != 1 || modes[0] != "ReadWriteMany" {
+				t.Fatalf("accessModes %v, want [ReadWriteMany]", modes)
+			}
+			size, _, _ := unstructured.NestedString(storage, "resources", "requests", "storage")
+			if size != tc.want {
+				t.Fatalf("requested size %q, want %q", size, tc.want)
+			}
+		})
+	}
+}
+
 func TestImageSizeNeedsASucceededDataVolume(t *testing.T) {
 	c, ns, _ := newClient(t)
 	ctx := context.Background()

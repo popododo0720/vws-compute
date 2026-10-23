@@ -10,10 +10,33 @@ import (
 	"strings"
 
 	"github.com/popododo0720/vws-compute/internal/compute"
+	"github.com/popododo0720/vws-compute/internal/hypervisor/kubevirt"
 )
 
 // dnsLabel is a Kubernetes namespace name (RFC 1123 label, at most 63).
 var dnsLabel = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$`)
+
+// imageAccessModes are the values a DataVolume's accessModes accepts.
+var imageAccessModes = map[string]bool{
+	"ReadWriteOnce":    true,
+	"ReadOnlyMany":     true,
+	"ReadWriteMany":    true,
+	"ReadWriteOncePod": true,
+}
+
+// validStorageClass reports whether name is a Kubernetes DNS subdomain, the
+// shape a StorageClass name has.
+func validStorageClass(name string) bool {
+	if len(name) == 0 || len(name) > 253 {
+		return false
+	}
+	for _, label := range strings.Split(name, ".") {
+		if !dnsLabel.MatchString(label) {
+			return false
+		}
+	}
+	return true
+}
 
 // validate rejects malformed values at the boundary, before they reach a
 // listener or a Kubernetes request.
@@ -30,6 +53,12 @@ func (c config) validate() error {
 		if ns.v != "" && !dnsLabel.MatchString(ns.v) {
 			return fmt.Errorf("%s %q is not a valid namespace name", ns.flag, ns.v)
 		}
+	}
+	if !validStorageClass(c.imageStorageClass) {
+		return fmt.Errorf("-image-storage-class %q is not a valid StorageClass name", c.imageStorageClass)
+	}
+	if !imageAccessModes[c.imageAccessMode] {
+		return fmt.Errorf("-image-access-mode %q is not a known access mode", c.imageAccessMode)
 	}
 	return nil
 }
@@ -51,6 +80,10 @@ type config struct {
 	hypervisor     string
 	vmNamespace    string
 	imageNamespace string
+	// imageStorageClass and imageAccessMode select the target claim of image
+	// DataVolumes.
+	imageStorageClass string
+	imageAccessMode   string
 	// legacyImageScope owns images stored without a project and region: those
 	// written before #92 and seed images.
 	legacyImageScope compute.ImageScope
@@ -77,6 +110,13 @@ func parseConfig(args []string, getenv func(string) string, errOut io.Writer) (c
 	fs.StringVar(&c.hypervisor, "hypervisor", env("VWS_HYPERVISOR", hypervisorFake), "fake or kubevirt (env VWS_HYPERVISOR)")
 	fs.StringVar(&c.vmNamespace, "vm-namespace", env("VWS_VM_NAMESPACE", "vws-vms"), "namespace of VirtualMachines, VirtualMachineInstances, and volume PVCs (env VWS_VM_NAMESPACE)")
 	fs.StringVar(&c.imageNamespace, "image-namespace", env("VWS_IMAGE_NAMESPACE", "vws-images"), "namespace of CDI DataVolumes and DataSources (env VWS_IMAGE_NAMESPACE)")
+	fs.StringVar(&c.imageStorageClass, "image-storage-class",
+		env("VWS_IMAGE_STORAGE_CLASS", kubevirt.DefaultImageStorageClass),
+		"StorageClass of image DataVolumes (env VWS_IMAGE_STORAGE_CLASS)")
+	fs.StringVar(&c.imageAccessMode, "image-access-mode",
+		env("VWS_IMAGE_ACCESS_MODE", kubevirt.DefaultImageAccessMode),
+		"access mode of image DataVolumes (ReadWriteOnce, ReadOnlyMany, ReadWriteMany, "+
+			"ReadWriteOncePod), env VWS_IMAGE_ACCESS_MODE")
 	legacyScope := fs.String("legacy-image-scope", env("VWS_LEGACY_IMAGE_SCOPE", ""), "projects/{project}/regions/{region} that owns images stored without one (pre-#92 records, seed images); empty leaves them in no project, invisible to every caller (env VWS_LEGACY_IMAGE_SCOPE)")
 	publicIDs := fs.String("public-images", env("VWS_PUBLIC_IMAGES", ""), "comma-separated image ids readable by every project in the image's region, such as seed images; changing or deleting them stays with the owner (env VWS_PUBLIC_IMAGES)")
 	if err := fs.Parse(args); err != nil {

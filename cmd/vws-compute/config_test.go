@@ -16,11 +16,15 @@ func TestParseConfigDefaults(t *testing.T) {
 	if c.hypervisor != "fake" || c.vmNamespace != "vws-vms" || c.imageNamespace != "vws-images" || c.namespace != "" {
 		t.Fatalf("defaults = %+v", c)
 	}
+	if c.imageStorageClass != "ceph-block" || c.imageAccessMode != "ReadWriteOnce" {
+		t.Fatalf("image storage defaults = %q, %q", c.imageStorageClass, c.imageAccessMode)
+	}
 }
 
 func TestParseConfigEnvAndFlagPrecedence(t *testing.T) {
 	env := envOf(map[string]string{
 		"VWS_HYPERVISOR": "kubevirt", "VWS_STORE_NAMESPACE": "store", "VWS_VM_NAMESPACE": "vms-env", "VWS_IMAGE_NAMESPACE": "img-env",
+		"VWS_IMAGE_STORAGE_CLASS": "fast.block", "VWS_IMAGE_ACCESS_MODE": "ReadWriteMany",
 	})
 	c, err := parseConfig(nil, env, io.Discard)
 	if err != nil {
@@ -29,12 +33,21 @@ func TestParseConfigEnvAndFlagPrecedence(t *testing.T) {
 	if c.hypervisor != "kubevirt" || c.namespace != "store" || c.vmNamespace != "vms-env" || c.imageNamespace != "img-env" {
 		t.Fatalf("env = %+v", c)
 	}
-	c, err = parseConfig([]string{"-vm-namespace", "vms-flag", "-hypervisor", "fake"}, env, io.Discard)
+	if c.imageStorageClass != "fast.block" || c.imageAccessMode != "ReadWriteMany" {
+		t.Fatalf("image storage env = %q, %q", c.imageStorageClass, c.imageAccessMode)
+	}
+	c, err = parseConfig([]string{
+		"-vm-namespace", "vms-flag", "-hypervisor", "fake",
+		"-image-storage-class", "slow", "-image-access-mode", "ReadOnlyMany",
+	}, env, io.Discard)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if c.vmNamespace != "vms-flag" || c.hypervisor != "fake" || c.imageNamespace != "img-env" {
 		t.Fatalf("flag did not win: %+v", c)
+	}
+	if c.imageStorageClass != "slow" || c.imageAccessMode != "ReadOnlyMany" {
+		t.Fatalf("image storage flag did not win: %q, %q", c.imageStorageClass, c.imageAccessMode)
 	}
 }
 
@@ -85,6 +98,12 @@ func TestParseConfigRejectsMalformedValues(t *testing.T) {
 		"namespace too long":    {args: []string{"-namespace", strings.Repeat("a", 64)}},
 		"namespace NUL":         {args: []string{"-namespace", "ns\x00x"}},
 		"vm namespace from env": {args: []string{"-hypervisor", "kubevirt", "-namespace", "s"}, env: map[string]string{"VWS_VM_NAMESPACE": "vms/../x"}},
+		"storage class upper":   {args: []string{"-image-storage-class", "Ceph-Block"}},
+		"storage class empty":   {args: []string{"-image-storage-class", ""}},
+		"storage class dot":     {args: []string{"-image-storage-class", "ceph..block"}},
+		"storage class long":    {args: []string{"-image-storage-class", strings.Repeat("a", 254)}},
+		"access mode unknown":   {args: []string{"-image-access-mode", "ReadWrite"}},
+		"access mode empty":     {args: []string{"-image-access-mode", ""}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			getenv := func(k string) string { return tc.env[k] }
