@@ -55,7 +55,7 @@ Rules for anyone changing this repository, human or agent. A rule with an enforc
 | A controller-driven instance (non-empty zone) is converged by an external controller through `ReportInstanceStatus`, never by the reconciler. Its delete finishes only when the controller reports DELETING. | `storetest` `controllerNotUnconverged`, `deleteWaitsForTheController`, and `TestUnreportedDeleteStaysUntilTheControllerReports` |
 | `CreateInstance` asks the storage service about volumes only for a request id the store has not seen. | `TestCreateInstanceIsIdempotent` |
 | Create, Update, and Delete take `request_id` and return an `Operation`. Reads do not. A report takes `request_id` and returns the resource. | `TestServicesMatchTheResourceAPI` |
-| Wire protos come from `github.com/popododo0720/vws-proto`, vendored at `third_party/vws-proto` until that module is public. | `TestVendoredProtoModule` |
+| Wire protos come from `github.com/popododo0720/vws-proto` at a release tag (`vX.Y.Z`) through the module proxy, with no `replace`, no local copy, and no `*.pb.go` in this repository. | `TestVWSProtoIsATag` |
 | No rights or mark notices outside `LICENSE`. | `TestNoTrademarkNotices` |
 | No container or chart deploy manifests. RBAC `Role` manifests under `deploy/rbac` are allowed, namespaced and without wildcards. The only release step is `.github/workflows/publish.yml`: on a push to main, ko builds the image and pushes `ghcr.io/<owner>/vws/compute:sha-<7-char commit>` with `org.opencontainers.image.revision` (popododo0720/vws-deploy#280). | `TestNoDeployManifests`, `TestRBACManifestsAreNamespaced`; `publish.yml` |
 | Code is gofmt and goimports clean and passes vet, staticcheck, errcheck, ineffassign, unused, and misspell. `third_party` is excluded. | `golangci-lint` v2.14.0 in CI |
@@ -92,4 +92,4 @@ go test ./...
 golangci-lint run ./...
 ```
 
-The generated stubs live in the vendored `github.com/popododo0720/vws-proto` module under `third_party/vws-proto/gen/go`. This repository does not regenerate them. When that module is public, drop the `replace` and require a tagged release.
+The generated stubs live in the `github.com/popododo0720/vws-proto` module under `gen/go`. This repository does not regenerate them. To take a new contract, run `go get github.com/popododo0720/vws-proto@vX.Y.Z` and `go mod tidy`.

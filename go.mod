@@ -6,7 +6,7 @@ toolchain go1.26.10
 
 require (
 	cloud.google.com/go/longrunning v1.3.0
-	github.com/popododo0720/vws-proto v0.0.0
+	github.com/popododo0720/vws-proto v0.5.0
 	github.com/prometheus/client_golang v1.24.0
 	golang.org/x/crypto v0.57.0
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260928230214-8a89bd6388cc
@@ -77,5 +77,3 @@ require (
 	sigs.k8s.io/structured-merge-diff/v6 v6.4.2 // indirect
 	sigs.k8s.io/yaml v1.6.0 // indirect
 )
-
-replace github.com/popododo0720/vws-proto => ./third_party/vws-proto
