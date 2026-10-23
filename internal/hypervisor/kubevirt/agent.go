@@ -64,7 +64,23 @@ type Config struct {
 	// itself. Clones take their size from the source. Empty rejects URL
 	// images.
 	ImportSize string
+	// ImageStorageClass is the StorageClass of an image DataVolume. CDI
+	// cannot pick one that a provisioner accepts without an access mode, and
+	// the cluster default may be a local path class. Empty uses
+	// DefaultImageStorageClass.
+	ImageStorageClass string
+	// ImageAccessMode is the access mode of an image DataVolume. Empty uses
+	// DefaultImageAccessMode.
+	ImageAccessMode string
 }
+
+const (
+	// DefaultImageStorageClass is the class vws-storage uses for volumes and
+	// snapshots on a VWS cluster.
+	DefaultImageStorageClass = "ceph-block"
+	// DefaultImageAccessMode is the mode vws-storage uses for its DataVolumes.
+	DefaultImageAccessMode = "ReadWriteOnce"
+)
 
 // Agent converges machines through the Kubernetes API. It is safe for
 // concurrent use.
@@ -76,6 +92,12 @@ type Agent struct {
 func New(c client.Client, cfg Config) *Agent {
 	if cfg.ImageNamespace == "" {
 		cfg.ImageNamespace = cfg.Namespace
+	}
+	if cfg.ImageStorageClass == "" {
+		cfg.ImageStorageClass = DefaultImageStorageClass
+	}
+	if cfg.ImageAccessMode == "" {
+		cfg.ImageAccessMode = DefaultImageAccessMode
 	}
 	return &Agent{c: c, cfg: cfg}
 }

@@ -122,11 +122,18 @@ func (a *Agent) imageSource(ctx context.Context, spec hypervisor.ImageSpec) (map
 	}
 }
 
+// imageStorage is the target claim of the DataVolume. Naming the class and
+// mode keeps CDI off the cluster default class, which may not accept a
+// DataVolume at all.
 func (a *Agent) imageStorage(spec hypervisor.ImageSpec) map[string]any {
-	if spec.SourceURL == "" {
-		return map[string]any{}
+	storage := map[string]any{
+		"accessModes":      []any{a.cfg.ImageAccessMode},
+		"storageClassName": a.cfg.ImageStorageClass,
 	}
-	return map[string]any{"resources": map[string]any{"requests": map[string]any{"storage": a.cfg.ImportSize}}}
+	if spec.SourceURL != "" {
+		storage["resources"] = map[string]any{"requests": map[string]any{"storage": a.cfg.ImportSize}}
+	}
+	return storage
 }
 
 // imageSize reads the size from the claim CDI bound for the DataVolume. A
