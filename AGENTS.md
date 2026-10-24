@@ -60,9 +60,14 @@ Rules for anyone changing this repository, human or agent. A rule with an enforc
 | No container or chart deploy manifests. RBAC `Role` manifests under `deploy/rbac` are allowed, namespaced and without wildcards. The only release step is `.github/workflows/publish.yml`: on a push to main, ko builds the image and pushes `ghcr.io/<owner>/vws/compute:sha-<7-char commit>` with `org.opencontainers.image.revision` (popododo0720/vws-deploy#280). | `TestNoDeployManifests`, `TestRBACManifestsAreNamespaced`; `publish.yml` |
 | Code is gofmt and goimports clean and passes vet, staticcheck, errcheck, ineffassign, unused, and misspell. `third_party` is excluded. | `golangci-lint` v2.14.0 in CI |
 | `go test ./...` passes. The envtest tests skip unless `KUBEBUILDER_ASSETS` points at `kube-apiserver` and `etcd`. | CI |
+| The repo is English only (see "English only"). Hangul is allowed only in files `.github/english-allowlist` lists with a reason. | `scripts/check-english.sh files` (CI `english` job) |
 | Work on a feature branch. Never commit to `main`. | Judgment |
 | Each commit is one logical change and leaves `go test ./...` passing. | Judgment |
 | Use pstack. Run `architect` before code that crosses a package boundary, `interrogate` on a contested design, and `correct` when the same mistake comes back. | Judgment |
+
+## English only
+
+Write everything in this repo in English: README, code comments, docs, AGENTS.md, QUALITY.md, PR and issue templates, commit messages, PR and issue bodies, review comments and `Verified-by` sections. The `english` job in CI runs `scripts/check-english.sh`: `files` fails on a tracked file with Hangul unless `.github/english-allowlist` lists it as `<glob> <reason>` (only test data and user-facing UI strings belong there), and `text` and `commits` reject Hangul in the PR body and the PR's commit messages with no exception. The script is the same file as in vws-storage and vws-network, so it is copied, not edited.
 
 ## Insider-risk guardrails
 
@@ -84,6 +89,19 @@ Repository items:
 - RBAC. This service calls only the verbs listed in `vws-deploy` `docs/rbac.md` for compute.
 - No AWS account ID digits anywhere in the repository.
 - Checks: `.github/workflows/repo-guard.yml` runs `scripts/guard-agents.sh` on every pull request (base is `main`, body has `Part of #N` and no closing keyword, this section has items 1 to 7). `.github/workflows/direct-push-watch.yml` reports a commit that reached `main` without a pull request. Detection, not a block. Both files and the script are copied as-is from `vws-deploy`.
+
+### Script push, PR and merge
+
+A deterministic script (the factory orchestrator in `vws-deploy` `docs/factory-orchestrator.md`, the handoff submit) may push a branch, open a pull request and merge one. A script merge happens only when all of these hold:
+
+- every CI check on the head commit is green;
+- `verify-gate` passes;
+- the `vws-verify` App check run passes;
+- the pull request has no conflicts;
+- the merge is a squash, made with `--match-head-commit` set to the verified head;
+- the pull request is not labeled `blocked`.
+
+`ORCHESTRATE_MERGE=apply` is approved only under these conditions. The lead (dr eggbot) is woken only for a decision or a failure (issue scope, real conflicts, a failed check), not for a routine push, pull request or merge. Guardrails 1, 4 and 2 still hold: the author bot is never the verifier, nothing pushes to main, and every pull request body has `Part of #N` with no closing keyword.
 
 ## Commands
 
