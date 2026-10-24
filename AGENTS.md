@@ -90,6 +90,19 @@ Repository items:
 - No AWS account ID digits anywhere in the repository.
 - Checks: `.github/workflows/repo-guard.yml` runs `scripts/guard-agents.sh` on every pull request (base is `main`, body has `Part of #N` and no closing keyword, this section has items 1 to 7). `.github/workflows/direct-push-watch.yml` reports a commit that reached `main` without a pull request. Detection, not a block. Both files and the script are copied as-is from `vws-deploy`.
 
+### Script push, PR and merge
+
+A deterministic script (the factory orchestrator in `vws-deploy` `docs/factory-orchestrator.md`, the handoff submit) may push a branch, open a pull request and merge one. A script merge happens only when all of these hold:
+
+- every CI check on the head commit is green;
+- `verify-gate` passes;
+- the `vws-verify` App check run passes;
+- the pull request has no conflicts;
+- the merge is a squash, made with `--match-head-commit` set to the verified head;
+- the pull request is not labeled `blocked`.
+
+`ORCHESTRATE_MERGE=apply` is approved only under these conditions. The lead (dr eggbot) is woken only for a decision or a failure (issue scope, real conflicts, a failed check), not for a routine push, pull request or merge. Guardrails 1, 4 and 2 still hold: the author bot is never the verifier, nothing pushes to main, and every pull request body has `Part of #N` with no closing keyword.
+
 ## Commands
 
 ```sh
