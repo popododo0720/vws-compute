@@ -60,9 +60,14 @@ Rules for anyone changing this repository, human or agent. A rule with an enforc
 | No container or chart deploy manifests. RBAC `Role` manifests under `deploy/rbac` are allowed, namespaced and without wildcards. The only release step is `.github/workflows/publish.yml`: on a push to main, ko builds the image and pushes `ghcr.io/<owner>/vws/compute:sha-<7-char commit>` with `org.opencontainers.image.revision` (popododo0720/vws-deploy#280). | `TestNoDeployManifests`, `TestRBACManifestsAreNamespaced`; `publish.yml` |
 | Code is gofmt and goimports clean and passes vet, staticcheck, errcheck, ineffassign, unused, and misspell. `third_party` is excluded. | `golangci-lint` v2.14.0 in CI |
 | `go test ./...` passes. The envtest tests skip unless `KUBEBUILDER_ASSETS` points at `kube-apiserver` and `etcd`. | CI |
+| The repo is English only (see "English only"). Hangul is allowed only in files `.github/english-allowlist` lists with a reason. | `scripts/check-english.sh files` (CI `english` job) |
 | Work on a feature branch. Never commit to `main`. | Judgment |
 | Each commit is one logical change and leaves `go test ./...` passing. | Judgment |
 | Use pstack. Run `architect` before code that crosses a package boundary, `interrogate` on a contested design, and `correct` when the same mistake comes back. | Judgment |
+
+## English only
+
+Write everything in this repo in English: README, code comments, docs, AGENTS.md, QUALITY.md, PR and issue templates, commit messages, PR and issue bodies, review comments and `Verified-by` sections. The `english` job in CI runs `scripts/check-english.sh`: `files` fails on a tracked file with Hangul unless `.github/english-allowlist` lists it as `<glob> <reason>` (only test data and user-facing UI strings belong there), and `text` and `commits` reject Hangul in the PR body and the PR's commit messages with no exception. The script is the same file as in vws-storage and vws-network, so it is copied, not edited.
 
 ## Insider-risk guardrails
 
