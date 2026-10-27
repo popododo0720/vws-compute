@@ -1,0 +1,120 @@
+// This file wrote testdata/upgrade/89f2ca3/configmaps.json at commit 89f2ca3. It is a .txt so
+// `go test ./...` never compiles it. To regenerate at a release bump, copy it to
+// internal/store/kubestore/gen_fixture_test.go at that commit and run:
+//
+//	FIXTURE_OUT=$PWD/testdata/upgrade/89f2ca3/configmaps.json go test ./internal/store/kubestore -run TestGenFixture
+package kubestore_test
+
+import (
+	"context"
+	"crypto/rand"
+	"encoding/json"
+	"os"
+	"testing"
+	"time"
+
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+
+	"github.com/popododo0720/vws-compute/internal/compute"
+	"github.com/popododo0720/vws-compute/internal/store"
+	"github.com/popododo0720/vws-compute/internal/store/kubestore"
+)
+
+func must[T any](v T, err error) T {
+	if err != nil {
+		panic(err)
+	}
+	return v
+}
+
+const rsa8192Line = "ssh-rsa " +
+	"AAAAB3NzaC1yc2EAAAADAQABAAAEAQClMGuE0yIWc5dvrilBMw5vPA7Q9RcHQqjX7pkBxe0Pv57mLcNzJ5uZeF9pR3CZ9sinS2wo" +
+	"3Z5MVWZn6sC1RdrP3VP1dDaJD7Z4paVlrbD5yzLNQyMya9jVaBy1itiyoLwGG1zfkoKnLnJOqpU8odp+thAEEQuOgOTqxsazcGrq" +
+	"4clrlFrCoReKlbxzCjM4J3yENkmKhTOhJD1iEA90Mw3w2V3vpGExLGJItyB389eHRYBxClBxLEBKZI07GJgErndubHTxmlD2YhPQ" +
+	"pN+TaaE9fvQD+EMhgKtCI9F5JYhrXMSu86PQkuCrF0S8dMEC1TWHhA17IB+eaCbBE8y2/mn95kJAjK18S7BOGNrT3fnwqiuu6Utf" +
+	"BJNfgsycvgPBQ3WZ0DD+riK/A2Al4Gd/PKQepRIw9fA7tUOMO+J+9APRLWH4MsvdjjgQjqL5bVVebnORJzgDYwmqUo+XzVNHU4ia" +
+	"V7x6c8oaX2D22whQ/v9MtLbpFmfymcWMF+UhJf9nrfxUbm28v1XoACTK6BHISMjPhqUQZDUSfDvbNMqnV66YcwQWvfPkA81XNlN1" +
+	"FjicYU6IreJsxI6iJycH+Wt61LuapISfxKWSzzsLnIHFtLmNs3Au/Hhk0JOWlkmEWImKqNsI1OU5g03knDxSSSRsWt70TqxcoibA" +
+	"A6Tv9SwMfrCO3KXd9RcSW3TGqsfHwm8rRbGR2kWUC/shE+TEXIAHp/B9ZQ3O0WXitQVorjDiBmoABPhGQOsqFgDYZ9yAgfb2boaq" +
+	"xXo3S/CPzyCXRxe9UX8b4svSWomhXowvaqIYxVOsFVe8M1/raHkF3+sUJPwAh0RoER2gk0BL1nHDwqTplX0gdsiLfoaOK//h3Xv4" +
+	"AD7L8AcS9IeFlNkB7dAXgg0BNCEdIykh5m+Eu30Imig1TBnj6cMufRPci89eI1MFlVFX0j1rtabnMigzR+SEAriT7uGtSvMbVdGf" +
+	"2P2Pb/4HUxHI7ekKA9Otx3kYvOe01OuvESFez937VptwTvpBKCbfmidNEzG5e6DCcGTb0Gt+Cr3OBjCBIIB+ItDuL6n5INnMUspY" +
+	"738gXzqX3GBplobG2cvZCZWqbQBscTCiA7DuhAbx7GMYgnk39n9JrpqwF0IU6f89Qrbxl8qzuvcn4TVbEWgT4n1QSlfsgxBIPlaK" +
+	"HUe5IKdK/lBLnMDmw4UAxbA7+2U91roy0t3Sx2LZ66TecAVnY+ge8zlqNFv+wKHJZplXCMjOyUobh4HZNP9TYvLA0Ma/Cfu3xI+o" +
+	"oKHgajPIoxDRJyaDJLfnKONxO1zOusBVSGDmXB0yV2CPlg6KzAy45Z+ojFw/Jo/7xywO3UQphQlfUi/q+Uf5m97xEbnMcJFJ"
+
+func TestGenFixture(t *testing.T) {
+	ctx := context.Background()
+	const ns = "vws"
+	c := fake.NewClientBuilder().Build()
+	s := kubestore.New(c, ns)
+	now := time.Date(2026, 10, 20, 9, 0, 0, 0, time.UTC)
+	env := compute.Env{Now: now, Rand: rand.Reader}
+
+	keyName, err := compute.ParseKeyName("legacy-rsa-8192")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pk, err := compute.ParsePublicKey(rsa8192Line)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keySpec := compute.KeyPairSpec{
+		ID: must(compute.ParseKeyPairID("key-0123456789abcdef0")), Generation: 1,
+		CreatedAt: now, ChangedAt: now, Name: keyName, PublicKey: pk,
+	}
+	kin, err := compute.NewImportKeyPair(keyName.String(), rsa8192Line, compute.Labels{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	kop, err := compute.NewOperation(env, must(compute.ParseRequestID("req-key-1")), kin, compute.Change{Spec: keySpec, Write: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CommitDesired(ctx, store.DesiredChange{Op: kop, Spec: keySpec, Write: true}); err != nil {
+		t.Fatal(err)
+	}
+
+	imgID := "img-0123456789abcdef0"
+	instID := "i-0123456789abcdef0"
+	typ := must(compute.ParseInstanceType("vws.small"))
+	instSpec := compute.InstanceSpec{
+		ID: must(compute.ParseInstanceID(instID)), Generation: 1, CreatedAt: now, ChangedAt: now,
+		Image: must(compute.ParseImageID(imgID)), Type: typ,
+		Key: &compute.AuthorizedKey{Name: keyName, PublicKey: pk}, Power: compute.PowerRunning,
+	}
+	iin, err := compute.NewRunInstance(imgID, "vws.small", keyName.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	iop, err := compute.NewOperation(env, must(compute.ParseRequestID("req-inst-1")), iin, compute.Change{Spec: instSpec, Write: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CommitDesired(ctx, store.DesiredChange{Op: iop, Spec: instSpec, Write: true}); err != nil {
+		t.Fatal(err)
+	}
+
+	var list corev1.ConfigMapList
+	if err := c.List(ctx, &list, client.InNamespace(ns)); err != nil {
+		t.Fatal(err)
+	}
+	list.TypeMeta = metav1.TypeMeta{APIVersion: "v1", Kind: "List"}
+	for i := range list.Items {
+		list.Items[i].CreationTimestamp = metav1.NewTime(now)
+	}
+	out, err := json.MarshalIndent(list, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := os.Getenv("FIXTURE_OUT")
+	if path == "" {
+		t.Fatal("FIXTURE_OUT is unset")
+	}
+	if err := os.WriteFile(path, append(out, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}

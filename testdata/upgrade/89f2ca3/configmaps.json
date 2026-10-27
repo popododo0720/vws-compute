@@ -1,0 +1,88 @@
+{
+  "kind": "List",
+  "apiVersion": "v1",
+  "metadata": {},
+  "items": [
+    {
+      "metadata": {
+        "name": "vws-claim-keyname-f409082fcff18285f84b277e909563457ad66e08",
+        "namespace": "vws",
+        "resourceVersion": "1",
+        "creationTimestamp": "2026-10-20T09:00:00Z",
+        "labels": {
+          "vws.io/kind": "claim-keyname"
+        }
+      },
+      "data": {
+        "holder": "key-0123456789abcdef0",
+        "subject": "legacy-rsa-8192"
+      }
+    },
+    {
+      "metadata": {
+        "name": "vws-instance-i-0123456789abcdef0",
+        "namespace": "vws",
+        "resourceVersion": "1",
+        "creationTimestamp": "2026-10-20T09:00:00Z",
+        "labels": {
+          "vws.io/kind": "instance"
+        }
+      },
+      "data": {
+        "record": "{\"instance\":{\"id\":\"i-0123456789abcdef0\",\"generation\":1,\"created_at\":1792486800000000000,\"changed_at\":1792486800000000000,\"image\":\"img-0123456789abcdef0\",\"type\":\"vws.small\",\"key_name\":\"legacy-rsa-8192\",\"key_public\":\"ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAAEAQClMGuE0yIWc5dvrilBMw5vPA7Q9RcHQqjX7pkBxe0Pv57mLcNzJ5uZeF9pR3CZ9sinS2wo3Z5MVWZn6sC1RdrP3VP1dDaJD7Z4paVlrbD5yzLNQyMya9jVaBy1itiyoLwGG1zfkoKnLnJOqpU8odp+thAEEQuOgOTqxsazcGrq4clrlFrCoReKlbxzCjM4J3yENkmKhTOhJD1iEA90Mw3w2V3vpGExLGJItyB389eHRYBxClBxLEBKZI07GJgErndubHTxmlD2YhPQpN+TaaE9fvQD+EMhgKtCI9F5JYhrXMSu86PQkuCrF0S8dMEC1TWHhA17IB+eaCbBE8y2/mn95kJAjK18S7BOGNrT3fnwqiuu6UtfBJNfgsycvgPBQ3WZ0DD+riK/A2Al4Gd/PKQepRIw9fA7tUOMO+J+9APRLWH4MsvdjjgQjqL5bVVebnORJzgDYwmqUo+XzVNHU4iaV7x6c8oaX2D22whQ/v9MtLbpFmfymcWMF+UhJf9nrfxUbm28v1XoACTK6BHISMjPhqUQZDUSfDvbNMqnV66YcwQWvfPkA81XNlN1FjicYU6IreJsxI6iJycH+Wt61LuapISfxKWSzzsLnIHFtLmNs3Au/Hhk0JOWlkmEWImKqNsI1OU5g03knDxSSSRsWt70TqxcoibAA6Tv9SwMfrCO3KXd9RcSW3TGqsfHwm8rRbGR2kWUC/shE+TEXIAHp/B9ZQ3O0WXitQVorjDiBmoABPhGQOsqFgDYZ9yAgfb2boaqxXo3S/CPzyCXRxe9UX8b4svSWomhXowvaqIYxVOsFVe8M1/raHkF3+sUJPwAh0RoER2gk0BL1nHDwqTplX0gdsiLfoaOK//h3Xv4AD7L8AcS9IeFlNkB7dAXgg0BNCEdIykh5m+Eu30Imig1TBnj6cMufRPci89eI1MFlVFX0j1rtabnMigzR+SEAriT7uGtSvMbVdGf2P2Pb/4HUxHI7ekKA9Otx3kYvOe01OuvESFez937VptwTvpBKCbfmidNEzG5e6DCcGTb0Gt+Cr3OBjCBIIB+ItDuL6n5INnMUspY738gXzqX3GBplobG2cvZCZWqbQBscTCiA7DuhAbx7GMYgnk39n9JrpqwF0IU6f89Qrbxl8qzuvcn4TVbEWgT4n1QSlfsgxBIPlaKHUe5IKdK/lBLnMDmw4UAxbA7+2U91roy0t3Sx2LZ66TecAVnY+ge8zlqNFv+wKHJZplXCMjOyUobh4HZNP9TYvLA0Ma/Cfu3xI+ooKHgajPIoxDRJyaDJLfnKONxO1zOusBVSGDmXB0yV2CPlg6KzAy45Z+ojFw/Jo/7xywO3UQphQlfUi/q+Uf5m97xEbnMcJFJ\",\"power\":1,\"observed\":{\"generation\":0},\"retry\":{},\"report\":{},\"meta\":{}},\"ops\":[{\"id\":\"op-9e445dcb00c82ea1ee00\",\"request\":\"req-inst-1\",\"fingerprint\":\"34899103c7f5be6fa0dacb106fbd5cbd19c69629d63c90269eb491cd2931d4a9\",\"kind\":\"RunInstance\",\"target_kind\":1,\"target_id\":\"i-0123456789abcdef0\",\"target_generation\":1,\"created_at\":1792486800000000000,\"state\":1}]}"
+      }
+    },
+    {
+      "metadata": {
+        "name": "vws-keypair-key-0123456789abcdef0",
+        "namespace": "vws",
+        "resourceVersion": "1",
+        "creationTimestamp": "2026-10-20T09:00:00Z",
+        "labels": {
+          "vws.io/kind": "keypair"
+        }
+      },
+      "data": {
+        "record": "{\"key_pair\":{\"id\":\"key-0123456789abcdef0\",\"generation\":1,\"created_at\":1792486800000000000,\"changed_at\":1792486800000000000,\"name\":\"legacy-rsa-8192\",\"public_key\":\"ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAAEAQClMGuE0yIWc5dvrilBMw5vPA7Q9RcHQqjX7pkBxe0Pv57mLcNzJ5uZeF9pR3CZ9sinS2wo3Z5MVWZn6sC1RdrP3VP1dDaJD7Z4paVlrbD5yzLNQyMya9jVaBy1itiyoLwGG1zfkoKnLnJOqpU8odp+thAEEQuOgOTqxsazcGrq4clrlFrCoReKlbxzCjM4J3yENkmKhTOhJD1iEA90Mw3w2V3vpGExLGJItyB389eHRYBxClBxLEBKZI07GJgErndubHTxmlD2YhPQpN+TaaE9fvQD+EMhgKtCI9F5JYhrXMSu86PQkuCrF0S8dMEC1TWHhA17IB+eaCbBE8y2/mn95kJAjK18S7BOGNrT3fnwqiuu6UtfBJNfgsycvgPBQ3WZ0DD+riK/A2Al4Gd/PKQepRIw9fA7tUOMO+J+9APRLWH4MsvdjjgQjqL5bVVebnORJzgDYwmqUo+XzVNHU4iaV7x6c8oaX2D22whQ/v9MtLbpFmfymcWMF+UhJf9nrfxUbm28v1XoACTK6BHISMjPhqUQZDUSfDvbNMqnV66YcwQWvfPkA81XNlN1FjicYU6IreJsxI6iJycH+Wt61LuapISfxKWSzzsLnIHFtLmNs3Au/Hhk0JOWlkmEWImKqNsI1OU5g03knDxSSSRsWt70TqxcoibAA6Tv9SwMfrCO3KXd9RcSW3TGqsfHwm8rRbGR2kWUC/shE+TEXIAHp/B9ZQ3O0WXitQVorjDiBmoABPhGQOsqFgDYZ9yAgfb2boaqxXo3S/CPzyCXRxe9UX8b4svSWomhXowvaqIYxVOsFVe8M1/raHkF3+sUJPwAh0RoER2gk0BL1nHDwqTplX0gdsiLfoaOK//h3Xv4AD7L8AcS9IeFlNkB7dAXgg0BNCEdIykh5m+Eu30Imig1TBnj6cMufRPci89eI1MFlVFX0j1rtabnMigzR+SEAriT7uGtSvMbVdGf2P2Pb/4HUxHI7ekKA9Otx3kYvOe01OuvESFez937VptwTvpBKCbfmidNEzG5e6DCcGTb0Gt+Cr3OBjCBIIB+ItDuL6n5INnMUspY738gXzqX3GBplobG2cvZCZWqbQBscTCiA7DuhAbx7GMYgnk39n9JrpqwF0IU6f89Qrbxl8qzuvcn4TVbEWgT4n1QSlfsgxBIPlaKHUe5IKdK/lBLnMDmw4UAxbA7+2U91roy0t3Sx2LZ66TecAVnY+ge8zlqNFv+wKHJZplXCMjOyUobh4HZNP9TYvLA0Ma/Cfu3xI+ooKHgajPIoxDRJyaDJLfnKONxO1zOusBVSGDmXB0yV2CPlg6KzAy45Z+ojFw/Jo/7xywO3UQphQlfUi/q+Uf5m97xEbnMcJFJ\",\"meta\":{}},\"ops\":[{\"id\":\"op-bdc7b3919c1996414171\",\"request\":\"req-key-1\",\"fingerprint\":\"4ab1a5e2fa378b38fe0579a47d0d694426b3ce8d38833ce2f1bfd546f17dd5ab\",\"kind\":\"ImportKeyPair\",\"target_kind\":3,\"target_id\":\"key-0123456789abcdef0\",\"target_generation\":1,\"created_at\":1792486800000000000,\"state\":2,\"settled_at\":1792486800000000000}]}"
+      }
+    },
+    {
+      "metadata": {
+        "name": "vws-req-9216cfa6b2de3c092f3b31cad05722bb19e36043fa3daae3757b3d2ce3aca620",
+        "namespace": "vws",
+        "resourceVersion": "1",
+        "creationTimestamp": "2026-10-20T09:00:00Z",
+        "labels": {
+          "vws.io/kind": "request",
+          "vws.io/op": "op-9e445dcb00c82ea1ee00"
+        }
+      },
+      "data": {
+        "fingerprint": "34899103c7f5be6fa0dacb106fbd5cbd19c69629d63c90269eb491cd2931d4a9",
+        "op": "op-9e445dcb00c82ea1ee00",
+        "request": "req-inst-1",
+        "target-id": "i-0123456789abcdef0",
+        "target-kind": "1"
+      }
+    },
+    {
+      "metadata": {
+        "name": "vws-req-cc2d48ecc33235d4c30aed6767287b4f0d86a5df58f3caf876f49ae5d05570e1",
+        "namespace": "vws",
+        "resourceVersion": "1",
+        "creationTimestamp": "2026-10-20T09:00:00Z",
+        "labels": {
+          "vws.io/kind": "request",
+          "vws.io/op": "op-bdc7b3919c1996414171"
+        }
+      },
+      "data": {
+        "fingerprint": "4ab1a5e2fa378b38fe0579a47d0d694426b3ce8d38833ce2f1bfd546f17dd5ab",
+        "op": "op-bdc7b3919c1996414171",
+        "request": "req-key-1",
+        "target-id": "key-0123456789abcdef0",
+        "target-kind": "3"
+      }
+    }
+  ]
+}
