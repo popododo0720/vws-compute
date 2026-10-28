@@ -114,6 +114,40 @@ func TestParseConfigRejectsMalformedValues(t *testing.T) {
 	}
 }
 
+// TestValidStorageClass checks the DNS subdomain shape a StorageClass name
+// has. Kubernetes caps the whole name at 253 characters and does not cap a
+// dot-separated part at 63.
+func TestValidStorageClass(t *testing.T) {
+	name253 := strings.Join([]string{
+		strings.Repeat("a", 64), strings.Repeat("b", 64),
+		strings.Repeat("c", 64), strings.Repeat("d", 58),
+	}, ".")
+	for name, tc := range map[string]struct {
+		value string
+		want  bool
+	}{
+		"simple":          {"ceph-block", true},
+		"dotted":          {"fast.block", true},
+		"part over 63":    {strings.Repeat("a", 64) + ".block", true},
+		"253 characters":  {name253, true},
+		"254 characters":  {strings.Repeat("a", 254), false},
+		"empty":           {"", false},
+		"empty part":      {"ceph..block", false},
+		"leading dot":     {".ceph", false},
+		"trailing dot":    {"ceph.", false},
+		"uppercase":       {"Ceph-Block", false},
+		"underscore":      {"ceph_block", false},
+		"leading hyphen":  {"-ceph", false},
+		"trailing hyphen": {"ceph-", false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := validStorageClass(tc.value); got != tc.want {
+				t.Fatalf("validStorageClass(%q) = %v, want %v", tc.value, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestRecoveredTurnsAPanicIntoAnError(t *testing.T) {
 	err := recovered(func() error { panic("boom") })
 	if err == nil || !strings.Contains(err.Error(), "panic: boom") {
