@@ -16,6 +16,11 @@ import (
 // dnsLabel is a Kubernetes namespace name (RFC 1123 label, at most 63).
 var dnsLabel = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$`)
 
+// dnsSubdomain is a Kubernetes DNS subdomain name (RFC 1123), the shape a
+// StorageClass name has. Kubernetes caps the whole name at 253 characters and
+// does not cap a dot-separated part at 63.
+var dnsSubdomain = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`)
+
 // imageAccessModes are the values a DataVolume's accessModes accepts.
 var imageAccessModes = map[string]bool{
 	"ReadWriteOnce":    true,
@@ -27,15 +32,7 @@ var imageAccessModes = map[string]bool{
 // validStorageClass reports whether name is a Kubernetes DNS subdomain, the
 // shape a StorageClass name has.
 func validStorageClass(name string) bool {
-	if len(name) == 0 || len(name) > 253 {
-		return false
-	}
-	for _, label := range strings.Split(name, ".") {
-		if !dnsLabel.MatchString(label) {
-			return false
-		}
-	}
-	return true
+	return len(name) <= 253 && dnsSubdomain.MatchString(name)
 }
 
 // validate rejects malformed values at the boundary, before they reach a
