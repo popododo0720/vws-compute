@@ -49,8 +49,15 @@ func TestFailureReasonRoundTripsAndRejectsAnUnknownByte(t *testing.T) {
 // beside the instance failure, and a record written before the field existed
 // decodes with no attachment failure.
 func TestObservedRoundTripsAnAttachmentFailure(t *testing.T) {
-	boom := &compute.Failure{Code: compute.CodeFailedPrecondition, Message: "not Block"}
-	raw, err := json.Marshal(observedTo(compute.Observed{Generation: 3, AttachmentFailure: boom}))
+	volume, err := compute.ParseVolumeRef("projects/p/zones/z/volumes/data")
+	if err != nil {
+		t.Fatal(err)
+	}
+	refused := &compute.AttachmentFailure{
+		Failure: compute.Failure{Code: compute.CodeFailedPrecondition, Message: "not Block"},
+		Volume:  volume,
+	}
+	raw, err := json.Marshal(observedTo(compute.Observed{Generation: 3, AttachmentFailure: refused}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,7 +66,8 @@ func TestObservedRoundTripsAnAttachmentFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	got, err := observedFrom(stored)
-	if err != nil || got.Generation != 3 || got.AttachmentFailure == nil || *got.AttachmentFailure != *boom {
+	if err != nil || got.Generation != 3 || got.AttachmentFailure == nil ||
+		got.AttachmentFailure.Failure != refused.Failure || got.AttachmentFailure.Volume != volume {
 		t.Fatalf("round trip = %+v %v", got, err)
 	}
 

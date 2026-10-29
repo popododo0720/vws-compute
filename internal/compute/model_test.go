@@ -42,6 +42,7 @@ func TestFingerprintIsStable(t *testing.T) {
 
 func TestInstanceLifecycle(t *testing.T) {
 	fail := &compute.Failure{Code: compute.CodeInternal, Message: "x"}
+	attachment := &compute.AttachmentFailure{Failure: *fail}
 	cases := []struct {
 		name    string
 		power   compute.Power
@@ -61,7 +62,7 @@ func TestInstanceLifecycle(t *testing.T) {
 		{"parked", compute.PowerRunning, 1, compute.Observed{Generation: 1, Failure: fail}, compute.MachineUnknown, compute.InstanceError},
 		{
 			"attachment failure keeps running", compute.PowerRunning, 1,
-			compute.Observed{Generation: 1, AttachmentFailure: fail},
+			compute.Observed{Generation: 1, AttachmentFailure: attachment},
 			compute.MachineOn, compute.InstanceRunning,
 		},
 		{"old failure, new generation", compute.PowerStopped, 2, compute.Observed{Generation: 1, Failure: fail}, compute.MachineUnknown, compute.InstanceStopping},

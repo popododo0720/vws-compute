@@ -129,7 +129,7 @@ type InstanceReport struct {
 	// AttachmentFailure is a permanent volume attach or detach failure at
 	// Generation. A READY report carries it so the attachment operation
 	// fails while the instance keeps running.
-	AttachmentFailure *Failure
+	AttachmentFailure *AttachmentFailure
 }
 
 // ApplyReport returns the status that results from rep and whether it

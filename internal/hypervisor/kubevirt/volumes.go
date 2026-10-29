@@ -160,7 +160,7 @@ func (a *Agent) checkAttachable(ctx context.Context, machine string, vm *unstruc
 		}
 		if hotplug {
 			if err := requireBlock(machine, v, &pvc); err != nil {
-				return hypervisor.Attachment(err)
+				return hypervisor.Attachment(v, err)
 			}
 		}
 		if !singleWriter(pvc.Spec.AccessModes) {
@@ -185,7 +185,7 @@ func (a *Agent) checkAttachable(ctx context.Context, machine string, vm *unstruc
 					err := fmt.Errorf("machine %s: claim %s is single-writer and already attached to %s",
 						machine, v.Claim, o.GetName())
 					if hotplug {
-						return hypervisor.Attachment(err)
+						return hypervisor.Attachment(v, err)
 					}
 					return hypervisor.Permanent(err)
 				}

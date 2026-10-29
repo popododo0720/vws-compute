@@ -160,14 +160,33 @@ func ImageNotFound(err error) error {
 	return Permanent(&causeError{cause: CauseImageNotFound, err: err})
 }
 
-// Attachment marks err as a permanent failure to attach or detach a volume.
-// The machine itself is healthy, so callers fail the attachment operation
-// and leave the instance running. A nil err stays nil.
-func Attachment(err error) error {
+// attachmentError is a permanent refusal to attach or detach one volume. The
+// machine itself is healthy, so only the attachment operation fails.
+type attachmentError struct {
+	volume Volume
+	err    error
+}
+
+func (e *attachmentError) Error() string { return e.err.Error() }
+func (e *attachmentError) Unwrap() error { return e.err }
+
+// Attachment marks err as a permanent failure to attach or detach volume. The
+// machine itself is healthy, so callers fail the attachment operation and
+// leave the instance running. A nil err stays nil.
+func Attachment(volume Volume, err error) error {
 	if err == nil {
 		return nil
 	}
-	return Permanent(&causeError{cause: CauseAttachment, err: err})
+	return Permanent(&causeError{cause: CauseAttachment, err: &attachmentError{volume: volume, err: err}})
+}
+
+// AttachmentVolume returns the volume an attachment error names.
+func AttachmentVolume(err error) (Volume, bool) {
+	var a *attachmentError
+	if errors.As(err, &a) {
+		return a.volume, true
+	}
+	return Volume{}, false
 }
 
 // CauseOf walks err's chain. Permanent and NotReady do not hide a cause

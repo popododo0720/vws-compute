@@ -196,3 +196,39 @@ func TestDrivenVolumesReachTheAgent(t *testing.T) {
 		}
 	})
 }
+
+// TestRefusedAttachmentDoesNotBlockAStop: a volume the agent permanently
+// refuses fails its attach operation but is dropped from desired state, so a
+// later stop still reaches the machine.
+func TestRefusedAttachmentDoesNotBlockAStop(t *testing.T) {
+	eachStore(t, func(h *harness) {
+		drivenHarness(h)
+		h.submit("create", createInstance("web"))
+		h.sweep()
+		boot := compute.VolumeAttachment{Volume: ok(compute.ParseVolumeRef(bootVolume)), DeviceName: "vda", Boot: true}
+		data := compute.VolumeAttachment{
+			Volume: ok(compute.ParseVolumeRef("projects/p/zones/z/volumes/data")), DeviceName: "vdb", Claim: "pvc-data",
+		}
+
+		h.agent.Fail("web", hypervisor.Attachment(
+			hypervisor.Volume{Name: "vdb", Claim: "pvc-data"}, errors.New("claim is not Block")))
+		attach := h.submit("attach", ok(compute.NewUpdateInstanceSpec(
+			"web", compute.PowerRunning, []compute.VolumeAttachment{boot, data}, compute.MetadataPatch{})))
+		h.sweep()
+		h.wantStates(compute.OperationFailed, attach)
+
+		stop := h.submit("stop", ok(compute.NewStopInstance("web")))
+		h.sweep()
+		h.wantStates(compute.OperationSucceeded, stop)
+		if m, _ := h.agent.Machine("web"); m.Power != hypervisor.PowerOff {
+			h.t.Fatalf("power after stop = %d, want off", m.Power)
+		}
+		id := ok(compute.ParseInstanceID("web"))
+		if got := h.instance(id).Lifecycle(); got != compute.InstanceStopped {
+			h.t.Fatalf("lifecycle = %d, want stopped", got)
+		}
+		if vols := h.instance(id).Spec.Volumes; len(vols) != 1 || vols[0] != boot {
+			h.t.Fatalf("volumes after stop = %+v, want only the boot entry", vols)
+		}
+	})
+}

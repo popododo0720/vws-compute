@@ -30,6 +30,7 @@ func pendingOp(t *testing.T, gen int64) compute.Operation {
 func TestSettle(t *testing.T) {
 	now := t0.Add(time.Minute)
 	boom := &compute.Failure{Code: compute.CodeFailedPrecondition, Message: "image artifact missing"}
+	attachment := &compute.AttachmentFailure{Failure: *boom}
 	cases := []struct {
 		name      string
 		spec      int64
@@ -43,7 +44,7 @@ func TestSettle(t *testing.T) {
 		{"observed equal with failure fails", 3, compute.Observed{Generation: 3, Failure: boom}, compute.OperationFailed, true, true},
 		{
 			"observed equal with attachment failure fails", 3,
-			compute.Observed{Generation: 3, AttachmentFailure: boom},
+			compute.Observed{Generation: 3, AttachmentFailure: attachment},
 			compute.OperationFailed, true, true,
 		},
 		{"observed above target supersedes", 4, compute.Observed{Generation: 4}, compute.OperationSuperseded, false, true},

@@ -57,7 +57,7 @@ type Observed struct {
 	// AttachmentFailure is a permanent failure to attach or detach a volume
 	// at Generation. It fails the operation that asked for the change but
 	// does not park the instance, which keeps running as on EC2.
-	AttachmentFailure *Failure
+	AttachmentFailure *AttachmentFailure
 }
 
 // Parked reports whether the reconciler gave up on generation gen. A parked
@@ -103,6 +103,15 @@ type Failure struct {
 	Code    Code
 	Message string
 	Reason  LaunchReason
+}
+
+// AttachmentFailure is a permanent refusal to attach or detach one volume. It
+// fails the operation that asked for the change without parking the instance.
+// The next intent drops the refused volume from desired state, as EC2 leaves
+// no attachment behind when AttachVolume fails.
+type AttachmentFailure struct {
+	Failure
+	Volume VolumeRef
 }
 
 // Retry is the reconciler's durable backoff after transient agent errors.

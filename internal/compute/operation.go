@@ -194,7 +194,7 @@ func Settle(o Operation, spec int64, obs Observed, now time.Time) Operation {
 	case obs.Generation == o.TargetGeneration && (obs.Failure != nil || obs.AttachmentFailure != nil):
 		f := obs.Failure
 		if f == nil {
-			f = obs.AttachmentFailure
+			f = &obs.AttachmentFailure.Failure
 		}
 		failure := *f
 		o.state, o.failure = OperationFailed, &failure

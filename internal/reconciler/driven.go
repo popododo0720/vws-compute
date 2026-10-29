@@ -62,7 +62,7 @@ func (r *Reconciler) convergeDriven(ctx context.Context, inst compute.Instance) 
 		rep.State = compute.ReportReady
 		rep.Node = inst.Status.Report.Node
 		rep.Interfaces = inst.Status.Report.Interfaces
-		rep.AttachmentFailure = parkedFailure(agentErr)
+		rep.AttachmentFailure = attachmentFailure(agentErr, spec)
 	case hypervisor.IsPermanent(agentErr):
 		f := parkedFailure(agentErr)
 		rep.State, rep.Message, rep.Code, rep.Reason = compute.ReportError, f.Message, f.Code, f.Reason
@@ -83,6 +83,24 @@ func (r *Reconciler) convergeDriven(ctx context.Context, inst compute.Instance) 
 		return fmt.Errorf("converge %s: %w", spec.ID, agentErr)
 	}
 	return nil
+}
+
+// attachmentFailure names the volume the agent refused, so the next plan can
+// drop it from desired state instead of letting it block every later change.
+func attachmentFailure(err error, spec compute.InstanceSpec) *compute.AttachmentFailure {
+	f := parkedFailure(err)
+	refused := &compute.AttachmentFailure{Failure: *f}
+	volume, ok := hypervisor.AttachmentVolume(err)
+	if !ok {
+		return refused
+	}
+	for _, v := range spec.Volumes {
+		if !v.Boot && diskName(v.DeviceName) == volume.Name {
+			refused.Volume = v.Volume
+			break
+		}
+	}
+	return refused
 }
 
 // VolumeDeleter asks the storage service to delete a volume. It must be

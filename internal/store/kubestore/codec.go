@@ -21,9 +21,14 @@ type failureJSON struct {
 }
 
 type observedJSON struct {
-	Generation        int64        `json:"generation"`
-	Failure           *failureJSON `json:"failure,omitempty"`
-	AttachmentFailure *failureJSON `json:"attachment_failure,omitempty"`
+	Generation        int64                  `json:"generation"`
+	Failure           *failureJSON           `json:"failure,omitempty"`
+	AttachmentFailure *attachmentFailureJSON `json:"attachment_failure,omitempty"`
+}
+
+type attachmentFailureJSON struct {
+	failureJSON
+	Volume string `json:"volume,omitempty"`
 }
 
 type retryJSON struct {
@@ -197,17 +202,43 @@ func failureFrom(f *failureJSON) (*compute.Failure, error) {
 	return &compute.Failure{Code: compute.Code(f.Code), Message: f.Message, Reason: compute.LaunchReason(f.Reason)}, nil
 }
 
+func attachmentFailureTo(f *compute.AttachmentFailure) *attachmentFailureJSON {
+	if f == nil {
+		return nil
+	}
+	return &attachmentFailureJSON{failureJSON: *failureTo(&f.Failure), Volume: f.Volume.String()}
+}
+
+func attachmentFailureFrom(f *attachmentFailureJSON) (*compute.AttachmentFailure, error) {
+	if f == nil {
+		return nil, nil //nolint:nilnil // a nil failure is "no failure", the zero value of the field
+	}
+	failure, err := failureFrom(&f.failureJSON)
+	if err != nil {
+		return nil, err
+	}
+	refused := &compute.AttachmentFailure{Failure: *failure}
+	if f.Volume != "" {
+		volume, err := compute.ParseVolumeRef(f.Volume)
+		if err != nil {
+			return nil, err
+		}
+		refused.Volume = volume
+	}
+	return refused, nil
+}
+
 func observedTo(o compute.Observed) observedJSON {
 	return observedJSON{
 		Generation:        o.Generation,
 		Failure:           failureTo(o.Failure),
-		AttachmentFailure: failureTo(o.AttachmentFailure),
+		AttachmentFailure: attachmentFailureTo(o.AttachmentFailure),
 	}
 }
 
 func observedFrom(o observedJSON) (compute.Observed, error) {
 	f, err1 := failureFrom(o.Failure)
-	af, err2 := failureFrom(o.AttachmentFailure)
+	af, err2 := attachmentFailureFrom(o.AttachmentFailure)
 	return compute.Observed{Generation: o.Generation, Failure: f, AttachmentFailure: af}, errors.Join(err1, err2)
 }
 

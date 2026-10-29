@@ -50,11 +50,19 @@ func TestApplyReport(t *testing.T) {
 		}
 	})
 	t.Run("ready carries an attachment failure without parking", func(t *testing.T) {
-		boom := &compute.Failure{Code: compute.CodeFailedPrecondition, Message: "not Block"}
+		volume, err := compute.ParseVolumeRef("projects/p/zones/z/volumes/data")
+		if err != nil {
+			t.Fatal(err)
+		}
+		boom := &compute.AttachmentFailure{
+			Failure: compute.Failure{Code: compute.CodeFailedPrecondition, Message: "not Block"},
+			Volume:  volume,
+		}
 		st, _, err := compute.ApplyReport(controllerDriven(compute.PowerRunning),
 			compute.InstanceReport{Node: node, Generation: 2, State: compute.ReportReady, AttachmentFailure: boom}, now)
 		if err != nil || st.Observed.Parked(2) ||
-			st.Observed.AttachmentFailure == nil || st.Observed.AttachmentFailure.Message != "not Block" {
+			st.Observed.AttachmentFailure == nil || st.Observed.AttachmentFailure.Message != "not Block" ||
+			st.Observed.AttachmentFailure.Volume != volume {
 			t.Fatalf("%+v %v", st, err)
 		}
 		inst := controllerDriven(compute.PowerRunning)
