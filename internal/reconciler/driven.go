@@ -56,6 +56,13 @@ func (r *Reconciler) convergeDriven(ctx context.Context, inst compute.Instance) 
 	case agentErr == nil:
 		rep.State = compute.ReportReady
 		rep.Interfaces = r.interfaces(ctx, spec)
+	case hypervisor.IsPermanent(agentErr) && hypervisor.CauseOf(agentErr) == hypervisor.CauseAttachment:
+		// The machine is healthy; only the attachment failed. As on EC2,
+		// the instance keeps its state and the attachment operation fails.
+		rep.State = compute.ReportReady
+		rep.Node = inst.Status.Report.Node
+		rep.Interfaces = inst.Status.Report.Interfaces
+		rep.AttachmentFailure = attachmentFailure(agentErr, spec)
 	case hypervisor.IsPermanent(agentErr):
 		f := parkedFailure(agentErr)
 		rep.State, rep.Message, rep.Code, rep.Reason = compute.ReportError, f.Message, f.Code, f.Reason
@@ -76,6 +83,24 @@ func (r *Reconciler) convergeDriven(ctx context.Context, inst compute.Instance) 
 		return fmt.Errorf("converge %s: %w", spec.ID, agentErr)
 	}
 	return nil
+}
+
+// attachmentFailure names the volume the agent refused, so the next plan can
+// drop it from desired state instead of letting it block every later change.
+func attachmentFailure(err error, spec compute.InstanceSpec) *compute.AttachmentFailure {
+	f := parkedFailure(err)
+	refused := &compute.AttachmentFailure{Failure: *f}
+	volume, ok := hypervisor.AttachmentVolume(err)
+	if !ok {
+		return refused
+	}
+	for _, v := range spec.Volumes {
+		if !v.Boot && diskName(v.DeviceName) == volume.Name {
+			refused.Volume = v.Volume
+			break
+		}
+	}
+	return refused
 }
 
 // VolumeDeleter asks the storage service to delete a volume. It must be
@@ -183,6 +208,9 @@ func (r *Reconciler) refreshAddress(ctx context.Context, inst compute.Instance) 
 	rep := compute.InstanceReport{
 		Node: st.Report.Node, Generation: inst.Spec.Generation, State: compute.ReportReady,
 		Message: st.Report.Message, Power: st.Report.Power, Interfaces: ifaces,
+		// Keep the refusal: this report is at the same generation, and the
+		// planner drops the refused volume only while the generations match.
+		AttachmentFailure: st.Observed.AttachmentFailure,
 	}
 	_, err := r.reports.ReportInstanceStatus(ctx, inst.Spec.ID, rep, r.now())
 	if err != nil && compute.CodeOf(err) != compute.CodeAborted {

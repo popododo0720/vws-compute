@@ -160,7 +160,7 @@ func (a *Agent) checkAttachable(ctx context.Context, machine string, vm *unstruc
 		}
 		if hotplug {
 			if err := requireBlock(machine, v, &pvc); err != nil {
-				return err
+				return hypervisor.Attachment(v, err)
 			}
 		}
 		if !singleWriter(pvc.Spec.AccessModes) {
@@ -182,7 +182,12 @@ func (a *Agent) checkAttachable(ctx context.Context, machine string, vm *unstruc
 				// Any claim volume counts, including another machine's
 				// boot-from-claim root disk.
 				if _, claim, _, ok := pvcOf(ov); ok && claim == v.Claim {
-					return hypervisor.Permanent(fmt.Errorf("machine %s: claim %s is single-writer and already attached to %s", machine, v.Claim, o.GetName()))
+					err := fmt.Errorf("machine %s: claim %s is single-writer and already attached to %s",
+						machine, v.Claim, o.GetName())
+					if hotplug {
+						return hypervisor.Attachment(v, err)
+					}
+					return hypervisor.Permanent(err)
 				}
 			}
 		}

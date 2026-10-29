@@ -60,8 +60,9 @@ func TestHotplugRequiresBlockClaim(t *testing.T) {
 				return
 			}
 			want := "claim pvc-data has volumeMode Filesystem, but hot-plugging needs volumeMode Block; recreate the volume as a Block volume and attach it again"
-			if !hypervisor.IsPermanent(err) || !strings.Contains(err.Error(), want) {
-				t.Fatalf("err = %v, want permanent error containing %q", err, want)
+			if !hypervisor.IsPermanent(err) || hypervisor.CauseOf(err) != hypervisor.CauseAttachment ||
+				!strings.Contains(err.Error(), want) {
+				t.Fatalf("err = %v, want a permanent attachment error containing %q", err, want)
 			}
 			if attached || w.n.Load() != before {
 				t.Fatalf("refused attach still changed the VirtualMachine: volumes %v, %d writes", vols, w.n.Load()-before)
