@@ -122,25 +122,32 @@ func (in setPower) plan(v View, env Env) (Change, error) {
 	}
 	next := cur
 	next.Power = in.want
-	next.Volumes = withoutRefused(volumes, inst.Status.Observed.AttachmentFailure)
+	next.Volumes = withoutRefused(volumes, cur, inst.Status.Observed)
 	next.Generation++
 	next.ChangedAt = env.Now
 	return Change{Spec: next, Write: true, Meta: meta}, nil
 }
 
-// withoutRefused drops the volume whose attach the agent permanently refused.
-// It must not stay in desired state, where it would make every later converge
-// fail before a power change lands. EC2 leaves no attachment behind when
-// AttachVolume fails.
-func withoutRefused(vols []VolumeAttachment, refused *AttachmentFailure) []VolumeAttachment {
-	if refused == nil || refused.Volume.String() == "" {
+// withoutRefused drops the attachment whose attach the agent permanently
+// refused. It must not stay in desired state, where it would make every later
+// converge fail before a power change lands. EC2 leaves no attachment behind
+// when AttachVolume fails.
+//
+// Only a stale carry-over is dropped: the failure must belong to cur's
+// generation, and the entry must be in cur unchanged. An attachment the
+// caller adds or changes in this intent is kept, so its operation either
+// attaches the disk or fails; it never succeeds with the disk dropped.
+func withoutRefused(vols []VolumeAttachment, cur InstanceSpec, obs Observed) []VolumeAttachment {
+	refused := obs.AttachmentFailure
+	if refused == nil || refused.Volume.String() == "" || obs.Generation != cur.Generation {
 		return vols
 	}
 	kept := make([]VolumeAttachment, 0, len(vols))
 	for _, v := range vols {
-		if v.Volume != refused.Volume {
-			kept = append(kept, v)
+		if v.Volume == refused.Volume && hasAttachment(cur.Volumes, v) {
+			continue
 		}
+		kept = append(kept, v)
 	}
 	return kept
 }
@@ -204,7 +211,7 @@ func (in rebootInstance) plan(v View, env Env) (Change, error) {
 		return Change{}, Errorf(CodeFailedPrecondition, "instance %s is stopped", in.instance)
 	}
 	next := cur
-	next.Volumes = withoutRefused(cur.Volumes, inst.Status.Observed.AttachmentFailure)
+	next.Volumes = withoutRefused(cur.Volumes, cur, inst.Status.Observed)
 	next.RebootEpoch++
 	next.Generation++
 	next.ChangedAt = env.Now

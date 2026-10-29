@@ -208,6 +208,8 @@ func (r *Reconciler) refreshAddress(ctx context.Context, inst compute.Instance) 
 	rep := compute.InstanceReport{
 		Node: st.Report.Node, Generation: inst.Spec.Generation, State: compute.ReportReady,
 		Message: st.Report.Message, Power: st.Report.Power, Interfaces: ifaces,
+		// Keep the refusal: this report is at the same generation, and the
+		// planner drops the refused volume only while the generations match.
 		AttachmentFailure: st.Observed.AttachmentFailure,
 	}
 	_, err := r.reports.ReportInstanceStatus(ctx, inst.Spec.ID, rep, r.now())
