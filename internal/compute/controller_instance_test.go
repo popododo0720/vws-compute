@@ -49,6 +49,20 @@ func TestApplyReport(t *testing.T) {
 			t.Fatalf("%+v %v", st, err)
 		}
 	})
+	t.Run("ready carries an attachment failure without parking", func(t *testing.T) {
+		boom := &compute.Failure{Code: compute.CodeFailedPrecondition, Message: "not Block"}
+		st, _, err := compute.ApplyReport(controllerDriven(compute.PowerRunning),
+			compute.InstanceReport{Node: node, Generation: 2, State: compute.ReportReady, AttachmentFailure: boom}, now)
+		if err != nil || st.Observed.Parked(2) ||
+			st.Observed.AttachmentFailure == nil || st.Observed.AttachmentFailure.Message != "not Block" {
+			t.Fatalf("%+v %v", st, err)
+		}
+		inst := controllerDriven(compute.PowerRunning)
+		inst.Status = st
+		if got := inst.Lifecycle(); got != compute.InstanceRunning {
+			t.Fatalf("lifecycle = %d, want running", got)
+		}
+	})
 	t.Run("terminated converges only on DELETING", func(t *testing.T) {
 		inst := controllerDriven(compute.PowerTerminated)
 		st, _, _ := compute.ApplyReport(inst, compute.InstanceReport{Node: node, Generation: 2, State: compute.ReportReady}, now)

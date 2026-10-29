@@ -488,6 +488,10 @@ func cloneObserved(o compute.Observed) compute.Observed {
 		f := *o.Failure
 		o.Failure = &f
 	}
+	if o.AttachmentFailure != nil {
+		f := *o.AttachmentFailure
+		o.AttachmentFailure = &f
+	}
 	return o
 }
 

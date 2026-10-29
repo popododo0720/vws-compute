@@ -126,6 +126,10 @@ type InstanceReport struct {
 	// Reason is the launch-failure token parked with an ERROR report.
 	// Zero is LaunchInternal, including a report with no READY condition.
 	Reason LaunchReason
+	// AttachmentFailure is a permanent volume attach or detach failure at
+	// Generation. A READY report carries it so the attachment operation
+	// fails while the instance keeps running.
+	AttachmentFailure *Failure
 }
 
 // ApplyReport returns the status that results from rep and whether it
@@ -136,7 +140,9 @@ type InstanceReport struct {
 //   - Observed.Generation advances to the reported generation only when the
 //     report finishes it: READY on a live instance, DELETING on a terminated
 //     one, or ERROR, which parks that generation. RECONCILING and PENDING
-//     record the report and leave the generation where it was.
+//     record the report and leave the generation where it was. A READY report
+//     may carry an AttachmentFailure, which fails the attachment operation
+//     without parking the instance.
 //
 // A terminated spec never converges on READY, so a controller cannot keep a
 // deleted instance alive by calling it ready.
@@ -166,8 +172,9 @@ func ApplyReport(inst Instance, rep InstanceReport, now time.Time) (InstanceStat
 		next.Observed = Observed{Generation: rep.Generation, Failure: &Failure{
 			Code: code, Message: rep.Message, Reason: rep.Reason,
 		}}
-	case rep.State == ReportReady && spec.Power != PowerTerminated,
-		rep.State == ReportDeleting && spec.Power == PowerTerminated:
+	case rep.State == ReportReady && spec.Power != PowerTerminated:
+		next.Observed = Observed{Generation: rep.Generation, AttachmentFailure: rep.AttachmentFailure}
+	case rep.State == ReportDeleting && spec.Power == PowerTerminated:
 		next.Observed = Observed{Generation: rep.Generation}
 	}
 	next.UpdatedAt = now

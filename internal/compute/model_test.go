@@ -59,6 +59,11 @@ func TestInstanceLifecycle(t *testing.T) {
 		{"shutting down", compute.PowerTerminated, 2, compute.Observed{Generation: 1}, compute.MachineOn, compute.InstanceShuttingDown},
 		{"terminated", compute.PowerTerminated, 2, compute.Observed{Generation: 2}, compute.MachineAbsent, compute.InstanceTerminated},
 		{"parked", compute.PowerRunning, 1, compute.Observed{Generation: 1, Failure: fail}, compute.MachineUnknown, compute.InstanceError},
+		{
+			"attachment failure keeps running", compute.PowerRunning, 1,
+			compute.Observed{Generation: 1, AttachmentFailure: fail},
+			compute.MachineOn, compute.InstanceRunning,
+		},
 		{"old failure, new generation", compute.PowerStopped, 2, compute.Observed{Generation: 1, Failure: fail}, compute.MachineUnknown, compute.InstanceStopping},
 	}
 	for _, c := range cases {

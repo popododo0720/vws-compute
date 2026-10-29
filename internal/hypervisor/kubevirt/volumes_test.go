@@ -178,8 +178,8 @@ func TestSingleWriterClaimIsRefusedWhileAttachedElsewhere(t *testing.T) {
 		t.Fatal(err)
 	}
 	err := a.ConvergeMachine(ctx, two)
-	if err == nil || !hypervisor.IsPermanent(err) {
-		t.Fatalf("second attach = %v, want a permanent error", err)
+	if err == nil || !hypervisor.IsPermanent(err) || hypervisor.CauseOf(err) != hypervisor.CauseAttachment {
+		t.Fatalf("second attach = %v, want a permanent attachment error", err)
 	}
 	if vols, _ := diskNames(t, c, ns, two.Name); !equal(vols, []string{"rootdisk"}) {
 		t.Fatalf("refused attach changed the machine: %v", vols)

@@ -41,6 +41,11 @@ func TestSettle(t *testing.T) {
 		{"observed below target stays pending", 3, compute.Observed{Generation: 2}, compute.OperationPending, false, false},
 		{"observed equal without failure succeeds", 3, compute.Observed{Generation: 3}, compute.OperationSucceeded, false, true},
 		{"observed equal with failure fails", 3, compute.Observed{Generation: 3, Failure: boom}, compute.OperationFailed, true, true},
+		{
+			"observed equal with attachment failure fails", 3,
+			compute.Observed{Generation: 3, AttachmentFailure: boom},
+			compute.OperationFailed, true, true,
+		},
 		{"observed above target supersedes", 4, compute.Observed{Generation: 4}, compute.OperationSuperseded, false, true},
 		{"newer spec supersedes before observation", 4, compute.Observed{Generation: 2}, compute.OperationSuperseded, false, true},
 	}

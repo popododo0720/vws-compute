@@ -138,6 +138,9 @@ type Cause uint8
 const (
 	CauseNone Cause = iota
 	CauseImageNotFound
+	// CauseAttachment is a volume the machine cannot attach or detach. The
+	// machine is healthy, so only the attachment operation fails.
+	CauseAttachment
 )
 
 type causeError struct {
@@ -155,6 +158,16 @@ func ImageNotFound(err error) error {
 		return nil
 	}
 	return Permanent(&causeError{cause: CauseImageNotFound, err: err})
+}
+
+// Attachment marks err as a permanent failure to attach or detach a volume.
+// The machine itself is healthy, so callers fail the attachment operation
+// and leave the instance running. A nil err stays nil.
+func Attachment(err error) error {
+	if err == nil {
+		return nil
+	}
+	return Permanent(&causeError{cause: CauseAttachment, err: err})
 }
 
 // CauseOf walks err's chain. Permanent and NotReady do not hide a cause

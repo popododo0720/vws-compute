@@ -21,8 +21,9 @@ type failureJSON struct {
 }
 
 type observedJSON struct {
-	Generation int64        `json:"generation"`
-	Failure    *failureJSON `json:"failure,omitempty"`
+	Generation        int64        `json:"generation"`
+	Failure           *failureJSON `json:"failure,omitempty"`
+	AttachmentFailure *failureJSON `json:"attachment_failure,omitempty"`
 }
 
 type retryJSON struct {
@@ -197,12 +198,17 @@ func failureFrom(f *failureJSON) (*compute.Failure, error) {
 }
 
 func observedTo(o compute.Observed) observedJSON {
-	return observedJSON{Generation: o.Generation, Failure: failureTo(o.Failure)}
+	return observedJSON{
+		Generation:        o.Generation,
+		Failure:           failureTo(o.Failure),
+		AttachmentFailure: failureTo(o.AttachmentFailure),
+	}
 }
 
 func observedFrom(o observedJSON) (compute.Observed, error) {
-	f, err := failureFrom(o.Failure)
-	return compute.Observed{Generation: o.Generation, Failure: f}, err
+	f, err1 := failureFrom(o.Failure)
+	af, err2 := failureFrom(o.AttachmentFailure)
+	return compute.Observed{Generation: o.Generation, Failure: f, AttachmentFailure: af}, errors.Join(err1, err2)
 }
 
 func retryTo(r compute.Retry) retryJSON {
