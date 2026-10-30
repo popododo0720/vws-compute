@@ -54,8 +54,12 @@ func main() {
 	}
 }
 
+// setupObs is the observability setup run calls. Tests replace it to install
+// a manual metric reader through the same path.
+var setupObs = obs.Setup
+
 func run(ctx context.Context, cfg config) error {
-	shutdownObs, err := obs.Setup(ctx, obs.ForService(grpcapi.ServiceName))
+	shutdownObs, err := setupObs(ctx, obs.ForService(grpcapi.ServiceName))
 	if err != nil {
 		return fmt.Errorf("observability: %w", err)
 	}
