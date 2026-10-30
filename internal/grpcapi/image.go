@@ -94,6 +94,9 @@ func copyImageIntent(project, region, imageID string, body *computev1.Image) (co
 	if err != nil {
 		return nil, toStatus(err)
 	}
+	if err := checkSourceScope(project, region, src); err != nil {
+		return nil, err
+	}
 	labels, err := compute.ParseLabels(body.GetLabels())
 	if err != nil {
 		return nil, toStatus(err)
@@ -124,6 +127,25 @@ func copySource(spec *computev1.ImageSpec) (compute.CopySource, error) {
 		return nil, err
 	}
 	return compute.FromSnapshot{Ref: ref}, nil
+}
+
+// checkSourceScope fails a copy source the caller cannot see as NOT_FOUND:
+// a volume or snapshot of another project, or a snapshot of another region.
+// AWS answers InvalidVolume.NotFound and InvalidSnapshot.NotFound for such a
+// source. The answer depends on the names alone, so it is the same whether or
+// not the source exists and says nothing about another project.
+func checkSourceScope(project, region string, src compute.CopySource) error {
+	switch s := src.(type) {
+	case compute.FromVolume:
+		if s.Ref.Project() != project {
+			return notFound("volume " + s.Ref.String() + " not found")
+		}
+	case compute.FromSnapshot:
+		if s.Ref.Project() != project || s.Ref.Region() != region {
+			return notFound("snapshot " + s.Ref.String() + " not found")
+		}
+	}
+	return nil
 }
 
 func (s *server) UpdateImage(ctx context.Context, r *computev1.UpdateImageRequest) (*longrunningpb.Operation, error) {
