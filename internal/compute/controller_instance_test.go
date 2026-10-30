@@ -98,6 +98,35 @@ func TestApplyReport(t *testing.T) {
 			t.Fatalf("changed %v err %v", changed, err)
 		}
 	})
+	t.Run("volumes replace the stored ones and are copied", func(t *testing.T) {
+		volume := ok(compute.ParseVolumeRef("projects/p/zones/z/volumes/data"))
+		vols := []compute.ObservedVolume{
+			{Volume: volume, DeviceName: "/dev/sdf", State: compute.AttachAttaching, StateTime: now},
+		}
+		inst := controllerDriven(compute.PowerRunning)
+		inst.Status.Report.Volumes = []compute.ObservedVolume{
+			{Volume: volume, DeviceName: "/dev/sdg", State: compute.AttachAttached},
+		}
+		st, changed, err := compute.ApplyReport(inst,
+			compute.InstanceReport{Node: node, Generation: 2, State: compute.ReportReady, Volumes: vols}, now)
+		vols[0].State = compute.AttachAttached
+		if err != nil || !changed || len(st.Report.Volumes) != 1 ||
+			st.Report.Volumes[0].DeviceName != "/dev/sdf" || st.Report.Volumes[0].State != compute.AttachAttaching {
+			t.Fatalf("%+v %v %v", st.Report.Volumes, changed, err)
+		}
+	})
+	t.Run("a volume without an attach state is invalid", func(t *testing.T) {
+		volume := ok(compute.ParseVolumeRef("projects/p/zones/z/volumes/data"))
+		for _, state := range []compute.AttachState{compute.AttachUnspecified, compute.AttachBusy + 1} {
+			_, _, err := compute.ApplyReport(controllerDriven(compute.PowerRunning), compute.InstanceReport{
+				Node: node, Generation: 2, State: compute.ReportReady,
+				Volumes: []compute.ObservedVolume{{Volume: volume, DeviceName: "/dev/sdf", State: state}},
+			}, now)
+			if compute.CodeOf(err) != compute.CodeInvalid {
+				t.Fatalf("state %d: got %v", state, err)
+			}
+		}
+	})
 	t.Run("a missing state is invalid", func(t *testing.T) {
 		_, _, err := compute.ApplyReport(controllerDriven(compute.PowerRunning), compute.InstanceReport{Node: node, Generation: 2}, now)
 		if compute.CodeOf(err) != compute.CodeInvalid {

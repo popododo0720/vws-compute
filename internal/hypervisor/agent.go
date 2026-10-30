@@ -231,3 +231,31 @@ type AddressObserver interface {
 	// yet or does not exist.
 	MachineIPv4(ctx context.Context, name string) (string, error)
 }
+
+// VolumePhase is how far one data volume's hot-plug has got on a machine.
+type VolumePhase uint8
+
+const (
+	// VolumePlugging means the volume is in the machine's spec and the
+	// hypervisor has not finished plugging it into the guest.
+	VolumePlugging VolumePhase = iota + 1
+	// VolumePlugged means the hot-plug finished and the guest sees the disk.
+	// A volume of a stopped machine is plugged: it is in the definition the
+	// machine boots with.
+	VolumePlugged
+	// VolumeUnplugging means the volume left the machine's spec and the
+	// hypervisor still has it on the running guest.
+	VolumeUnplugging
+)
+
+// VolumeObserver is implemented by an agent that can say how far each data
+// volume's hot-plug has got. A converged spec (ConvergeMachine returned nil)
+// only means the hypervisor accepted the volume list; the guest may not see
+// the disk yet. The reconciler reports a volume as attached only once it is
+// VolumePlugged.
+type VolumeObserver interface {
+	// MachineVolumes returns the phase of every data volume the machine
+	// lists or is still unplugging, by Volume.Name. A machine that does not
+	// exist has none.
+	MachineVolumes(ctx context.Context, name string) (map[string]VolumePhase, error)
+}

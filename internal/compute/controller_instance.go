@@ -69,6 +69,33 @@ type ObservedInterface struct {
 	PublicIPv4  string
 }
 
+// AttachState is how far one volume's attachment to an instance has got, as
+// EC2 VolumeAttachment.State reports it. A detached volume has no entry, so
+// there is no detached value.
+type AttachState uint8
+
+const (
+	AttachUnspecified AttachState = iota
+	// AttachAttaching: the volume is in the spec and its hot-plug has not
+	// finished.
+	AttachAttaching
+	// AttachAttached: the hot-plug finished and the guest sees the disk.
+	AttachAttached
+	// AttachDetaching: the volume left the spec and is still on the machine.
+	AttachDetaching
+	// AttachBusy: the hot-plug or unplug failed and the node is retrying.
+	AttachBusy
+)
+
+// ObservedVolume is what a controller reports for one volume of an
+// instance: the attach state and when that state last changed.
+type ObservedVolume struct {
+	Volume     VolumeRef
+	DeviceName string
+	State      AttachState
+	StateTime  time.Time
+}
+
 // ReportState is the reconcile state a controller reports for one instance.
 type ReportState uint8
 
@@ -93,6 +120,10 @@ type Report struct {
 	Message    string
 	Power      Power
 	Interfaces []ObservedInterface
+	// Volumes is the attach state of every volume the controller has seen
+	// in the spec or is still detaching. Nil means the controller did not
+	// say.
+	Volumes []ObservedVolume
 }
 
 // ControllerDriven reports whether an external controller, not the in-process reconciler, converges
@@ -117,6 +148,7 @@ type InstanceReport struct {
 	Message    string
 	Power      Power
 	Interfaces []ObservedInterface
+	Volumes    []ObservedVolume
 	// Code is the failure code an ERROR report parks the generation with.
 	// Zero means CodeInternal, which is what a report from an external
 	// controller carries. The built-in reconciler reports a permanent agent
@@ -137,6 +169,8 @@ type InstanceReport struct {
 //
 //   - a report ahead of the spec generation fails with CodeAborted;
 //   - a report behind the stored observed generation changes nothing;
+//   - every reported volume carries an attach state, and the report's
+//     volumes replace the stored ones;
 //   - Observed.Generation advances to the reported generation only when the
 //     report finishes it: READY on a live instance, DELETING on a terminated
 //     one, or ERROR, which parks that generation. RECONCILING and PENDING
@@ -158,10 +192,16 @@ func ApplyReport(inst Instance, rep InstanceReport, now time.Time) (InstanceStat
 	case rep.Generation < st.Observed.Generation:
 		return st, false, nil
 	}
+	for _, v := range rep.Volumes {
+		if v.State == AttachUnspecified || v.State > AttachBusy {
+			return st, false, Errorf(CodeInvalid, "volume %s: attach state is required", v.Volume)
+		}
+	}
 	next := st
 	next.Report = Report{
 		Node: rep.Node, State: rep.State, Message: rep.Message, Power: rep.Power,
 		Interfaces: append([]ObservedInterface(nil), rep.Interfaces...),
+		Volumes:    append([]ObservedVolume(nil), rep.Volumes...),
 	}
 	switch {
 	case rep.State == ReportError:

@@ -144,6 +144,15 @@ func instancePB(i compute.Instance, name string) *computev1.Instance {
 				DeviceName: n.DeviceName, Subnet: n.Subnet, PrivateIpv4: n.PrivateIPv4, PublicIpv4: n.PublicIPv4,
 			})
 		}
+		for _, v := range i.Status.Report.Volumes {
+			out := &computev1.ObservedVolumeAttachment{
+				Volume: v.Volume.String(), DeviceName: v.DeviceName, State: volumeAttachStatePB(v.State),
+			}
+			if !v.StateTime.IsZero() {
+				out.StateTime = timestamppb.New(v.StateTime)
+			}
+			status.Volumes = append(status.Volumes, out)
+		}
 	}
 	status.Observed.State = state
 	if state == commonv1.ReconciliationState_RECONCILIATION_STATE_ERROR && i.Status.Observed.Failure != nil {
@@ -405,4 +414,24 @@ func (s *server) operationResource(ctx context.Context, project, resourceName st
 	default:
 		return "", nil, nil
 	}
+}
+
+// The wire VolumeAttachState and compute.AttachState share their numbering:
+// unspecified, attaching, attached, detaching, busy.
+func volumeAttachStatePB(s compute.AttachState) computev1.VolumeAttachState {
+	return computev1.VolumeAttachState(s)
+}
+
+func parseVolumeAttachState(s computev1.VolumeAttachState) (compute.AttachState, bool) {
+	switch s {
+	case computev1.VolumeAttachState_VOLUME_ATTACH_STATE_ATTACHING:
+		return compute.AttachAttaching, true
+	case computev1.VolumeAttachState_VOLUME_ATTACH_STATE_ATTACHED:
+		return compute.AttachAttached, true
+	case computev1.VolumeAttachState_VOLUME_ATTACH_STATE_DETACHING:
+		return compute.AttachDetaching, true
+	case computev1.VolumeAttachState_VOLUME_ATTACH_STATE_BUSY:
+		return compute.AttachBusy, true
+	}
+	return compute.AttachUnspecified, false
 }

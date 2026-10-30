@@ -16,7 +16,10 @@ import (
 	"github.com/popododo0720/vws-compute/internal/hypervisor"
 )
 
-var _ hypervisor.Agent = (*Agent)(nil)
+var (
+	_ hypervisor.Agent          = (*Agent)(nil)
+	_ hypervisor.VolumeObserver = (*Agent)(nil)
+)
 
 // ImageSize is the size every fake image artifact reports.
 const ImageSize int64 = 2 << 30
@@ -49,6 +52,7 @@ type Agent struct {
 	calls     int
 	gate      chan struct{}
 	addrs     map[string]string
+	phases    map[string]map[string]hypervisor.VolumePhase
 }
 
 func New() *Agent {
@@ -59,7 +63,50 @@ func New() *Agent {
 		reboots:   map[string]int{},
 		failures:  map[string][]error{},
 		addrs:     map[string]string{},
+		phases:    map[string]map[string]hypervisor.VolumePhase{},
 	}
+}
+
+// SetVolumePhase makes MachineVolumes report phase for volume (a
+// Volume.Name) of machine until ClearVolumePhase. VolumeUnplugging is
+// reported even when the machine no longer lists the volume.
+func (a *Agent) SetVolumePhase(machine, volume string, phase hypervisor.VolumePhase) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.phases[machine] == nil {
+		a.phases[machine] = map[string]hypervisor.VolumePhase{}
+	}
+	a.phases[machine][volume] = phase
+}
+
+// ClearVolumePhase drops a SetVolumePhase override.
+func (a *Agent) ClearVolumePhase(machine, volume string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	delete(a.phases[machine], volume)
+}
+
+// MachineVolumes implements hypervisor.VolumeObserver. A volume the machine
+// lists is plugged unless SetVolumePhase says otherwise, and one it does not
+// list is gone unless SetVolumePhase made it unplugging. It is not counted
+// as a call.
+func (a *Agent) MachineVolumes(_ context.Context, name string) (map[string]hypervisor.VolumePhase, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	out := map[string]hypervisor.VolumePhase{}
+	m, ok := a.machines[name]
+	if !ok {
+		return out, nil
+	}
+	for _, v := range m.Volumes {
+		out[v.Name] = hypervisor.VolumePlugged
+	}
+	for v, p := range a.phases[name] {
+		if _, listed := out[v]; listed || p == hypervisor.VolumeUnplugging {
+			out[v] = p
+		}
+	}
+	return out, nil
 }
 
 // SetIPv4 sets the address MachineIPv4 reports for a machine.

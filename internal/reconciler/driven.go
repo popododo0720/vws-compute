@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"slices"
 
 	"github.com/popododo0720/vws-compute/internal/compute"
 	"github.com/popododo0720/vws-compute/internal/hypervisor"
@@ -34,7 +35,7 @@ func (r *Reconciler) sweepDriven(ctx context.Context) error {
 			return nil
 		}
 		if inst.Status.Observed.Generation >= inst.Spec.Generation {
-			return r.refreshAddress(ctx, inst)
+			return r.refresh(ctx, inst)
 		}
 		return r.convergeDriven(ctx, inst)
 	})
@@ -43,12 +44,14 @@ func (r *Reconciler) sweepDriven(ctx context.Context) error {
 func (r *Reconciler) convergeDriven(ctx context.Context, inst compute.Instance) error {
 	spec := inst.Spec
 	machine, agentErr := r.machine(ctx, spec)
-	if agentErr == nil {
+	reached := agentErr == nil
+	if reached {
 		agentErr = r.agent.ConvergeMachine(ctx, machine)
 	}
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
+	prevVolumes := inst.Status.Report.Volumes
 	rep := compute.InstanceReport{Generation: spec.Generation, Power: spec.Power}
 	switch {
 	case agentErr == nil && spec.Power == compute.PowerTerminated:
@@ -56,6 +59,7 @@ func (r *Reconciler) convergeDriven(ctx context.Context, inst compute.Instance) 
 	case agentErr == nil:
 		rep.State = compute.ReportReady
 		rep.Interfaces = r.interfaces(ctx, spec)
+		rep.Volumes = r.observeVolumes(ctx, spec, prevVolumes, attempt{converged: true})
 	case hypervisor.IsPermanent(agentErr) && hypervisor.CauseOf(agentErr) == hypervisor.CauseAttachment:
 		// The machine is healthy; only the attachment failed. As on EC2,
 		// the instance keeps its state and the attachment operation fails.
@@ -63,13 +67,19 @@ func (r *Reconciler) convergeDriven(ctx context.Context, inst compute.Instance) 
 		rep.Node = inst.Status.Report.Node
 		rep.Interfaces = inst.Status.Report.Interfaces
 		rep.AttachmentFailure = attachmentFailure(agentErr, spec)
+		rep.Volumes = r.observeVolumes(ctx, spec, prevVolumes, attempt{refused: rep.AttachmentFailure.Volume})
 	case hypervisor.IsPermanent(agentErr):
 		f := parkedFailure(agentErr)
 		rep.State, rep.Message, rep.Code, rep.Reason = compute.ReportError, f.Message, f.Code, f.Reason
+		rep.Volumes = prevVolumes
 	default:
 		// Reconciling records the failure and leaves the generation open,
 		// so the next sweep tries again.
 		rep.State, rep.Message = compute.ReportReconciling, agentErr.Error()
+		if spec.Power != compute.PowerTerminated {
+			rep.Volumes = r.observeVolumes(ctx, spec, prevVolumes,
+				attempt{retrying: reached && !hypervisor.IsNotReady(agentErr)})
+		}
 	}
 	_, err := r.reports.ReportInstanceStatus(ctx, spec.ID, rep, r.now())
 	if err != nil && compute.CodeOf(err) == compute.CodeAborted {
@@ -191,30 +201,50 @@ func (r *Reconciler) interfaces(ctx context.Context, spec compute.InstanceSpec) 
 	return []compute.ObservedInterface{{DeviceName: nic.DeviceName, Subnet: nic.Subnet, PrivateIPv4: ip}}
 }
 
-// refreshAddress reports a READY running instance again once its machine
-// has an address that the last report lacked: KubeVirt often reports the
-// guest Ready before the interface address shows. It reads the agent only
-// while the address is missing, so a settled instance costs nothing.
-func (r *Reconciler) refreshAddress(ctx context.Context, inst compute.Instance) error {
+// refresh reports a READY instance again when a later look at its machine
+// says more than the last report did. KubeVirt often reports the guest Ready
+// before the interface address shows, and a data volume's hot-plug finishes
+// after the spec is applied, so the volume reads attached only on a later
+// sweep. It reads the agent only while the address is missing or a volume is
+// not yet settled, so a settled instance costs nothing, and it writes only
+// when the report changes.
+func (r *Reconciler) refresh(ctx context.Context, inst compute.Instance) error {
 	st := inst.Status
-	if st.Report.State != compute.ReportReady || st.Observed.Failure != nil || inst.Spec.Power != compute.PowerRunning ||
-		(len(st.Report.Interfaces) > 0 && st.Report.Interfaces[0].PrivateIPv4 != "") {
+	if st.Report.State != compute.ReportReady || st.Observed.Failure != nil || inst.Spec.Power == compute.PowerTerminated {
 		return nil
 	}
-	ifaces := r.interfaces(ctx, inst.Spec)
-	if len(ifaces) == 0 {
+	var refused compute.VolumeRef
+	if f := st.Observed.AttachmentFailure; f != nil {
+		refused = f.Volume
+	}
+	needAddress := inst.Spec.Power == compute.PowerRunning &&
+		(len(st.Report.Interfaces) == 0 || st.Report.Interfaces[0].PrivateIPv4 == "")
+	needVolumes := !volumesSettled(inst.Spec, st.Report.Volumes, refused)
+	if !needAddress && !needVolumes {
+		return nil
+	}
+	ifaces, vols := st.Report.Interfaces, st.Report.Volumes
+	if needAddress {
+		if got := r.interfaces(ctx, inst.Spec); len(got) > 0 {
+			ifaces = got
+		}
+	}
+	if needVolumes {
+		vols = r.observeVolumes(ctx, inst.Spec, st.Report.Volumes, attempt{converged: true, refused: refused})
+	}
+	if slices.Equal(ifaces, st.Report.Interfaces) && sameVolumes(vols, st.Report.Volumes) {
 		return nil
 	}
 	rep := compute.InstanceReport{
 		Node: st.Report.Node, Generation: inst.Spec.Generation, State: compute.ReportReady,
-		Message: st.Report.Message, Power: st.Report.Power, Interfaces: ifaces,
+		Message: st.Report.Message, Power: st.Report.Power, Interfaces: ifaces, Volumes: vols,
 		// Keep the refusal: this report is at the same generation, and the
 		// planner drops the refused volume only while the generations match.
 		AttachmentFailure: st.Observed.AttachmentFailure,
 	}
 	_, err := r.reports.ReportInstanceStatus(ctx, inst.Spec.ID, rep, r.now())
 	if err != nil && compute.CodeOf(err) != compute.CodeAborted {
-		return fmt.Errorf("report %s address: %w", inst.Spec.ID, err)
+		return fmt.Errorf("report %s: %w", inst.Spec.ID, err)
 	}
 	return nil
 }

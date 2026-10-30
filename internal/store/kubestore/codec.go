@@ -83,12 +83,21 @@ type observedNICJSON struct {
 	PublicIPv4  string `json:"public_ipv4,omitempty"`
 }
 
+type observedVolumeJSON struct {
+	Volume    string `json:"volume"`
+	Device    string `json:"device"`
+	State     uint8  `json:"state"`
+	StateTime int64  `json:"state_time,omitempty"`
+}
+
 type reportJSON struct {
 	Node       string            `json:"node,omitempty"`
 	State      uint8             `json:"state,omitempty"`
 	Message    string            `json:"message,omitempty"`
 	Power      uint8             `json:"power,omitempty"`
 	Interfaces []observedNICJSON `json:"interfaces,omitempty"`
+	// Volumes is absent on rows written before attach states existed.
+	Volumes []observedVolumeJSON `json:"volumes,omitempty"`
 }
 
 type instanceJSON struct {
@@ -322,6 +331,11 @@ func instanceTo(in compute.Instance) *instanceJSON {
 	for _, i := range st.Report.Interfaces {
 		j.Report.Interfaces = append(j.Report.Interfaces, observedNICJSON{Device: i.DeviceName, Subnet: i.Subnet, PrivateIPv4: i.PrivateIPv4, PublicIPv4: i.PublicIPv4})
 	}
+	for _, v := range st.Report.Volumes {
+		j.Report.Volumes = append(j.Report.Volumes, observedVolumeJSON{
+			Volume: v.Volume.String(), Device: v.DeviceName, State: uint8(v.State), StateTime: nanos(v.StateTime),
+		})
+	}
 	return j
 }
 
@@ -357,10 +371,22 @@ func instanceFrom(j *instanceJSON) (compute.Instance, error) {
 	}
 	err9 := inRange("report state", int64(j.Report.State), int64(compute.ReportUnspecified), int64(compute.ReportError))
 	err10 := inRange("report power", int64(j.Report.Power), 0, int64(compute.PowerTerminated))
+	var observedVols []compute.ObservedVolume
+	for _, v := range j.Report.Volumes {
+		ref, err := compute.ParseVolumeRef(v.Volume)
+		errs = append(errs, err,
+			inRange("volume attach state", int64(v.State), int64(compute.AttachAttaching), int64(compute.AttachBusy)))
+		observedVols = append(observedVols, compute.ObservedVolume{
+			Volume: ref, DeviceName: v.Device, State: compute.AttachState(v.State), StateTime: fromNanos(v.StateTime),
+		})
+	}
 	if err := errors.Join(err1, err2, err3, err4, err5, err6, err7, err8, err9, err10, errors.Join(errs...)); err != nil {
 		return compute.Instance{}, corrupt("instance", j.ID, err)
 	}
-	report := compute.Report{Node: j.Report.Node, State: compute.ReportState(j.Report.State), Message: j.Report.Message, Power: compute.Power(j.Report.Power)}
+	report := compute.Report{
+		Node: j.Report.Node, State: compute.ReportState(j.Report.State), Message: j.Report.Message,
+		Power: compute.Power(j.Report.Power), Volumes: observedVols,
+	}
 	for _, i := range j.Report.Interfaces {
 		report.Interfaces = append(report.Interfaces, compute.ObservedInterface{DeviceName: i.Device, Subnet: i.Subnet, PrivateIPv4: i.PrivateIPv4, PublicIPv4: i.PublicIPv4})
 	}
