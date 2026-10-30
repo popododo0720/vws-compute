@@ -35,19 +35,12 @@ func TestReconcileMetricsOnEnvtest(t *testing.T) {
 
 	clk := &clock{t: t0}
 	repo := kubetest.Store(t)
-	observed := make(chan error, 4)
 	rec := reconciler.New(repo, fakeagent.New(),
 		reconciler.WithClock(clk.Now),
-		reconciler.WithInterval(time.Hour),
-		reconciler.WithSweepObserver(func(ctx context.Context, result string, d time.Duration, err error) {
-			obs.M().Reconcile(ctx, "reconciler", result, d)
-			if err != nil {
-				obs.M().ReconcileError(ctx, "reconciler", compute.CodeOf(err).String())
-			}
-			observed <- err
-		}))
-	obs.M().RegisterQueue("reconciler", rec.QueueDepth, rec.QueueOldest)
-	ctl := controller.New(repo, controller.WithClock(clk.Now), controller.WithKick(rec.Kick))
+		reconciler.WithInterval(time.Hour))
+	reconciler.Instrument(rec)
+	// Submit does not kick, so Run sweeps once and the backlog stays recorded.
+	ctl := controller.New(repo, controller.WithClock(clk.Now))
 	rc, err := ctl.Submit(ctx, ok(compute.ParseRequestID("img-1")),
 		ok(compute.NewRegisterImage("debian-13", "https://images.example/debian-13.qcow2")))
 	if err != nil {
@@ -60,14 +53,7 @@ func TestReconcileMetricsOnEnvtest(t *testing.T) {
 	runCtx, cancel := context.WithCancel(ctx)
 	done := make(chan error, 1)
 	go func() { done <- rec.Run(runCtx) }()
-	select {
-	case err := <-observed:
-		if err != nil {
-			t.Fatalf("sweep: %v", err)
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("no sweep observed")
-	}
+	rm := waitForReconcilePoint(t, ctx, reader)
 	cancel()
 	<-done
 
@@ -85,7 +71,6 @@ func TestReconcileMetricsOnEnvtest(t *testing.T) {
 		t.Fatalf("queue depth after the empty sweep = %d, want 0", depth)
 	}
 
-	var rm metricdata.ResourceMetrics
 	if err := reader.Collect(ctx, &rm); err != nil {
 		t.Fatal(err)
 	}
@@ -100,6 +85,27 @@ func TestReconcileMetricsOnEnvtest(t *testing.T) {
 		t.Error("vws.reconcile.total has no controller=reconciler result=ok point")
 	}
 	assertNoForbiddenLabels(t, rm)
+}
+
+// waitForReconcilePoint collects until the instrument shows a completed
+// sweep. The test cannot observe the sweep any other way now that Instrument
+// owns the observer.
+func waitForReconcilePoint(t *testing.T, ctx context.Context, reader sdkmetric.Reader) metricdata.ResourceMetrics {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		var rm metricdata.ResourceMetrics
+		if err := reader.Collect(ctx, &rm); err != nil {
+			t.Fatal(err)
+		}
+		if hasPoint(rm, obs.MetricReconcileTotal, "controller", "reconciler", "result", "ok") {
+			return rm
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("no reconcile sweep observed")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 func metricByName(rm metricdata.ResourceMetrics, name string) (metricdata.Metrics, bool) {

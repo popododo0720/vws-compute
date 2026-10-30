@@ -108,7 +108,6 @@ func run(ctx context.Context, cfg config) error {
 	var hl *grpcapi.Health
 	recOpts := []reconciler.Option{
 		reconciler.WithReports(repo),
-		reconciler.WithSweepObserver(observeSweep),
 		reconciler.WithPublicImages(cfg.publicImages),
 	}
 	if lookup != nil {
@@ -119,7 +118,7 @@ func run(ctx context.Context, cfg config) error {
 		}
 	}
 	rec := reconciler.New(repo, agent, recOpts...)
-	obs.M().RegisterQueue(reconcilerQueue, rec.QueueDepth, rec.QueueOldest)
+	reconciler.Instrument(rec)
 	ctl := controller.New(repo, controller.WithKick(rec.Kick))
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -183,19 +182,8 @@ func recovered(f func() error) (err error) {
 // not cancel handlers.
 const shutdownGrace = 2 * time.Second
 
-const reconcilerQueue = "reconciler"
-
 // errGRPCNotServing is the readiness verdict before the first probe passes.
 var errGRPCNotServing = errors.New("grpc health is not serving")
-
-// observeSweep records one reconcile pass. The result labels are the
-// reconciler's sweep outcomes, and the code label is the compute error class.
-func observeSweep(ctx context.Context, result string, d time.Duration, err error) {
-	obs.M().Reconcile(ctx, reconcilerQueue, result, d)
-	if err != nil {
-		obs.M().ReconcileError(ctx, reconcilerQueue, compute.CodeOf(err).String())
-	}
-}
 
 // stopReconciler cancels the reconciler and waits for it. A cancellation
 // is the shutdown we just asked for, so it is not reported beside err.
