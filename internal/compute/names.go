@@ -124,6 +124,25 @@ func ParseSnapshotRef(s string) (SnapshotRef, error) {
 func (r VolumeRef) String() string   { return r.s }
 func (r SnapshotRef) String() string { return r.s }
 
+// Project is the project segment of the volume name.
+func (r VolumeRef) Project() string { return nameSegment(r.s, 1) }
+
+// Project is the project segment of the snapshot name.
+func (r SnapshotRef) Project() string { return nameSegment(r.s, 1) }
+
+// Region is the region segment of the snapshot name.
+func (r SnapshotRef) Region() string { return nameSegment(r.s, 3) }
+
+// nameSegment returns segment i of a name parseResourceName accepted, or ""
+// for the zero ref.
+func nameSegment(s string, i int) string {
+	parts := strings.Split(s, "/")
+	if i >= len(parts) {
+		return ""
+	}
+	return parts[i]
+}
+
 func parseResourceName(s, scopeKind, collection string) error {
 	parts := strings.Split(s, "/")
 	if len(parts) != 6 || parts[0] != "projects" || parts[2] != scopeKind || parts[4] != collection {
