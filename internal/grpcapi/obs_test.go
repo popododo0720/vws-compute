@@ -20,6 +20,7 @@ import (
 	"github.com/popododo0720/vws-lib/obs"
 	"github.com/popododo0720/vws-lib/obs/grpcobs"
 
+	"github.com/popododo0720/vws-compute/internal/compute"
 	"github.com/popododo0720/vws-compute/internal/grpcapi"
 	"github.com/popododo0720/vws-compute/internal/store/memstore"
 )
@@ -64,9 +65,21 @@ func TestReportStatusKeepsTraceAndAuditsMutations(t *testing.T) {
 		return next(ctx, req)
 	})
 	h := serveRepoServer(t, memstore.New().WithLegacyImageScope(demoScope), append(grpcapi.ServerOptions(), inspect))
-	h.seedControllerDriven(t, "seed-1", "web-1", "root-1")
+	// The project is a 12-digit account id, so a leak into resource_id fails
+	// the assertion below.
+	const project = "a123456789012"
+	in, err := compute.NewCreateInstance(compute.CreateInstanceParams{
+		ID: "web-1", Project: project, Zone: "z1", MachineType: "vws.small", Power: compute.PowerRunning,
+		Volumes: []compute.VolumeAttachment{{
+			Volume: mustVolume(t, "projects/"+project+"/zones/z1/volumes/root-1"), DeviceName: "vda", Boot: true,
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.submit(t, "seed-1", in)
 
-	instName := "projects/demo/zones/z1/instances/web-1"
+	instName := "projects/" + project + "/zones/z1/instances/web-1"
 	ctx := metadata.AppendToOutgoingContext(context.Background(),
 		"traceparent", testParentTrace, grpcobs.RequestIDHeader, testRequestID)
 	if _, err := h.inst.ReportInstanceStatus(ctx, &computev1.ReportInstanceStatusRequest{
@@ -93,11 +106,14 @@ func TestReportStatusKeepsTraceAndAuditsMutations(t *testing.T) {
 	line := logs.String()
 	for _, want := range []string{
 		`"audit":true`, `"op":"DeleteInstance"`, `"outcome":"ok"`,
-		`"resource_id":"` + instName + `"`, `"request_id":"` + testRequestID + `"`,
+		`"resource_id":"instances/web-1"`, `"request_id":"` + testRequestID + `"`,
 	} {
 		if !strings.Contains(line, want) {
 			t.Errorf("audit log lacks %s:\n%s", want, line)
 		}
+	}
+	if strings.Contains(line, project) {
+		t.Errorf("audit log carries the account id:\n%s", line)
 	}
 
 	var rm metricdata.ResourceMetrics

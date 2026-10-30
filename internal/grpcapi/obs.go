@@ -70,14 +70,22 @@ func auditUnary(ctx context.Context, req any, info *grpc.UnaryServerInfo,
 	return resp, err
 }
 
-// resourceID names the request's resource for the audit line. Requests that
+// resourceID names the request's resource for the audit line, without the
+// projects/{project} segment, so an account id never reaches the log. It
+// keeps the collection and id, as in "instances/i-...". Requests that
 // create a resource have no name yet, so that field stays empty.
 func resourceID(req any) string {
 	named, ok := req.(interface{ GetName() string })
 	if !ok {
 		return ""
 	}
-	return named.GetName()
+	name := strings.TrimSuffix(named.GetName(), "/")
+	if i := strings.LastIndex(name, "/"); i > 0 {
+		if j := strings.LastIndex(name[:i], "/"); j >= 0 {
+			return name[j+1:]
+		}
+	}
+	return name
 }
 
 func isAudited(method string) bool {
