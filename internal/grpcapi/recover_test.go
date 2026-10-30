@@ -35,7 +35,7 @@ func TestRecoveryAnswersInternalWithoutLeaking(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := grpc.NewServer(grpcapi.Recovery()...)
+	srv := grpc.NewServer(grpcapi.ServerOptions()...)
 	healthpb.RegisterHealthServer(srv, panicky{})
 	go func() { _ = srv.Serve(lis) }()
 	t.Cleanup(srv.Stop)

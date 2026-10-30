@@ -48,7 +48,7 @@ func (r *Reconciler) observeVolumes(
 		var err error
 		phases, err = obs.MachineVolumes(ctx, spec.ID.String())
 		if err != nil {
-			r.log.WarnContext(ctx, "machine volumes", slog.String("instance", spec.ID.String()), slog.Any("err", err))
+			r.log.WarnContext(ctx, "machine volumes", slog.String("instance", spec.ID.String()), slog.String("err", err.Error()))
 			return slices.Clone(prev)
 		}
 	}

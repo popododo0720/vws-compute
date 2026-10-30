@@ -14,6 +14,33 @@ go run ./cmd/vws-compute -listen 127.0.0.1:50051
 
 `-namespace` selects storage. Empty, the default, keeps all state in memory. A Kubernetes namespace keeps desired state, observed status, and operations as ConfigMaps there (no CRD). `-kubeconfig` names the cluster config. Empty uses the in-cluster service account, then `$KUBECONFIG`. Run one replica: startup repairs the namespace and assumes no other writer. The namespace must exist. `-hypervisor` picks the agent: `fake` (the default, in memory) or `kubevirt`, which needs `-namespace`. On startup the process re-applies the stored specs, so a restart rebuilds the fake agent's machines and image artifacts from the repository.
 
+## Observability
+
+The process calls vws-lib `obs.Setup` once. With `OTEL_EXPORTER_OTLP_ENDPOINT` empty (or `OTEL_SDK_DISABLED=true`) it creates no OTLP exporter; logs still go to stdout as JSON. Records carry `request_id`, `trace_id`, and `span_id` when the context has them, and each mutating RPC writes one `audit=true` line with `vws.audit.events`. A resource id appears in logs only, never in a metric label.
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `OTEL_SERVICE_NAME` | `compute` | Service name on logs, traces, and metrics |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | empty | OTLP endpoint. Empty turns export off |
+| `OTEL_EXPORTER_OTLP_PROTOCOL` | `grpc` | `grpc` or `http/protobuf` |
+| `OTEL_EXPORTER_OTLP_HEADERS` | empty | OTLP headers, from a Secret |
+| `OTEL_TRACES_SAMPLER` | `parentbased_traceidratio` | Sampler name |
+| `OTEL_TRACES_SAMPLER_ARG` | `0.1` | Ratio for a `traceidratio` sampler |
+| `OTEL_RESOURCE_ATTRIBUTES` | empty | Extra resource attributes, `k=v,k=v` |
+| `OTEL_TRACES_EXPORTER` | `otlp` with an endpoint, else `none` | Trace exporter |
+| `OTEL_METRICS_EXPORTER` | `otlp` with an endpoint, else `none` | Metric exporter |
+| `OTEL_LOGS_EXPORTER` | `otlp` with an endpoint, else `none` | Log exporter |
+| `OTEL_METRIC_EXPORT_INTERVAL` | `60000` | Metric export period in milliseconds |
+| `OTEL_SDK_DISABLED` | `false` | `true` disables every exporter |
+| `SENTRY_DSN` | empty | Enables Sentry error reports. Empty turns them off |
+| `SENTRY_ENVIRONMENT`, `SENTRY_RELEASE` | from the resource attributes | Sentry tags |
+| `SENTRY_SAMPLE_RATE` | `1.0` | Error event sample rate |
+| `VWS_LOG_LEVEL` | `info` | `debug`, `info`, `warn`, or `error` |
+| `VWS_LOG_FORMAT` | `json` | `json` or `text` for local work |
+| `VWS_HEALTH_ADDR` | empty | Address for `/healthz` and `/readyz`. Empty opens none |
+
+`/healthz` only says the process runs. `/readyz` reads the same verdict as gRPC `health.v1`, and never checks a telemetry backend: an observability outage is not a service outage. On SIGTERM the process marks itself not ready before it drains.
+
 ## Machine types
 
 `machine_type` must be one of these (`internal/compute/names.go`). Any other name is `INVALID_ARGUMENT` / `INVALID_SPEC`.
