@@ -15,6 +15,11 @@ Granted in the VM namespace: `get` on PVCs, because `volumes.go`
 `checkAttachable` reads the claim access modes before an attach. vws-storage
 creates the volume PVCs; vws-compute only reads them.
 
+`CreateImage` from a volume or a machine clones a PVC in `vws-vms` into an
+image DataVolume in `vws-images`. CDI checks that the DataVolume's creator may
+create `datavolumes/source` in the source PVC's namespace, so the VM Role
+grants exactly that to `vws-compute`.
+
 Cross-namespace clone: VMs clone from a DataSource in `vws-images`, so the VM
 namespace `default` service account gets `create` on `datavolumes/source` in
 `vws-images` (`vws-compute-image-clone`). CDI `doc/RBAC.md` (PVC Cloning) and
