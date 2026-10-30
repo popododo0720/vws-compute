@@ -104,6 +104,10 @@ func reportSettles(f fixture) {
 	ready := compute.InstanceReport{
 		Node: "host-a", Generation: 1, State: compute.ReportReady, Power: compute.PowerRunning,
 		Interfaces: []compute.ObservedInterface{{DeviceName: "eth0", PrivateIPv4: "10.0.0.5"}},
+		Volumes: []compute.ObservedVolume{{
+			Volume: ok(compute.ParseVolumeRef(volPrefix + "v1")), DeviceName: "vda",
+			State: compute.AttachAttached, StateTime: t1,
+		}},
 	}
 
 	if _, err := f.report("web-1", compute.InstanceReport{Generation: 2, State: compute.ReportReady}, t1); compute.CodeOf(err) != compute.CodeAborted {
@@ -117,6 +121,10 @@ func reportSettles(f fixture) {
 	}
 	if got.Status.Observed.Generation != 1 || got.Status.Report.Node != "host-a" || len(got.Status.Report.Interfaces) != 1 {
 		f.t.Fatalf("after report = %+v", got.Status)
+	}
+	vols := f.instance("web-1").Status.Report.Volumes
+	if len(vols) != 1 || !sameObservedVolume(vols[0], ready.Volumes[0]) {
+		f.t.Fatalf("stored volumes = %+v, want %+v", vols, ready.Volumes)
 	}
 	f.wantState(op, compute.OperationSucceeded)
 
@@ -204,4 +212,10 @@ func attachClaimsVolumes(f fixture) {
 	if got := f.instance("web-2").Spec; len(got.Volumes) != 2 || got.Volumes[1].Claim != "pvc-data" {
 		f.t.Fatalf("web-2 after takeover = %+v", got.Volumes)
 	}
+}
+
+// sameObservedVolume compares by instant: a store may return the time in
+// another location.
+func sameObservedVolume(a, b compute.ObservedVolume) bool {
+	return a.Volume == b.Volume && a.DeviceName == b.DeviceName && a.State == b.State && a.StateTime.Equal(b.StateTime)
 }

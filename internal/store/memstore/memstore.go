@@ -475,6 +475,7 @@ func cloneInstanceSpec(s compute.InstanceSpec) compute.InstanceSpec {
 func cloneInstanceStatus(st compute.InstanceStatus) compute.InstanceStatus {
 	st.Observed = cloneObserved(st.Observed)
 	st.Report.Interfaces = slices.Clone(st.Report.Interfaces)
+	st.Report.Volumes = slices.Clone(st.Report.Volumes)
 	return st
 }
 
