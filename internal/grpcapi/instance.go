@@ -3,6 +3,7 @@ package grpcapi
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"strconv"
 	"strings"
@@ -446,6 +447,25 @@ func parseInstanceReport(st *computev1.InstanceStatus) (compute.InstanceReport, 
 		rep.Interfaces = append(rep.Interfaces, compute.ObservedInterface{
 			DeviceName: n.GetDeviceName(), Subnet: n.GetSubnet(), PrivateIPv4: n.GetPrivateIpv4(), PublicIPv4: n.GetPublicIpv4(),
 		})
+	}
+	for i, v := range st.GetVolumes() {
+		field := fmt.Sprintf("status.volumes[%d]", i)
+		ref, err := compute.ParseVolumeRef(v.GetVolume())
+		if err != nil {
+			return compute.InstanceReport{}, invalidSpec(field + ".volume: " + err.Error())
+		}
+		state, ok := parseVolumeAttachState(v.GetState())
+		if !ok {
+			return compute.InstanceReport{}, invalidSpec(field + ".state is required")
+		}
+		obs := compute.ObservedVolume{Volume: ref, DeviceName: v.GetDeviceName(), State: state}
+		if t := v.GetStateTime(); t != nil {
+			if err := t.CheckValid(); err != nil {
+				return compute.InstanceReport{}, invalidSpec(field + ".state_time: " + err.Error())
+			}
+			obs.StateTime = t.AsTime()
+		}
+		rep.Volumes = append(rep.Volumes, obs)
 	}
 	return rep, nil
 }
