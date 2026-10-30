@@ -36,6 +36,13 @@ rules:
   - apiGroups: ["cdi.kubevirt.io"]
     resources: ["datavolumes"]
     verbs: ["get", "delete"]
+  - apiGroups: ["cdi.kubevirt.io"]
+    resources: ["datavolumes/source"]
+    # create: CDI checks that the DataVolume's creator may create a clone
+    # source in the source PVC's namespace. image.go ConvergeImage clones a
+    # volume or a machine's root disk from vws-vms into an image in
+    # vws-images (vws-compute#96).
+    verbs: ["create"]
   - apiGroups: [""]
     resources: ["secrets"]
     # cloudinit.go: two Secrets per machine. <instance>-cloudinit holds the

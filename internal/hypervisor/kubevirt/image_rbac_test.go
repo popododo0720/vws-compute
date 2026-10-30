@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	authv1 "k8s.io/api/authorization/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -18,8 +19,8 @@ import (
 	"github.com/popododo0720/vws-compute/internal/hypervisor"
 )
 
-// imageRole reads the image namespace Role from the supplied RBAC manifest.
-func imageRole(t *testing.T) rbacv1.Role {
+// rbacRole reads one Role from the KubeVirt RBAC manifest.
+func rbacRole(t *testing.T, name string) rbacv1.Role {
 	t.Helper()
 	f, err := os.Open(filepath.Join("..", "..", "..", "deploy", "rbac", "kubevirt-role.yaml"))
 	if err != nil {
@@ -34,12 +35,18 @@ func imageRole(t *testing.T) rbacv1.Role {
 		} else if err != nil {
 			t.Fatal(err)
 		}
-		if r.Kind == "Role" && r.Name == "vws-compute-images" {
+		if r.Kind == "Role" && r.Name == name {
 			return r
 		}
 	}
-	t.Fatal("deploy/rbac/kubevirt-role.yaml has no Role vws-compute-images")
+	t.Fatalf("deploy/rbac/kubevirt-role.yaml has no Role %s", name)
 	return rbacv1.Role{}
+}
+
+// imageRole reads the image namespace Role from the supplied RBAC manifest.
+func imageRole(t *testing.T) rbacv1.Role {
+	t.Helper()
+	return rbacRole(t, "vws-compute-images")
 }
 
 // TestImageRoleLetsTheAgentLabelAnExistingDataSource pins the review of
@@ -91,5 +98,63 @@ func TestImageRoleLetsTheAgentLabelAnExistingDataSource(t *testing.T) {
 	}
 	if l := dataSourceLabels(t, admin, ns); l[LabelPublic] != "" || l[LabelProject] != "" {
 		t.Fatalf("labels kept: %v", l)
+	}
+}
+
+// TestVMRoleLetsCreateImageCloneAVolume pins vws-compute#96: CreateImage from
+// a volume clones a PVC in the VM namespace with a DataVolume in the image
+// namespace. CDI checks that the DataVolume's creator may create
+// datavolumes/source in the source namespace. A service account bound only to
+// the VM Role passes that check; the parent DataVolume and other verbs stay
+// denied.
+func TestVMRoleLetsCreateImageCloneAVolume(t *testing.T) {
+	admin, ns, _ := newClient(t)
+	ctx := context.Background()
+	role := rbacRole(t, "vws-compute-vms")
+	role.ObjectMeta = metav1.ObjectMeta{Namespace: ns, Name: role.Name}
+	sa := &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "vws-compute"}}
+	rb := &rbacv1.RoleBinding{
+		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: role.Name},
+		RoleRef:    rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "Role", Name: role.Name},
+		Subjects:   []rbacv1.Subject{{Kind: "ServiceAccount", Name: sa.Name, Namespace: ns}},
+	}
+	for _, o := range []client.Object{&role, sa, rb} {
+		if err := admin.Create(ctx, o); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cfg := rest.CopyConfig(env.Config)
+	cfg.Impersonate = rest.ImpersonationConfig{UserName: "system:serviceaccount:" + ns + ":vws-compute"}
+	limited, err := client.New(cfg, client.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	probe := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "probe"}}
+	if err := limited.Create(ctx, probe); err == nil {
+		t.Skip("envtest does not enforce RBAC here (a configmap create was allowed without a grant)")
+	}
+	for _, tc := range []struct {
+		name     string
+		verb     string
+		resource string
+		sub      string
+		allowed  bool
+	}{
+		{"CreateImage clone source", "create", "datavolumes", "source", true},
+		{"create the parent DataVolume", "create", "datavolumes", "", false},
+		{"update the clone source", "update", "datavolumes", "source", false},
+	} {
+		review := &authv1.SelfSubjectAccessReview{Spec: authv1.SelfSubjectAccessReviewSpec{
+			ResourceAttributes: &authv1.ResourceAttributes{
+				Namespace: ns, Verb: tc.verb, Group: "cdi.kubevirt.io",
+				Resource: tc.resource, Subresource: tc.sub,
+			},
+		}}
+		if err := limited.Create(ctx, review); err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		if review.Status.Allowed != tc.allowed {
+			t.Errorf("%s: allowed %t, want %t (%s)", tc.name, review.Status.Allowed, tc.allowed, review.Status.Reason)
+		}
 	}
 }
