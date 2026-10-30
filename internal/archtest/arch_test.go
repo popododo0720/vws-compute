@@ -100,7 +100,11 @@ var selectorRules = []struct {
 }{
 	{[]string{"CommitDesired"}, []string{"internal/controller"}, "only the controller writes desired state"},
 	{[]string{"CommitInstanceStatus", "CommitImageStatus"}, []string{"internal/reconciler"}, "only the reconciler writes status"},
-	{[]string{"ConvergeMachine", "ConvergeImage"}, []string{"internal/reconciler"}, "only the reconciler calls the agent"},
+	{
+		[]string{"ConvergeMachine", "ConvergeImage", "MachineVolumes"},
+		[]string{"internal/reconciler"},
+		"only the reconciler calls the agent",
+	},
 	{[]string{"ReportInstanceStatus"}, []string{"internal/grpcapi", "internal/reconciler"}, "only the report RPC and the reconciler write controller-reported status"},
 	{[]string{"RestoreOperation"}, []string{"internal/store/kubestore"}, "only storage rehydrates operations"},
 }
