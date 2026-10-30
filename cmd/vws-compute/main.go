@@ -140,7 +140,7 @@ func run(ctx context.Context, cfg config) error {
 	// the same verdict grpc.health.v1 answers. The telemetry backend is never
 	// a readiness check.
 	obshealth.Default().Register("grpc", func(context.Context) error {
-		if hl.Serving() {
+		if hl != nil && hl.Serving() {
 			return nil
 		}
 		return errGRPCNotServing
