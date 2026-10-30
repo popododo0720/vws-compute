@@ -6,7 +6,7 @@ toolchain go1.26.10
 
 require (
 	cloud.google.com/go/longrunning v1.3.0
-	github.com/popododo0720/vws-proto v0.5.0
+	github.com/popododo0720/vws-proto v0.8.0
 	github.com/prometheus/client_golang v1.24.0
 	golang.org/x/crypto v0.57.0
 	golang.org/x/mod v0.41.0
