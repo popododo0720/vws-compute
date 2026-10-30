@@ -86,7 +86,7 @@ func (h *Health) Run(ctx context.Context) {
 		err := h.Probe(ctx)
 		switch {
 		case err != nil && !failing && ctx.Err() == nil:
-			slog.WarnContext(ctx, "health: not serving", slog.Any("err", err))
+			slog.WarnContext(ctx, "health: not serving", slog.String("err", err.Error()))
 		case err == nil && failing:
 			slog.InfoContext(ctx, "health: serving")
 		}

@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/popododo0720/vws-compute/internal/compute"
@@ -40,11 +41,15 @@ type Reconciler struct {
 	now      func() time.Time
 	interval time.Duration
 	log      *slog.Logger
-	observe  func(result string)
+	observe  func(ctx context.Context, result string, d time.Duration, err error)
 	claims   ClaimFunc
 	// deleteVolume is set by WithVolumeDeleter.
 	deleteVolume VolumeDeleter
 	kick         chan struct{}
+
+	// queueDepth and queueOldest are the due backlog at the last sweep.
+	queueDepth  atomic.Int64
+	queueOldest atomic.Int64
 }
 
 type Option func(*Reconciler)
@@ -75,9 +80,9 @@ const (
 )
 
 // WithSweepObserver makes Run call observe after each sweep with SweepOK,
-// SweepWaiting (only machines still booting), or SweepError. It must not
-// block.
-func WithSweepObserver(observe func(result string)) Option {
+// SweepWaiting (only machines still booting), or SweepError, how long the
+// sweep took, and its error. It must not block.
+func WithSweepObserver(observe func(ctx context.Context, result string, d time.Duration, err error)) Option {
 	return func(r *Reconciler) { r.observe = observe }
 }
 
@@ -89,7 +94,7 @@ func New(s store.StatusStore, a hypervisor.Agent, opts ...Option) *Reconciler {
 		interval: DefaultInterval,
 		log:      slog.Default(),
 		kick:     make(chan struct{}, 1),
-		observe:  func(string) {},
+		observe:  func(context.Context, string, time.Duration, error) {},
 	}
 	for _, o := range opts {
 		o(r)
@@ -107,30 +112,63 @@ func (r *Reconciler) Kick() {
 	}
 }
 
+// noteQueue records the due backlog seen by one sweep. The oldest timestamp
+// stays until the backlog empties, so the age measures how long the oldest
+// pending item has waited, including its retry backoff.
+func (r *Reconciler) noteQueue(depth int, now time.Time) {
+	r.queueDepth.Store(int64(depth))
+	if depth == 0 {
+		r.queueOldest.Store(0)
+		return
+	}
+	if r.queueOldest.Load() == 0 {
+		r.queueOldest.Store(now.UnixNano())
+	}
+}
+
+// QueueDepth is the due backlog at the last sweep. It is a
+// vws.queue.depth observer.
+func (r *Reconciler) QueueDepth() int64 { return r.queueDepth.Load() }
+
+// QueueOldest is how long the oldest due item has waited, or zero when the
+// backlog is empty. It is a vws.queue.oldest_age observer.
+func (r *Reconciler) QueueOldest() time.Duration {
+	n := r.queueOldest.Load()
+	if n == 0 {
+		return 0
+	}
+	if d := r.now().Sub(time.Unix(0, n)); d > 0 {
+		return d
+	}
+	return 0
+}
+
 // Run sweeps until ctx ends. Call it from exactly one goroutine.
 // The first thing it does is re-apply every converged spec, so an agent
 // that lost its memory (the in-memory fake, after a restart) catches up
 // to the repository before new work is accepted.
 func (r *Reconciler) Run(ctx context.Context) error {
 	if err := r.Restore(ctx); err != nil && ctx.Err() == nil {
-		r.log.WarnContext(ctx, "restore agent", slog.Any("err", err))
+		r.log.WarnContext(ctx, "restore agent", slog.String("err", err.Error()))
 	}
 	tick := time.NewTicker(r.interval)
 	defer tick.Stop()
 	for {
+		start := time.Now()
 		err := r.Sweep(ctx)
+		d := time.Since(start)
 		switch {
 		case ctx.Err() != nil:
 		case err == nil:
-			r.observe(SweepOK)
+			r.observe(ctx, SweepOK, d, nil)
 		case onlyNotReady(err):
 			// A machine that is only still booting fails every sweep until it
 			// is up. That is progress, not a failure, so it logs at debug.
-			r.log.DebugContext(ctx, "reconcile sweep: waiting for machines", slog.Any("err", err))
-			r.observe(SweepWaiting)
+			r.log.DebugContext(ctx, "reconcile sweep: waiting for machines", slog.String("err", err.Error()))
+			r.observe(ctx, SweepWaiting, d, err)
 		default:
-			r.log.WarnContext(ctx, "reconcile sweep", slog.Any("err", err))
-			r.observe(SweepError)
+			r.log.WarnContext(ctx, "reconcile sweep", slog.String("err", err.Error()))
+			r.observe(ctx, SweepError, d, err)
 		}
 		select {
 		case <-ctx.Done():
@@ -164,6 +202,9 @@ func (r *Reconciler) Sweep(ctx context.Context) error {
 
 func (r *Reconciler) sweep(ctx context.Context) error {
 	due, err := r.store.Unconverged(ctx, r.now())
+	if err == nil {
+		r.noteQueue(len(due), r.now())
+	}
 	if err != nil {
 		return err
 	}

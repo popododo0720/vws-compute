@@ -16,6 +16,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	"github.com/popododo0720/vws-lib/obs"
+
 	"github.com/popododo0720/vws-compute/internal/compute"
 )
 
@@ -236,10 +238,20 @@ func (s *Store) write(ctx context.Context, e *entry) error {
 		return err
 	}
 	if e.exists {
-		return casErr(s.c.Update(ctx, cm))
+		return s.cas(ctx, s.c.Update(ctx, cm))
 	}
 	cm.ResourceVersion = ""
-	return casErr(s.c.Create(ctx, cm))
+	return s.cas(ctx, s.c.Create(ctx, cm))
+}
+
+// cas turns a lost resourceVersion race into errCAS and counts it as
+// vws.store.conflicts. The caller rereads and reapplies its rule.
+func (s *Store) cas(ctx context.Context, err error) error {
+	err = casErr(err)
+	if isCAS(err) {
+		obs.M().StoreConflict(ctx, "kubestore")
+	}
+	return err
 }
 
 const maxAttempts = 64

@@ -22,13 +22,15 @@ import (
 
 	"google.golang.org/grpc"
 
+	"github.com/popododo0720/vws-lib/obs"
+	obshealth "github.com/popododo0720/vws-lib/obs/health"
+
 	"github.com/popododo0720/vws-compute/internal/compute"
 	"github.com/popododo0720/vws-compute/internal/controller"
 	"github.com/popododo0720/vws-compute/internal/grpcapi"
 	"github.com/popododo0720/vws-compute/internal/hypervisor"
 	"github.com/popododo0720/vws-compute/internal/hypervisor/fakeagent"
 	"github.com/popododo0720/vws-compute/internal/hypervisor/kubevirt"
-	"github.com/popododo0720/vws-compute/internal/obs"
 	"github.com/popododo0720/vws-compute/internal/reconciler"
 	"github.com/popododo0720/vws-compute/internal/store"
 	"github.com/popododo0720/vws-compute/internal/store/kubestore"
@@ -53,6 +55,17 @@ func main() {
 }
 
 func run(ctx context.Context, cfg config) error {
+	shutdownObs, err := obs.Setup(ctx, obs.ForService(grpcapi.ServiceName))
+	if err != nil {
+		return fmt.Errorf("observability: %w", err)
+	}
+	defer func() {
+		shut, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		if err := shutdownObs(shut); err != nil {
+			slog.WarnContext(ctx, "observability shutdown", slog.String(obs.FieldErr, err.Error()))
+		}
+	}()
 	listen, namespace, kubeconfig, seedImages, storage := cfg.listen, cfg.namespace, cfg.kubeconfig, cfg.seedImages, cfg.storage
 	seed, err := readSeed(seedImages)
 	if err != nil {
@@ -64,7 +77,7 @@ func run(ctx context.Context, cfg config) error {
 	}
 	defer func() {
 		if err := repo.Close(); err != nil {
-			slog.WarnContext(ctx, "close store", slog.Any("err", err))
+			slog.WarnContext(ctx, "close store", slog.String(obs.FieldErr, err.Error()))
 		}
 	}()
 
@@ -83,7 +96,7 @@ func run(ctx context.Context, cfg config) error {
 		}
 		defer func() {
 			if err := closeStorage(); err != nil {
-				slog.WarnContext(ctx, "close storage connection", slog.Any("err", err))
+				slog.WarnContext(ctx, "close storage connection", slog.String(obs.FieldErr, err.Error()))
 			}
 		}()
 		lookup = l
@@ -92,11 +105,12 @@ func run(ctx context.Context, cfg config) error {
 		// pending instead of failing the create.
 		opts = append(opts, grpcapi.WithVolumes(lookup))
 	}
-	// hl is set before the HTTP server starts, the only reader of ready.
 	var hl *grpcapi.Health
-	ready := func() bool { return hl != nil && hl.Serving() }
-	metrics := obs.NewMetrics(ready)
-	recOpts := []reconciler.Option{reconciler.WithReports(repo), reconciler.WithSweepObserver(metrics.Sweep), reconciler.WithPublicImages(cfg.publicImages)}
+	recOpts := []reconciler.Option{
+		reconciler.WithReports(repo),
+		reconciler.WithSweepObserver(observeSweep),
+		reconciler.WithPublicImages(cfg.publicImages),
+	}
 	if lookup != nil {
 		recOpts = append(recOpts, reconciler.WithClaims(grpcapi.Claims(lookup)))
 		if del := grpcapi.DeleteVolumes(lookup); del != nil {
@@ -105,6 +119,7 @@ func run(ctx context.Context, cfg config) error {
 		}
 	}
 	rec := reconciler.New(repo, agent, recOpts...)
+	obs.M().RegisterQueue(reconcilerQueue, rec.QueueDepth, rec.QueueOldest)
 	ctl := controller.New(repo, controller.WithKick(rec.Kick))
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -118,17 +133,19 @@ func run(ctx context.Context, cfg config) error {
 	if err != nil {
 		return stopReconciler(cancel, reconciled, err)
 	}
-	srv := grpc.NewServer(append(grpcapi.Recovery(), grpc.WaitForHandlers(true))...)
+	srv := grpc.NewServer(append(grpcapi.ServerOptions(), grpc.WaitForHandlers(true))...)
 	grpcapi.Register(srv, ctl, repo, opts...)
 	hl = grpcapi.NewHealth(srv, healthInterval, healthChecks(repo, agent)...)
-	go hl.Run(ctx)
-	if cfg.http != "" {
-		stopHTTP, err := serveHTTP(ctx, cfg.http, obs.Handler(ready, metrics))
-		if err != nil {
-			return stopReconciler(cancel, reconciled, err)
+	// obs.Setup serves /healthz and /readyz on VWS_HEALTH_ADDR; /readyz reads
+	// the same verdict grpc.health.v1 answers. The telemetry backend is never
+	// a readiness check.
+	obshealth.Default().Register("grpc", func(context.Context) error {
+		if hl.Serving() {
+			return nil
 		}
-		defer stopHTTP()
-	}
+		return errGRPCNotServing
+	})
+	go hl.Run(ctx)
 	served := make(chan error, 1)
 	go func() { served <- srv.Serve(lis) }()
 	slog.InfoContext(ctx, "serving vws.compute.v1", slog.String("addr", lis.Addr().String()), slog.String("namespace", namespace))
@@ -165,6 +182,20 @@ func recovered(f func() error) (err error) {
 // them. WaitOperation may block for up to a minute, and GracefulStop does
 // not cancel handlers.
 const shutdownGrace = 2 * time.Second
+
+const reconcilerQueue = "reconciler"
+
+// errGRPCNotServing is the readiness verdict before the first probe passes.
+var errGRPCNotServing = errors.New("grpc health is not serving")
+
+// observeSweep records one reconcile pass. The result labels are the
+// reconciler's sweep outcomes, and the code label is the compute error class.
+func observeSweep(ctx context.Context, result string, d time.Duration, err error) {
+	obs.M().Reconcile(ctx, reconcilerQueue, result, d)
+	if err != nil {
+		obs.M().ReconcileError(ctx, reconcilerQueue, compute.CodeOf(err).String())
+	}
+}
 
 // stopReconciler cancels the reconciler and waits for it. A cancellation
 // is the shutdown we just asked for, so it is not reported beside err.
