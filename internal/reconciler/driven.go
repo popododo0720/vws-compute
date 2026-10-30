@@ -151,7 +151,8 @@ func (r *Reconciler) releaseVolumes(ctx context.Context, inst compute.Instance) 
 			}
 			if err := r.deleteVolume(ctx, v.Volume.String()); err != nil {
 				r.log.WarnContext(ctx, "delete volume on termination",
-					slog.String("instance", inst.Spec.ID.String()), slog.String("volume", v.Volume.String()), slog.Any("err", err))
+					slog.String("instance", inst.Spec.ID.String()), slog.String("volume", v.Volume.String()),
+					slog.String("err", err.Error()))
 				return nil
 			}
 		}
@@ -192,7 +193,7 @@ func (r *Reconciler) interfaces(ctx context.Context, spec compute.InstanceSpec) 
 	}
 	ip, err := obs.MachineIPv4(ctx, spec.ID.String())
 	if err != nil {
-		r.log.WarnContext(ctx, "machine address", slog.String("instance", spec.ID.String()), slog.Any("err", err))
+		r.log.WarnContext(ctx, "machine address", slog.String("instance", spec.ID.String()), slog.String("err", err.Error()))
 		return nil
 	}
 	if ip == "" {

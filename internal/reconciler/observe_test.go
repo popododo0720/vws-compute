@@ -14,7 +14,7 @@ func TestRunReportsEachSweepToTheObserver(t *testing.T) {
 	results := make(chan string, 8)
 	rec := reconciler.New(memstore.New(), fakeagent.New(),
 		reconciler.WithInterval(time.Hour),
-		reconciler.WithSweepObserver(func(r string) { results <- r }))
+		reconciler.WithSweepObserver(func(_ context.Context, r string, _ time.Duration, _ error) { results <- r }))
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- rec.Run(ctx) }()

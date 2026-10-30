@@ -58,12 +58,19 @@ func serve(t *testing.T) *harness {
 
 func serveRepo(t *testing.T, repo store.Repository, opts ...grpcapi.Option) *harness {
 	t.Helper()
+	return serveRepoServer(t, repo, nil, opts...)
+}
+
+func serveRepoServer(t *testing.T, repo store.Repository, serverOpts []grpc.ServerOption,
+	opts ...grpcapi.Option,
+) *harness {
+	t.Helper()
 	agent := fakeagent.New()
 	rec := reconciler.New(repo, agent, reconciler.WithInterval(10*time.Millisecond))
 	ctl := controller.New(repo, controller.WithKick(rec.Kick))
 
 	lis := bufconn.Listen(1 << 20)
-	srv := grpc.NewServer(grpc.WaitForHandlers(true))
+	srv := grpc.NewServer(append(append([]grpc.ServerOption{}, serverOpts...), grpc.WaitForHandlers(true))...)
 	grpcapi.Register(srv, ctl, repo, opts...)
 	ctx, cancel := context.WithCancel(context.Background())
 	stopped := make(chan struct{})
