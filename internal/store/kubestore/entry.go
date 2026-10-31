@@ -16,6 +16,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	"github.com/popododo0720/vws-lib/obs"
+
 	"github.com/popododo0720/vws-compute/internal/compute"
 )
 
@@ -247,7 +249,7 @@ func (s *Store) write(ctx context.Context, e *entry) error {
 	if apierrors.IsRequestEntityTooLargeError(err) {
 		return tooLarge(e.ref, len(cm.Data[recordKey]))
 	}
-	return casErr(err)
+	return s.cas(ctx, err)
 }
 
 // tooLarge is the permanent failure of a record over the ConfigMap limit.
@@ -255,6 +257,16 @@ func (s *Store) write(ctx context.Context, e *entry) error {
 func tooLarge(ref compute.Ref, n int) error {
 	return compute.Errorf(compute.CodeLimitExceeded,
 		"%s record is %d bytes, over the %d byte limit; too many recent operations target it", ref, n, maxConfigMapBytes)
+}
+
+// cas turns a lost resourceVersion race into errCAS and counts it as
+// vws.store.conflicts. The caller rereads and reapplies its rule.
+func (s *Store) cas(ctx context.Context, err error) error {
+	err = casErr(err)
+	if isCAS(err) {
+		obs.M().StoreConflict(ctx, "kubestore")
+	}
+	return err
 }
 
 const maxAttempts = 64
