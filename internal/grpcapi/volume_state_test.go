@@ -14,8 +14,8 @@ import (
 
 // TestReportedVolumeAttachStatesRoundTrip is vws-proto#56 AC2 at the wire: a
 // controller reports InstanceStatus.volumes and every state reads back on the
-// instance with its state_time; a volume without a state or a valid name is
-// refused and changes nothing.
+// instance with its state_time; a volume without a state or a valid name, or a
+// repeated volume, is refused and changes nothing.
 func TestReportedVolumeAttachStatesRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	h := serve(t)
@@ -57,6 +57,14 @@ func TestReportedVolumeAttachStatesRoundTrip(t *testing.T) {
 		Volume: "projects/demo/zones/z1/volumes/a", State: computev1.VolumeAttachState_VOLUME_ATTACH_STATE_ATTACHED,
 		StateTime: &timestamppb.Timestamp{Nanos: -1},
 	})
+	wantCode(t, err, codes.InvalidArgument)
+	_, err = report(
+		vol("a", computev1.VolumeAttachState_VOLUME_ATTACH_STATE_ATTACHED),
+		&computev1.ObservedVolumeAttachment{
+			Volume: "projects/demo/zones/z1/volumes/a", DeviceName: "/dev/other",
+			State: computev1.VolumeAttachState_VOLUME_ATTACH_STATE_DETACHING,
+		},
+	)
 	wantCode(t, err, codes.InvalidArgument)
 	got, err := h.inst.GetInstance(ctx, &computev1.GetInstanceRequest{Name: name})
 	if err != nil {
