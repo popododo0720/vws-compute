@@ -11,10 +11,12 @@ import (
 )
 
 // MachineIPv4 implements hypervisor.AddressObserver from the
-// VirtualMachineInstance's status.interfaces. The machine has one
+// VirtualMachineInstance's status.interfaces: the address of the primary
+// interface, the one at EC2 device index 0. A single-subnet machine has one
 // interface, the pod network one KubeVirt names "default" (the template
-// lists none, so KubeVirt adds it), which Kube-OVN puts on the subnet. No
-// instance yet, or no IPv4 on it yet, is "".
+// lists none, so KubeVirt adds it). A multi-NIC machine's template names its
+// interfaces nic0, nic1, ... in device index order, so the primary one is
+// "nic0". No instance yet, or no IPv4 on it yet, is "".
 func (a *Agent) MachineIPv4(ctx context.Context, name string) (string, error) {
 	vmi := new(unstructured.Unstructured)
 	vmi.SetGroupVersionKind(vmiGVK)
@@ -28,8 +30,8 @@ func (a *Agent) MachineIPv4(ctx context.Context, name string) (string, error) {
 	return podIPv4(vmi), nil
 }
 
-// podIPv4 is the first IPv4 of the interface named "default", or of the
-// only interface when none has that name.
+// podIPv4 is the first IPv4 of the interface named "default", else of the
+// one named "nic0", else of the only interface.
 func podIPv4(vmi *unstructured.Unstructured) string {
 	ifaces, _, _ := unstructured.NestedSlice(vmi.Object, "status", "interfaces") //nolint:errcheck // another shape has no address we can use
 	var pick map[string]any
@@ -42,7 +44,7 @@ func podIPv4(vmi *unstructured.Unstructured) string {
 			pick = m
 			break
 		}
-		if len(ifaces) == 1 {
+		if m["name"] == primaryInterface || (pick == nil && len(ifaces) == 1) {
 			pick = m
 		}
 	}
@@ -65,3 +67,7 @@ func podIPv4(vmi *unstructured.Unstructured) string {
 // podInterface is the name KubeVirt gives the pod network interface it adds
 // to a VirtualMachine whose template lists no interfaces.
 const podInterface = "default"
+
+// primaryInterface is the template name of the device index 0 interface of
+// a machine whose template lists its interfaces (see networks).
+const primaryInterface = "nic0"

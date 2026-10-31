@@ -62,3 +62,17 @@ func machineNetwork(nics []compute.NetworkInterface) (subnet string, ifaces []hy
 	}
 	return "", ifaces
 }
+
+// primaryNIC is the interface whose address the machine reports, the one
+// machineNetwork wires first: the device index 0 interface of an instance
+// with a direct interface, else the first interface. nics is not empty.
+func primaryNIC(nics []compute.NetworkInterface) compute.NetworkInterface {
+	if _, ifaces := machineNetwork(nics); len(ifaces) > 0 {
+		for i, n := range nics {
+			if "nic"+strconv.Itoa(deviceIndex(n.DeviceName, i)) == ifaces[0].Name {
+				return n
+			}
+		}
+	}
+	return nics[0]
+}
