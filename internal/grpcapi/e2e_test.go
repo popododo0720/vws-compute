@@ -42,13 +42,14 @@ import (
 )
 
 type harness struct {
-	inst  computev1.InstanceServiceClient
-	img   computev1.ImageServiceClient
-	keys  computev1.KeyPairServiceClient
-	ops   longrunningpb.OperationsClient
-	agent *fakeagent.Agent
-	ctl   *controller.Controller
-	stop  func()
+	inst   computev1.InstanceServiceClient
+	img    computev1.ImageServiceClient
+	keys   computev1.KeyPairServiceClient
+	ops    longrunningpb.OperationsClient
+	lookup computev1.OperationLookupServiceClient
+	agent  *fakeagent.Agent
+	ctl    *controller.Controller
+	stop   func()
 }
 
 func serve(t *testing.T) *harness {
@@ -87,12 +88,13 @@ func serveRepoServer(t *testing.T, repo store.Repository, serverOpts []grpc.Serv
 		t.Fatal(err)
 	}
 	h := &harness{
-		inst:  computev1.NewInstanceServiceClient(conn),
-		img:   computev1.NewImageServiceClient(conn),
-		keys:  computev1.NewKeyPairServiceClient(conn),
-		ops:   longrunningpb.NewOperationsClient(conn),
-		agent: agent,
-		ctl:   ctl,
+		inst:   computev1.NewInstanceServiceClient(conn),
+		img:    computev1.NewImageServiceClient(conn),
+		keys:   computev1.NewKeyPairServiceClient(conn),
+		ops:    longrunningpb.NewOperationsClient(conn),
+		lookup: computev1.NewOperationLookupServiceClient(conn),
+		agent:  agent,
+		ctl:    ctl,
 	}
 	var once sync.Once
 	h.stop = func() {
