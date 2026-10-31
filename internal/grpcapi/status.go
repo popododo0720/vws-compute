@@ -82,6 +82,8 @@ func toStatus(err error) error {
 		return failedPre("DEPENDENCY_NOT_READY", err.Error())
 	case compute.CodeAborted:
 		return status.Error(codes.Aborted, err.Error())
+	case compute.CodeLimitExceeded:
+		return withReason(codes.ResourceExhausted, "QUOTA_EXCEEDED", err.Error())
 	default:
 		return status.Error(codes.Internal, err.Error())
 	}
@@ -99,6 +101,8 @@ func grpcCode(c compute.Code) codes.Code {
 		return codes.Aborted
 	case compute.CodeFailedPrecondition:
 		return codes.FailedPrecondition
+	case compute.CodeLimitExceeded:
+		return codes.ResourceExhausted
 	default:
 		return codes.Internal
 	}
