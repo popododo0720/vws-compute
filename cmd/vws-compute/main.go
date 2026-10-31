@@ -17,6 +17,7 @@ import (
 	"os"
 	"os/signal"
 	"runtime/debug"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -58,11 +59,27 @@ func main() {
 // a manual metric reader through the same path.
 var setupObs = obs.Setup
 
+// openStore is the store open run calls. Tests replace it to hold startup
+// between observability setup and serving.
+var openStore = open
+
 func run(ctx context.Context, cfg config) error {
 	shutdownObs, err := setupObs(ctx, obs.ForService(grpcapi.ServiceName))
 	if err != nil {
 		return fmt.Errorf("observability: %w", err)
 	}
+	// obs.Setup serves /healthz and /readyz on VWS_HEALTH_ADDR. A handler
+	// with no checks is ready, so register the gRPC verdict before the store,
+	// the storage dial, and the reconciler can hold startup: /readyz must
+	// answer 503 until grpc.health.v1 is SERVING. The telemetry backend is
+	// never a readiness check.
+	var hl atomic.Pointer[grpcapi.Health]
+	obshealth.Default().Register("grpc", func(context.Context) error {
+		if h := hl.Load(); h != nil && h.Serving() {
+			return nil
+		}
+		return errGRPCNotServing
+	})
 	defer func() {
 		shut, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 		defer cancel()
@@ -75,7 +92,7 @@ func run(ctx context.Context, cfg config) error {
 	if err != nil {
 		return err
 	}
-	repo, err := open(ctx, namespace, kubeconfig, cfg.legacyImageScope)
+	repo, err := openStore(ctx, namespace, kubeconfig, cfg.legacyImageScope)
 	if err != nil {
 		return err
 	}
@@ -109,7 +126,6 @@ func run(ctx context.Context, cfg config) error {
 		// pending instead of failing the create.
 		opts = append(opts, grpcapi.WithVolumes(lookup))
 	}
-	var hl *grpcapi.Health
 	recOpts := []reconciler.Option{
 		reconciler.WithReports(repo),
 		reconciler.WithPublicImages(cfg.publicImages),
@@ -138,17 +154,9 @@ func run(ctx context.Context, cfg config) error {
 	}
 	srv := grpc.NewServer(append(grpcapi.ServerOptions(), grpc.WaitForHandlers(true))...)
 	grpcapi.Register(srv, ctl, repo, opts...)
-	hl = grpcapi.NewHealth(srv, healthInterval, healthChecks(repo, agent)...)
-	// obs.Setup serves /healthz and /readyz on VWS_HEALTH_ADDR; /readyz reads
-	// the same verdict grpc.health.v1 answers. The telemetry backend is never
-	// a readiness check.
-	obshealth.Default().Register("grpc", func(context.Context) error {
-		if hl != nil && hl.Serving() {
-			return nil
-		}
-		return errGRPCNotServing
-	})
-	go hl.Run(ctx)
+	h := grpcapi.NewHealth(srv, healthInterval, healthChecks(repo, agent)...)
+	hl.Store(h)
+	go h.Run(ctx)
 	served := make(chan error, 1)
 	go func() { served <- srv.Serve(lis) }()
 	slog.InfoContext(ctx, "serving vws.compute.v1", slog.String("addr", lis.Addr().String()), slog.String("namespace", namespace))
@@ -157,7 +165,7 @@ func run(ctx context.Context, cfg config) error {
 	case <-ctx.Done():
 		// NOT_SERVING first, so probes and balancers drain before the
 		// listener closes.
-		hl.Shutdown()
+		h.Shutdown()
 		stopServer(srv, shutdownGrace)
 		err = <-served
 	case err = <-served:
