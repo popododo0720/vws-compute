@@ -185,6 +185,9 @@ func (e *entry) configMap(ns string) (*corev1.ConfigMap, error) {
 	if err != nil {
 		return nil, err
 	}
+	if n := len(recordKey) + len(data); n > maxConfigMapBytes {
+		return nil, tooLarge(e.ref, n)
+	}
 	return &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: objectName(e.ref), Namespace: ns, ResourceVersion: e.rv,
@@ -236,10 +239,22 @@ func (s *Store) write(ctx context.Context, e *entry) error {
 		return err
 	}
 	if e.exists {
-		return casErr(s.c.Update(ctx, cm))
+		err = s.c.Update(ctx, cm)
+	} else {
+		cm.ResourceVersion = ""
+		err = s.c.Create(ctx, cm)
 	}
-	cm.ResourceVersion = ""
-	return casErr(s.c.Create(ctx, cm))
+	if apierrors.IsRequestEntityTooLargeError(err) {
+		return tooLarge(e.ref, len(cm.Data[recordKey]))
+	}
+	return casErr(err)
+}
+
+// tooLarge is the permanent failure of a record over the ConfigMap limit.
+// It is not retried: the same write fails the same way.
+func tooLarge(ref compute.Ref, n int) error {
+	return compute.Errorf(compute.CodeLimitExceeded,
+		"%s record is %d bytes, over the %d byte limit; too many recent operations target it", ref, n, maxConfigMapBytes)
 }
 
 const maxAttempts = 64
