@@ -111,6 +111,7 @@ func TestErrorsMapToGRPCCodes(t *testing.T) {
 		{compute.Errorf(compute.CodeFailedPrecondition, "x"), codes.FailedPrecondition},
 		{compute.Errorf(compute.CodeAborted, "x"), codes.Aborted},
 		{compute.Errorf(compute.CodeInternal, "x"), codes.Internal},
+		{compute.Errorf(compute.CodeLimitExceeded, "x"), codes.ResourceExhausted},
 		{fmt.Errorf("wrapped: %w", compute.Errorf(compute.CodeNotFound, "x")), codes.NotFound},
 		{errors.New("disk full"), codes.Internal},
 		{context.Canceled, codes.Canceled},

@@ -169,9 +169,10 @@ func (s *Store) claimsFor(ctx context.Context, c store.DesiredChange) ([]claim, 
 // returned and nothing is written.
 func (s *Store) apply(ctx context.Context, c store.DesiredChange, ref compute.Ref, write *compute.Operation) (compute.Operation, bool, error) {
 	var out compute.Operation
+	var pruned []compute.Operation
 	wrote := false
 	err := s.update(ctx, ref, func(e *entry) (bool, error) {
-		wrote = false
+		wrote, pruned = false, nil
 		if prior, ok := e.op(func(o compute.Operation) bool { return o.Request == c.Op.Request }); ok {
 			if prior.Fingerprint != c.Op.Fingerprint {
 				return false, compute.Errorf(compute.CodeRequestMismatch, "request id %s was used for a different request", c.Op.Request)
@@ -224,9 +225,18 @@ func (s *Store) apply(ctx context.Context, c store.DesiredChange, ref compute.Re
 		}
 		op := compute.Settle(c.Op, e.generation(), e.observed(), c.Op.CreatedAt)
 		e.ops = append(e.ops, op)
+		pruned = e.prune(c.Op.CreatedAt)
 		out, wrote = op, true
 		return true, nil
 	})
+	if err == nil && wrote {
+		// The resource no longer holds these operations, so their request
+		// ids are forgotten. A failed delete is harmless: Repair removes an
+		// index whose operation the resource does not hold.
+		for _, op := range pruned {
+			_ = s.releaseIndex(ctx, op.Request, op.ID) //nolint:errcheck // best effort: Repair removes what is left
+		}
+	}
 	return out, wrote, err
 }
 

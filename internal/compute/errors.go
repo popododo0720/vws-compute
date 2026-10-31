@@ -24,6 +24,9 @@ const (
 	// races. Retrying with the same request id is safe.
 	CodeAborted
 	CodeInternal
+	// CodeLimitExceeded reports a write the store cannot hold, such as a
+	// resource record over its size limit. Retrying it fails the same way.
+	CodeLimitExceeded
 )
 
 var codeNames = [...]string{
@@ -34,6 +37,7 @@ var codeNames = [...]string{
 	CodeFailedPrecondition: "FailedPrecondition",
 	CodeAborted:            "Aborted",
 	CodeInternal:           "Internal",
+	CodeLimitExceeded:      "LimitExceeded",
 }
 
 func (c Code) String() string {
