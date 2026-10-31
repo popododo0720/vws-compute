@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -548,12 +549,22 @@ func validateCreateInstance(zone, name string, inst *computev1.Instance) error {
 
 func validateNICs(nics []*computev1.NetworkInterface) error {
 	seen := map[string]bool{}
+	indexes := map[int]bool{}
 	for _, nic := range nics {
 		if nic.GetDeviceName() == "" || seen[nic.GetDeviceName()] {
 			return invalidSpec("network interface device names must be unique and non-empty")
 		}
 		seen[nic.GetDeviceName()] = true
+		if i, ok := nicDeviceIndex(nic.GetDeviceName()); ok {
+			if indexes[i] {
+				return invalidSpec(fmt.Sprintf("network interface device index %d is used more than once", i))
+			}
+			indexes[i] = true
+		}
 		if err := parseSubnetName(nic.GetSubnet()); err != nil {
+			return err
+		}
+		if err := validateDirectSubnet(nic.GetSubnet()); err != nil {
 			return err
 		}
 		for _, g := range nic.GetSecurityGroups() {
@@ -561,6 +572,32 @@ func validateNICs(nics []*computev1.NetworkInterface) error {
 				return err
 			}
 		}
+	}
+	return nil
+}
+
+// nicDeviceIndex is the EC2 device index N of an interface named "nic<N>",
+// the name vws-console-api gives it.
+func nicDeviceIndex(device string) (int, bool) {
+	rest, ok := strings.CutPrefix(device, "nic")
+	if !ok || rest == "" || strings.Trim(rest, "0123456789") != "" {
+		return 0, false
+	}
+	n, err := strconv.Atoi(rest)
+	return n, err == nil
+}
+
+// directSubnetName is a direct network name inside subnet-direct-<name>
+// (vws-deploy#125).
+var directSubnetName = regexp.MustCompile(`^[a-z][a-z0-9-]{0,14}$`)
+
+// validateDirectSubnet refuses a direct subnet ID whose network name cannot
+// exist. Other subnets pass.
+func validateDirectSubnet(subnet string) error {
+	id := subnet[strings.LastIndex(subnet, "/")+1:]
+	name, ok := strings.CutPrefix(id, "subnet-direct-")
+	if ok && !directSubnetName.MatchString(name) {
+		return invalidID(fmt.Sprintf("subnet %q does not name a direct network", subnet))
 	}
 	return nil
 }

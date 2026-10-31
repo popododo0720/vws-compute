@@ -226,6 +226,13 @@ func (a *Agent) create(ctx context.Context, spec hypervisor.MachineSpec) error {
 	if errs := validation.IsDNS1123Subdomain(spec.Subnet); spec.Subnet != "" && len(errs) > 0 {
 		return hypervisor.Permanent(fmt.Errorf("machine %s: subnet %q is not a valid Kube-OVN Subnet name", spec.Name, spec.Subnet))
 	}
+	if spec.Subnet != "" && len(spec.Interfaces) > 0 {
+		return hypervisor.Permanent(fmt.Errorf("machine %s: a subnet and an interface list are exclusive", spec.Name))
+	}
+	ifaceDevs, nets, netAnnotations, err := networks(spec.Name, a.cfg.Namespace, spec.Interfaces)
+	if err != nil {
+		return err
+	}
 	run := runHalted
 	if spec.Power == hypervisor.PowerOn {
 		run = runAlways
@@ -305,20 +312,28 @@ func (a *Agent) create(ctx context.Context, spec hypervisor.MachineSpec) error {
 		// switch instead of the cluster default subnet.
 		podMeta["annotations"] = map[string]any{AnnotationLogicalSwitch: spec.Subnet}
 	}
+	if len(netAnnotations) > 0 {
+		podMeta["annotations"] = netAnnotations
+	}
+	devices := map[string]any{"disks": disks}
+	if ifaceDevs != nil {
+		devices["interfaces"] = ifaceDevs
+	}
+	vmiSpec := map[string]any{
+		"domain": map[string]any{
+			"cpu":     map[string]any{"cores": int64(spec.VCPUs)},
+			"memory":  map[string]any{"guest": memory(spec.MemoryMiB)},
+			"devices": devices,
+		},
+		"volumes": volumes,
+	}
+	if nets != nil {
+		vmiSpec["networks"] = nets
+	}
 	vm := &unstructured.Unstructured{Object: map[string]any{
 		"spec": map[string]any{
 			"runStrategy": run,
-			"template": map[string]any{
-				"metadata": podMeta,
-				"spec": map[string]any{
-					"domain": map[string]any{
-						"cpu":     map[string]any{"cores": int64(spec.VCPUs)},
-						"memory":  map[string]any{"guest": memory(spec.MemoryMiB)},
-						"devices": map[string]any{"disks": disks},
-					},
-					"volumes": volumes,
-				},
-			},
+			"template":    map[string]any{"metadata": podMeta, "spec": vmiSpec},
 		},
 	}}
 	if access != nil {

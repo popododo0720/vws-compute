@@ -179,9 +179,10 @@ func (r *Reconciler) heldVolumes(ctx context.Context) (map[string]string, error)
 	return held, err
 }
 
-// interfaces is the instance's observed interface: its first NIC with the
-// address the agent sees on the machine. KubeVirt's own name for that
-// interface is not the device name, so the spec's device name is used. It
+// interfaces is the instance's observed interface: its primary NIC (see
+// primaryNIC) with the address the agent sees on the machine. KubeVirt's own
+// name for that interface is not always the device name, so the spec's
+// device name is used. It
 // is nil when the agent cannot say, the instance has no NIC, or the machine
 // has no address yet; a lookup error is logged and treated the same way.
 func (r *Reconciler) interfaces(ctx context.Context, spec compute.InstanceSpec) []compute.ObservedInterface {
@@ -197,7 +198,7 @@ func (r *Reconciler) interfaces(ctx context.Context, spec compute.InstanceSpec) 
 	if ip == "" {
 		return nil
 	}
-	nic := spec.NICs[0]
+	nic := primaryNIC(spec.NICs)
 	return []compute.ObservedInterface{{DeviceName: nic.DeviceName, Subnet: nic.Subnet, PrivateIPv4: ip}}
 }
 
