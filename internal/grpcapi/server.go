@@ -59,8 +59,12 @@ func WithVolumes(v VolumeLookup) Option { return func(s *server) { s.volumes = v
 // image's region. Changing or deleting them stays with their owner.
 func WithPublicImages(p compute.PublicImages) Option { return func(s *server) { s.public = p } }
 
+// WithClock sets the time source for the LookupOperation request-id window.
+// Without it, the server uses time.Now.
+func WithClock(now func() time.Time) Option { return func(s *server) { s.clock = now } }
+
 // Register adds InstanceService, ImageService, KeyPairService,
-// and google.longrunning.Operations to s. ctl is the only desired-state
+// OperationLookupService, and google.longrunning.Operations to s. ctl is the only desired-state
 // write path, r the read path, and r's report method the only write path for
 // controller-reported instance status.
 func Register(s grpc.ServiceRegistrar, ctl *controller.Controller, r store.ReportStore, opts ...Option) {
@@ -71,6 +75,7 @@ func Register(s grpc.ServiceRegistrar, ctl *controller.Controller, r store.Repor
 	computev1.RegisterInstanceServiceServer(s, srv)
 	computev1.RegisterImageServiceServer(s, srv)
 	computev1.RegisterKeyPairServiceServer(s, srv)
+	computev1.RegisterOperationLookupServiceServer(s, srv)
 	longrunningpb.RegisterOperationsServer(s, srv)
 }
 
@@ -82,6 +87,7 @@ type server struct {
 	computev1.UnsafeInstanceServiceServer
 	computev1.UnsafeImageServiceServer
 	computev1.UnsafeKeyPairServiceServer
+	computev1.UnsafeOperationLookupServiceServer
 	longrunningpb.UnimplementedOperationsServer
 	ctl     *controller.Controller
 	read    store.Reader

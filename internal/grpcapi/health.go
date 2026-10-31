@@ -25,6 +25,7 @@ func ServiceNames() []string {
 		computev1.InstanceService_ServiceDesc.ServiceName,
 		computev1.ImageService_ServiceDesc.ServiceName,
 		computev1.KeyPairService_ServiceDesc.ServiceName,
+		computev1.OperationLookupService_ServiceDesc.ServiceName,
 		longrunningpb.Operations_ServiceDesc.ServiceName,
 	}
 }
