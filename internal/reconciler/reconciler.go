@@ -604,13 +604,11 @@ func machineSpec(s compute.InstanceSpec) hypervisor.MachineSpec {
 			m.Volumes = append(m.Volumes, hypervisor.Volume{Name: diskName(v.DeviceName), Claim: v.Claim})
 		}
 	}
-	// The first interface joins its subnet. The agent gets the subnet ID,
-	// the last segment of projects/*/regions/*/vpcs/*/subnets/<id>, which
-	// vws-network also uses as the Kube-OVN Subnet name. More interfaces
-	// are not wired yet (vws-compute#55).
-	if len(s.NICs) > 0 {
-		m.Subnet = subnetID(s.NICs[0].Subnet)
-	}
+	// The agent gets subnet IDs, the last segment of
+	// projects/*/regions/*/vpcs/*/subnets/<id>, which vws-network also uses
+	// as the Kube-OVN Subnet name. Without a direct interface only the first
+	// interface is wired; with one, every interface is (vws-compute#55).
+	m.Subnet, m.Interfaces = machineNetwork(s.NICs)
 	switch s.Power {
 	case compute.PowerRunning:
 		m.Power = hypervisor.PowerOn

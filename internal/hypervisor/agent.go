@@ -54,9 +54,39 @@ type MachineSpec struct {
 	// Subnet is the network the machine's first interface joins: the VWS
 	// subnet ID, which is also the name of the Kube-OVN Subnet that
 	// vws-network creates for it. Empty means the cluster's default pod
-	// network. Like Image, it is fixed when the machine is created.
+	// network. Like Image, it is fixed when the machine is created. It is
+	// empty when Interfaces is set.
 	Subnet string
+	// Interfaces lists every network interface of a machine that has a
+	// direct interface, in device index order. Empty means the machine has
+	// at most the one overlay interface that Subnet names. Like Image, it is
+	// fixed when the machine is created.
+	Interfaces []Interface
 }
+
+// Interface is one network interface of a machine.
+type Interface struct {
+	// Name is the interface name inside the machine spec, a DNS-1123 label
+	// unique per machine.
+	Name string
+	// Subnet is the Kube-OVN Subnet name of an overlay interface. Exactly
+	// one of Subnet and Direct is set.
+	Subnet string
+	// Direct is the name of the direct (provider) network the interface
+	// joins: the Kube-OVN Subnet and NetworkAttachmentDefinition are both
+	// vws-direct-<Direct>.
+	Direct string
+	// Mode is the direct attachment mode. Empty or ModeBridge is an OVN
+	// port bridged to the guest; any other mode is an extension point that
+	// no agent implements yet.
+	Mode string
+	// IPv4 is the fixed address of a direct interface, or empty for one
+	// that Kube-OVN assigns.
+	IPv4 string
+}
+
+// ModeBridge is the default direct attachment mode.
+const ModeBridge = "bridge"
 
 // Volume is one attached data volume.
 type Volume struct {
