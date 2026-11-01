@@ -3,6 +3,8 @@ package kubestore
 import (
 	"bytes"
 	"encoding/json"
+	"slices"
+	"strconv"
 	"testing"
 
 	"github.com/popododo0720/vws-compute/internal/compute"
@@ -53,9 +55,13 @@ func TestObservedRoundTripsAnAttachmentFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	other, err := compute.ParseVolumeRef("projects/p/zones/z/volumes/data2")
+	if err != nil {
+		t.Fatal(err)
+	}
 	refused := &compute.AttachmentFailure{
 		Failure: compute.Failure{Code: compute.CodeFailedPrecondition, Message: "not Block"},
-		Volume:  volume,
+		Volumes: []compute.VolumeRef{volume, other},
 	}
 	raw, err := json.Marshal(observedTo(compute.Observed{Generation: 3, AttachmentFailure: refused}))
 	if err != nil {
@@ -67,8 +73,23 @@ func TestObservedRoundTripsAnAttachmentFailure(t *testing.T) {
 	}
 	got, err := observedFrom(stored)
 	if err != nil || got.Generation != 3 || got.AttachmentFailure == nil ||
-		got.AttachmentFailure.Failure != refused.Failure || got.AttachmentFailure.Volume != volume {
+		got.AttachmentFailure.Failure != refused.Failure ||
+		!slices.Equal(got.AttachmentFailure.Volumes, refused.Volumes) {
 		t.Fatalf("round trip = %+v %v", got, err)
+	}
+
+	// A row written before Volumes existed names its one refused volume
+	// under "volume".
+	stored = observedJSON{}
+	legacy := `{"generation":3,"attachment_failure":{"code":` + strconv.Itoa(int(compute.CodeFailedPrecondition)) +
+		`,"message":"not Block","volume":"projects/p/zones/z/volumes/data"}}`
+	if err := json.Unmarshal([]byte(legacy), &stored); err != nil {
+		t.Fatal(err)
+	}
+	got, err = observedFrom(stored)
+	if err != nil || got.AttachmentFailure == nil ||
+		!slices.Equal(got.AttachmentFailure.Volumes, []compute.VolumeRef{volume}) {
+		t.Fatalf("legacy row = %+v %v", got, err)
 	}
 
 	stored = observedJSON{}

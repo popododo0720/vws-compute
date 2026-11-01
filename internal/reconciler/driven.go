@@ -67,7 +67,7 @@ func (r *Reconciler) convergeDriven(ctx context.Context, inst compute.Instance) 
 		rep.Node = inst.Status.Report.Node
 		rep.Interfaces = inst.Status.Report.Interfaces
 		rep.AttachmentFailure = attachmentFailure(agentErr, spec)
-		rep.Volumes = r.observeVolumes(ctx, spec, prevVolumes, attempt{refused: rep.AttachmentFailure.Volume})
+		rep.Volumes = r.observeVolumes(ctx, spec, prevVolumes, attempt{refused: rep.AttachmentFailure.Volumes})
 	case hypervisor.IsPermanent(agentErr):
 		f := parkedFailure(agentErr)
 		rep.State, rep.Message, rep.Code, rep.Reason = compute.ReportError, f.Message, f.Code, f.Reason
@@ -95,19 +95,18 @@ func (r *Reconciler) convergeDriven(ctx context.Context, inst compute.Instance) 
 	return nil
 }
 
-// attachmentFailure names the volume the agent refused, so the next plan can
-// drop it from desired state instead of letting it block every later change.
+// attachmentFailure names every volume the agent refused, so the next plan
+// can drop them from desired state instead of letting them block every later
+// change.
 func attachmentFailure(err error, spec compute.InstanceSpec) *compute.AttachmentFailure {
 	f := parkedFailure(err)
 	refused := &compute.AttachmentFailure{Failure: *f}
-	volume, ok := hypervisor.AttachmentVolume(err)
-	if !ok {
-		return refused
-	}
-	for _, v := range spec.Volumes {
-		if !v.Boot && diskName(v.DeviceName) == volume.Name {
-			refused.Volume = v.Volume
-			break
+	for _, volume := range hypervisor.AttachmentVolumes(err) {
+		for _, v := range spec.Volumes {
+			if !v.Boot && diskName(v.DeviceName) == volume.Name && !refused.Refused(v.Volume) {
+				refused.Volumes = append(refused.Volumes, v.Volume)
+				break
+			}
 		}
 	}
 	return refused
@@ -215,9 +214,9 @@ func (r *Reconciler) refresh(ctx context.Context, inst compute.Instance) error {
 	if st.Report.State != compute.ReportReady || st.Observed.Failure != nil || inst.Spec.Power == compute.PowerTerminated {
 		return nil
 	}
-	var refused compute.VolumeRef
+	var refused []compute.VolumeRef
 	if f := st.Observed.AttachmentFailure; f != nil {
-		refused = f.Volume
+		refused = f.Volumes
 	}
 	needAddress := inst.Spec.Power == compute.PowerRunning &&
 		(len(st.Report.Interfaces) == 0 || st.Report.Interfaces[0].PrivateIPv4 == "")

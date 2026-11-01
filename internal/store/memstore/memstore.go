@@ -491,6 +491,7 @@ func cloneObserved(o compute.Observed) compute.Observed {
 	}
 	if o.AttachmentFailure != nil {
 		f := *o.AttachmentFailure
+		f.Volumes = slices.Clone(f.Volumes)
 		o.AttachmentFailure = &f
 	}
 	return o

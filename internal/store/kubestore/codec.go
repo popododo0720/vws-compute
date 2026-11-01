@@ -28,7 +28,10 @@ type observedJSON struct {
 
 type attachmentFailureJSON struct {
 	failureJSON
-	Volume string `json:"volume,omitempty"`
+	// Volume is the single refused volume rows written before Volumes
+	// existed carry. It is read, never written.
+	Volume  string   `json:"volume,omitempty"`
+	Volumes []string `json:"volumes,omitempty"`
 }
 
 type retryJSON struct {
@@ -215,7 +218,11 @@ func attachmentFailureTo(f *compute.AttachmentFailure) *attachmentFailureJSON {
 	if f == nil {
 		return nil
 	}
-	return &attachmentFailureJSON{failureJSON: *failureTo(&f.Failure), Volume: f.Volume.String()}
+	out := &attachmentFailureJSON{failureJSON: *failureTo(&f.Failure)}
+	for _, v := range f.Volumes {
+		out.Volumes = append(out.Volumes, v.String())
+	}
+	return out
 }
 
 func attachmentFailureFrom(f *attachmentFailureJSON) (*compute.AttachmentFailure, error) {
@@ -227,12 +234,16 @@ func attachmentFailureFrom(f *attachmentFailureJSON) (*compute.AttachmentFailure
 		return nil, err
 	}
 	refused := &compute.AttachmentFailure{Failure: *failure}
+	names := f.Volumes
 	if f.Volume != "" {
-		volume, err := compute.ParseVolumeRef(f.Volume)
+		names = append([]string{f.Volume}, names...)
+	}
+	for _, name := range names {
+		volume, err := compute.ParseVolumeRef(name)
 		if err != nil {
 			return nil, err
 		}
-		refused.Volume = volume
+		refused.Volumes = append(refused.Volumes, volume)
 	}
 	return refused, nil
 }

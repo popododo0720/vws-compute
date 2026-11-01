@@ -18,9 +18,9 @@ type attempt struct {
 	// retrying is a transient agent failure other than not-ready: the node
 	// tried to apply the spec, failed, and tries again on the next sweep.
 	retrying bool
-	// refused is the volume a permanent attachment error named. It is left
-	// out: its attach operation failed and the planner drops it.
-	refused compute.VolumeRef
+	// refused are the volumes a permanent attachment error named. They are
+	// left out: their attach operation failed and the planner drops them.
+	refused []compute.VolumeRef
 }
 
 // observeVolumes is the attach state of every volume of spec, plus the
@@ -81,7 +81,7 @@ func (r *Reconciler) observeVolumes(
 				state = compute.AttachAttached
 			}
 			add(v.Volume, v.DeviceName, state)
-		case v.Volume == at.refused:
+		case slices.Contains(at.refused, v.Volume):
 		case observed && phases[diskName(v.DeviceName)] == hypervisor.VolumePlugged,
 			!observed && at.converged:
 			add(v.Volume, v.DeviceName, compute.AttachAttached)
@@ -117,7 +117,7 @@ func (r *Reconciler) observeVolumes(
 // volumesSettled reports whether vols says every volume of spec but the
 // refused one is attached and nothing else is left: a later observation
 // cannot change it until the spec changes.
-func volumesSettled(spec compute.InstanceSpec, vols []compute.ObservedVolume, refused compute.VolumeRef) bool {
+func volumesSettled(spec compute.InstanceSpec, vols []compute.ObservedVolume, refused []compute.VolumeRef) bool {
 	attached := map[compute.VolumeRef]bool{}
 	for _, v := range vols {
 		if v.State != compute.AttachAttached {
@@ -127,7 +127,7 @@ func volumesSettled(spec compute.InstanceSpec, vols []compute.ObservedVolume, re
 	}
 	want := 0
 	for _, v := range spec.Volumes {
-		if !v.Boot && v.Volume == refused {
+		if !v.Boot && slices.Contains(refused, v.Volume) {
 			continue
 		}
 		if !attached[v.Volume] {

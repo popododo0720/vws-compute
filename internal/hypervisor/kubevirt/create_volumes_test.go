@@ -84,8 +84,8 @@ func TestCreateBootsWithoutARefusedDataVolume(t *testing.T) {
 	if hypervisor.CauseOf(err) != hypervisor.CauseAttachment || !hypervisor.IsPermanent(err) {
 		t.Fatalf("converge = %v, want a permanent attachment error", err)
 	}
-	if v, ok := hypervisor.AttachmentVolume(err); !ok || v.Name != "data1" {
-		t.Fatalf("attachment error names %v (%t), want data1", v, ok)
+	if got := hypervisor.AttachmentVolumes(err); len(got) != 1 || got[0].Name != "data1" {
+		t.Fatalf("attachment error names %v, want data1", got)
 	}
 	if vols, _ := diskNames(t, c, ns, s.Name); !equal(vols, []string{"rootdisk"}) {
 		t.Fatalf("volumes %v, want only the root disk", vols)
@@ -196,8 +196,8 @@ func TestCreateKeepsTheAttachableVolumesBesideARefusedOne(t *testing.T) {
 	if hypervisor.CauseOf(err) != hypervisor.CauseAttachment || !hypervisor.IsPermanent(err) {
 		t.Fatalf("converge = %v, want a permanent attachment error", err)
 	}
-	if v, ok := hypervisor.AttachmentVolume(err); !ok || v.Name != "data1" {
-		t.Fatalf("attachment error names %v (%t), want data1", v, ok)
+	if got := hypervisor.AttachmentVolumes(err); len(got) != 1 || got[0].Name != "data1" {
+		t.Fatalf("attachment error names %v, want data1", got)
 	}
 	if vols, _ := diskNames(t, c, ns, s.Name); !equal(vols, []string{"rootdisk", "data2"}) {
 		t.Fatalf("volumes %v, want the root disk and data2", vols)
@@ -256,6 +256,104 @@ func TestCreatedInstanceAttachesTheValidVolumeBesideARefusedOne(t *testing.T) {
 	for range 3 {
 		if st, as := stateOf(okRef); st != compute.ReportReady || as != compute.AttachAttached {
 			t.Fatalf("after hot-plug: instance %v, /dev/sdg %v, want READY and attached", st, as)
+		}
+	}
+}
+
+// TestCreateReportsEveryRefusedVolume: with two refused data volumes and one
+// valid one, the create carries only the valid one and the converge error
+// names both refused volumes, so neither is left unreported.
+func TestCreateReportsEveryRefusedVolume(t *testing.T) {
+	c, ns, _ := newClient(t)
+	standardImage(t, c, ns)
+	ctx := context.Background()
+	a := New(c, Config{Namespace: ns})
+	fs := corev1.PersistentVolumeFilesystem
+	claimIn(t, c, ns, "data-fs1", corev1.ReadWriteOnce, &fs)
+	claimIn(t, c, ns, "data-fs2", corev1.ReadWriteOnce, &fs)
+	claim(t, c, ns, "data-ok", corev1.ReadWriteOnce)
+	s := spec("i-0123456789abcdef6", hypervisor.PowerOn)
+	s.Volumes = []hypervisor.Volume{
+		{Name: "data1", Claim: "data-fs1"}, {Name: "data2", Claim: "data-ok"}, {Name: "data3", Claim: "data-fs2"},
+	}
+	err := a.ConvergeMachine(ctx, s)
+	if hypervisor.CauseOf(err) != hypervisor.CauseAttachment || !hypervisor.IsPermanent(err) {
+		t.Fatalf("converge = %v, want a permanent attachment error", err)
+	}
+	var names []string
+	for _, v := range hypervisor.AttachmentVolumes(err) {
+		names = append(names, v.Name)
+	}
+	if !equal(names, []string{"data1", "data3"}) {
+		t.Fatalf("attachment error names %v, want data1 and data3", names)
+	}
+	if vols, _ := diskNames(t, c, ns, s.Name); !equal(vols, []string{"rootdisk", "data2"}) {
+		t.Fatalf("volumes %v, want the root disk and data2", vols)
+	}
+}
+
+// TestCreatedInstanceLeavesNoRefusedVolumeAttaching is the round-2 #142 case
+// through the controller and the reconciler: /dev/sdf and /dev/sdh on
+// Filesystem claims are both refused, /dev/sdg on a Block claim attaches,
+// and once it does no volume is reported attaching on the READY instance.
+func TestCreatedInstanceLeavesNoRefusedVolumeAttaching(t *testing.T) {
+	ctx := context.Background()
+	c, ns, _ := newClient(t)
+	claim(t, c, ns, "pvc-root", corev1.ReadWriteOnce)
+	fs := corev1.PersistentVolumeFilesystem
+	claimIn(t, c, ns, "pvc-fs1", corev1.ReadWriteOnce, &fs)
+	claimIn(t, c, ns, "pvc-fs2", corev1.ReadWriteOnce, &fs)
+	claim(t, c, ns, "pvc-ok", corev1.ReadWriteOnce)
+	repo := memstore.New()
+	rec := reconciler.New(repo, New(c, Config{Namespace: ns}), reconciler.WithReports(repo))
+	ctl := controller.New(repo)
+	id := ok(compute.ParseInstanceID("i-0123456789abcdef7"))
+	root := ok(compute.ParseVolumeRef("projects/p/zones/z/volumes/root"))
+	fs1 := ok(compute.ParseVolumeRef("projects/p/zones/z/volumes/fs1"))
+	fs2 := ok(compute.ParseVolumeRef("projects/p/zones/z/volumes/fs2"))
+	okRef := ok(compute.ParseVolumeRef("projects/p/zones/z/volumes/ok"))
+	submit(t, ctl, "create", ok(compute.NewCreateInstance(compute.CreateInstanceParams{
+		ID: id.String(), Project: "p", Zone: "z", MachineType: "vws.small", Power: compute.PowerRunning,
+		Volumes: []compute.VolumeAttachment{
+			{Volume: root, DeviceName: "vda", Boot: true, Claim: "pvc-root"},
+			{Volume: fs1, DeviceName: "/dev/sdf", Claim: "pvc-fs1"},
+			{Volume: okRef, DeviceName: "/dev/sdg", Claim: "pvc-ok"},
+			{Volume: fs2, DeviceName: "/dev/sdh", Claim: "pvc-fs2"},
+		},
+	})))
+	sweep := func() compute.Instance {
+		t.Helper()
+		if err := rec.Sweep(ctx); err != nil {
+			t.Fatal(err)
+		}
+		inst, err := repo.Instance(ctx, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return inst
+	}
+	inst := sweep()
+	if f := inst.Status.Observed.AttachmentFailure; !f.Refused(fs1) || !f.Refused(fs2) || f.Refused(okRef) {
+		t.Fatalf("attachment failure = %+v, want /dev/sdf and /dev/sdh refused", f)
+	}
+	setVolumeStatus(ctx, t, c, ns, id.String(), hotplugStatus("sdg", "Ready"))
+	for range 3 {
+		inst = sweep()
+		if inst.Status.Report.State != compute.ReportReady {
+			t.Fatalf("instance %v, want READY", inst.Status.Report.State)
+		}
+		attached := false
+		for _, v := range inst.Status.Report.Volumes {
+			if v.State == compute.AttachAttaching {
+				t.Fatalf("volume %s (%s) still attaching: %+v", v.Volume, v.DeviceName, inst.Status.Report.Volumes)
+			}
+			if v.Volume == fs1 || v.Volume == fs2 {
+				t.Fatalf("refused volume %s reported: %+v", v.Volume, inst.Status.Report.Volumes)
+			}
+			attached = attached || (v.Volume == okRef && v.State == compute.AttachAttached)
+		}
+		if !attached {
+			t.Fatalf("/dev/sdg not attached: %+v", inst.Status.Report.Volumes)
 		}
 	}
 }
