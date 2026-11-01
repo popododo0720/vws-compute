@@ -2,6 +2,7 @@ package compute
 
 import (
 	"fmt"
+	"slices"
 	"time"
 )
 
@@ -105,13 +106,19 @@ type Failure struct {
 	Reason  LaunchReason
 }
 
-// AttachmentFailure is a permanent refusal to attach or detach one volume. It
+// AttachmentFailure is a permanent refusal to attach or detach volumes. It
 // fails the operation that asked for the change without parking the instance.
-// The next intent drops the refused volume from desired state, as EC2 leaves
-// no attachment behind when AttachVolume fails.
+// The next intent drops the refused volumes from desired state, as EC2 leaves
+// no attachment behind when AttachVolume fails. A create can refuse more than
+// one data volume, so Volumes lists every refused one.
 type AttachmentFailure struct {
 	Failure
-	Volume VolumeRef
+	Volumes []VolumeRef
+}
+
+// Refused reports whether f refused v. A nil f refused nothing.
+func (f *AttachmentFailure) Refused(v VolumeRef) bool {
+	return f != nil && slices.Contains(f.Volumes, v)
 }
 
 // Retry is the reconciler's durable backoff after transient agent errors.

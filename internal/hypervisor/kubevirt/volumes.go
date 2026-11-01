@@ -2,6 +2,7 @@ package kubevirt
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 
@@ -105,6 +106,15 @@ func volumeChange(vm *unstructured.Unstructured, want []hypervisor.Volume) (volu
 			disks = append(disks, d)
 		}
 	}
+	hotVolumes, hotDisks := dataVolumeEntries(want)
+	return append(volumes, hotVolumes...), append(disks, hotDisks...), true
+}
+
+// dataVolumeEntries returns the template volume and disk entries of the data
+// volumes in want, sorted by name: a hot-pluggable claim volume and a scsi
+// disk of the same name for each. Create and attach both use it, so a volume
+// declared at create is the same entry an attach would add.
+func dataVolumeEntries(want []hypervisor.Volume) (volumes, disks []any) {
 	sorted := slices.Clone(want)
 	slices.SortFunc(sorted, func(a, b hypervisor.Volume) int {
 		switch {
@@ -122,13 +132,15 @@ func volumeChange(vm *unstructured.Unstructured, want []hypervisor.Volume) (volu
 		})
 		disks = append(disks, map[string]any{"name": v.Name, "serial": v.Name, "disk": map[string]any{"bus": "scsi"}})
 	}
-	return volumes, disks, true
+	return volumes, disks
 }
 
 // checkAttachable fails permanently when a volume that is being attached is a
 // single-writer claim already used by another VirtualMachine, or, with
 // hotplug, a claim whose volumeMode is not Block. A claim that does not exist
-// yet is transient: the storage service may still be creating it.
+// yet is transient: the storage service may still be creating it. Every
+// permanent hotplug refusal is returned in one joined attachment error, so no
+// refused volume is left out of the report.
 //
 // KubeVirt hot-plugs a Block claim as a raw device but expects a Filesystem
 // claim to hold a disk.img, which a fresh storage volume does not. That fails
@@ -146,6 +158,7 @@ func (a *Agent) checkAttachable(ctx context.Context, machine string, vm *unstruc
 		}
 	}
 	var others *unstructured.UnstructuredList
+	var refused []error
 	for _, v := range want {
 		if have[v.Claim] {
 			continue
@@ -160,7 +173,8 @@ func (a *Agent) checkAttachable(ctx context.Context, machine string, vm *unstruc
 		}
 		if hotplug {
 			if err := requireBlock(machine, v, &pvc); err != nil {
-				return hypervisor.Attachment(v, err)
+				refused = append(refused, hypervisor.Attachment(v, err))
+				continue
 			}
 		}
 		if !singleWriter(pvc.Spec.AccessModes) {
@@ -173,6 +187,7 @@ func (a *Agent) checkAttachable(ctx context.Context, machine string, vm *unstruc
 				return fmt.Errorf("machine %s: list VirtualMachines: %w", machine, err)
 			}
 		}
+		holder := ""
 		for i := range others.Items {
 			o := &others.Items[i]
 			if o.GetName() == machine {
@@ -182,17 +197,64 @@ func (a *Agent) checkAttachable(ctx context.Context, machine string, vm *unstruc
 				// Any claim volume counts, including another machine's
 				// boot-from-claim root disk.
 				if _, claim, _, ok := pvcOf(ov); ok && claim == v.Claim {
-					err := fmt.Errorf("machine %s: claim %s is single-writer and already attached to %s",
-						machine, v.Claim, o.GetName())
-					if hotplug {
-						return hypervisor.Attachment(v, err)
-					}
-					return hypervisor.Permanent(err)
+					holder = o.GetName()
+					break
 				}
 			}
+			if holder != "" {
+				break
+			}
+		}
+		if holder == "" {
+			continue
+		}
+		err = fmt.Errorf("machine %s: claim %s is single-writer and already attached to %s",
+			machine, v.Claim, holder)
+		if hotplug {
+			refused = append(refused, hypervisor.Attachment(v, err))
+			continue
+		}
+		return hypervisor.Permanent(err)
+	}
+	switch len(refused) {
+	case 0:
+		return nil
+	case 1:
+		return refused[0]
+	}
+	return errors.Join(refused...)
+}
+
+// attachableAtCreate checks each data volume of a machine about to be
+// created and returns the ones the create should carry. A transient error
+// (a claim does not exist yet) returns no volumes and that error: the
+// reconciler converges again and update hot-plugs them all then. A
+// permanent refusal drops only the refused volume, so the others still go
+// into the create, and every refusal is returned joined so the reconciler
+// fails those attachments and leaves the machine running, as a refused
+// attach to a running machine does. No refused volume may go unreported:
+// the generation settles, so one left out would stay attaching forever.
+func (a *Agent) attachableAtCreate(
+	ctx context.Context, machine string, want []hypervisor.Volume,
+) ([]hypervisor.Volume, error) {
+	fresh := &unstructured.Unstructured{Object: map[string]any{}}
+	var ok []hypervisor.Volume
+	var refused []error
+	for _, v := range want {
+		err := a.checkAttachable(ctx, machine, fresh, []hypervisor.Volume{v}, true)
+		switch {
+		case err == nil:
+			ok = append(ok, v)
+		case hypervisor.IsPermanent(err):
+			refused = append(refused, err)
+		default:
+			return nil, err
 		}
 	}
-	return nil
+	if len(refused) == 1 {
+		return ok, refused[0]
+	}
+	return ok, errors.Join(refused...)
 }
 
 // singleWriter reports whether a claim can be attached to one machine at a

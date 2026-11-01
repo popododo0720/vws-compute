@@ -56,13 +56,13 @@ func TestApplyReport(t *testing.T) {
 		}
 		boom := &compute.AttachmentFailure{
 			Failure: compute.Failure{Code: compute.CodeFailedPrecondition, Message: "not Block"},
-			Volume:  volume,
+			Volumes: []compute.VolumeRef{volume},
 		}
 		st, _, err := compute.ApplyReport(controllerDriven(compute.PowerRunning),
 			compute.InstanceReport{Node: node, Generation: 2, State: compute.ReportReady, AttachmentFailure: boom}, now)
 		if err != nil || st.Observed.Parked(2) ||
 			st.Observed.AttachmentFailure == nil || st.Observed.AttachmentFailure.Message != "not Block" ||
-			st.Observed.AttachmentFailure.Volume != volume {
+			!st.Observed.AttachmentFailure.Refused(volume) {
 			t.Fatalf("%+v %v", st, err)
 		}
 		inst := controllerDriven(compute.PowerRunning)

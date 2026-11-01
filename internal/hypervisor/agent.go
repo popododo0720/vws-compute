@@ -210,13 +210,32 @@ func Attachment(volume Volume, err error) error {
 	return Permanent(&causeError{cause: CauseAttachment, err: &attachmentError{volume: volume, err: err}})
 }
 
-// AttachmentVolume returns the volume an attachment error names.
-func AttachmentVolume(err error) (Volume, bool) {
-	var a *attachmentError
-	if errors.As(err, &a) {
-		return a.volume, true
+// AttachmentVolumes returns every volume the attachment errors in err's tree
+// name, in order. A create that refuses several data volumes joins one
+// attachment error per volume.
+func AttachmentVolumes(err error) []Volume {
+	var out []Volume
+	var walk func(error)
+	walk = func(e error) {
+		if a, ok := e.(*attachmentError); ok { //nolint:errorlint // walking the tree by hand to collect every match
+			out = append(out, a.volume)
+			return
+		}
+		switch u := e.(type) { //nolint:errorlint // same walk
+		case interface{ Unwrap() []error }:
+			for _, c := range u.Unwrap() {
+				walk(c)
+			}
+		case interface{ Unwrap() error }:
+			if c := u.Unwrap(); c != nil {
+				walk(c)
+			}
+		}
 	}
-	return Volume{}, false
+	if err != nil {
+		walk(err)
+	}
+	return out
 }
 
 // CauseOf walks err's chain. Permanent and NotReady do not hide a cause

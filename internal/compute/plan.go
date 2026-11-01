@@ -128,7 +128,7 @@ func (in setPower) plan(v View, env Env) (Change, error) {
 	return Change{Spec: next, Write: true, Meta: meta}, nil
 }
 
-// withoutRefused drops the attachment whose attach the agent permanently
+// withoutRefused drops the attachments whose attach the agent permanently
 // refused. It must not stay in desired state, where it would make every later
 // converge fail before a power change lands. EC2 leaves no attachment behind
 // when AttachVolume fails.
@@ -139,12 +139,12 @@ func (in setPower) plan(v View, env Env) (Change, error) {
 // attaches the disk or fails; it never succeeds with the disk dropped.
 func withoutRefused(vols []VolumeAttachment, cur InstanceSpec, obs Observed) []VolumeAttachment {
 	refused := obs.AttachmentFailure
-	if refused == nil || refused.Volume.String() == "" || obs.Generation != cur.Generation {
+	if refused == nil || len(refused.Volumes) == 0 || obs.Generation != cur.Generation {
 		return vols
 	}
 	kept := make([]VolumeAttachment, 0, len(vols))
 	for _, v := range vols {
-		if v.Volume == refused.Volume && hasAttachment(cur.Volumes, v) {
+		if refused.Refused(v.Volume) && hasAttachment(cur.Volumes, v) {
 			continue
 		}
 		kept = append(kept, v)
