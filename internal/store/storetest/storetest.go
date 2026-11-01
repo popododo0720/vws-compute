@@ -42,6 +42,7 @@ func Run(t *testing.T, open func(t *testing.T) store.Repository) {
 		{"CreateOverExistingImageConflicts", createOverExistingImage},
 		{"ImageSourcesRoundTrip", imageSourcesRoundTrip},
 		{"ControllerDrivenInstanceRoundTripsAndOwnsItsVolumes", controllerRoundTrip},
+		{"UserDataRawRoundTripsByteForByte", userDataRawRoundTrip},
 		{"ControllerDrivenInstancesAreNotUnconverged", controllerNotUnconverged},
 		{"ReportSettlesAndKeepsTheReport", reportSettles},
 		{"DeleteWaitsForTheControllersReport", deleteWaitsForTheController},
