@@ -2,8 +2,10 @@ package grpcapi
 
 import (
 	"context"
+	"log/slog"
 
 	longrunningpb "cloud.google.com/go/longrunning/autogen/longrunningpb"
+	"google.golang.org/grpc/codes"
 
 	commonv1 "github.com/popododo0720/vws-proto/gen/go/vws/common/v1"
 	computev1 "github.com/popododo0720/vws-proto/gen/go/vws/compute/v1"
@@ -65,7 +67,7 @@ func (s *server) CreateImage(ctx context.Context, r *computev1.CreateImageReques
 		return nil, err
 	}
 	name := imageResourceName(project, region, r.GetImageId())
-	in, err := copyImageIntent(project, region, r.GetImageId(), r.GetImage())
+	in, err := copyImageIntent(project, region, r.GetImageId(), r.GetImage(), s.sharedSnapshot(ctx, project))
 	if err != nil {
 		return nil, err
 	}
@@ -81,8 +83,11 @@ func (s *server) CreateImage(ctx context.Context, r *computev1.CreateImageReques
 
 // copyImageIntent parses a CreateImage request into an intent. It does not
 // read the store, so validate_only and the submitting call fail on the same
-// inputs and neither can see another project's image.
-func copyImageIntent(project, region, imageID string, body *computev1.Image) (compute.Intent, error) {
+// inputs and neither can see another project's image. shared decides a
+// snapshot of another project in the caller's region.
+func copyImageIntent(project, region, imageID string, body *computev1.Image,
+	shared func(compute.SnapshotRef) error,
+) (compute.Intent, error) {
 	if err := validateResourceID(imageID); err != nil {
 		return nil, err
 	}
@@ -94,7 +99,7 @@ func copyImageIntent(project, region, imageID string, body *computev1.Image) (co
 	if err != nil {
 		return nil, toStatus(err)
 	}
-	if err := checkSourceScope(project, region, src); err != nil {
+	if err := checkSourceScope(project, region, src, shared); err != nil {
 		return nil, err
 	}
 	labels, err := compute.ParseLabels(body.GetLabels())
@@ -131,22 +136,55 @@ func copySource(spec *computev1.ImageSpec) (compute.CopySource, error) {
 
 // checkSourceScope fails a copy source the caller cannot see as NOT_FOUND:
 // a volume or snapshot of another project, a volume whose zone is not in the
-// caller's region, or a snapshot of another region.
+// caller's region, or a snapshot of another region. A snapshot of another
+// project in the caller's region is left to shared, which passes one whose
+// owner granted the caller createVolumePermission.
 // AWS answers InvalidVolume.NotFound and InvalidSnapshot.NotFound for such a
-// source. The answer depends on the names alone, so it is the same whether or
-// not the source exists and says nothing about another project.
-func checkSourceScope(project, region string, src compute.CopySource) error {
+// source. The answer depends on the names and the grant alone, so it is the
+// same whether or not an unshared source exists and says nothing about
+// another project.
+func checkSourceScope(project, region string, src compute.CopySource, shared func(compute.SnapshotRef) error) error {
 	switch s := src.(type) {
 	case compute.FromVolume:
 		if s.Ref.Project() != project || !compute.ZoneInRegion(s.Ref.Zone(), region) {
 			return notFound("volume " + s.Ref.String() + " not found")
 		}
 	case compute.FromSnapshot:
-		if s.Ref.Project() != project || s.Ref.Region() != region {
-			return notFound("snapshot " + s.Ref.String() + " not found")
+		if s.Ref.Region() != region {
+			return snapshotNotFound(s.Ref)
+		}
+		if s.Ref.Project() != project {
+			return shared(s.Ref)
 		}
 	}
 	return nil
+}
+
+func snapshotNotFound(ref compute.SnapshotRef) error {
+	return notFound("snapshot " + ref.String() + " not found")
+}
+
+// sharedSnapshot is the shared check of checkSourceScope for project: a
+// snapshot passes only when s.snapshots says its owner granted project
+// createVolumePermission. Without s.snapshots no snapshot is shared, so a
+// foreign one is NOT_FOUND as before. A grant that cannot be read is
+// UNAVAILABLE (DEPENDENCY_UNAVAILABLE), and the request may be retried.
+func (s *server) sharedSnapshot(ctx context.Context, project string) func(compute.SnapshotRef) error {
+	return func(ref compute.SnapshotRef) error {
+		if s.snapshots == nil {
+			return snapshotNotFound(ref)
+		}
+		ok, err := s.snapshots.CanCreateVolume(ctx, ref.String(), project)
+		if err != nil {
+			return withReason(codes.Unavailable, "DEPENDENCY_UNAVAILABLE", "storage service: "+err.Error())
+		}
+		if !ok {
+			slog.DebugContext(ctx, "create image denied: snapshot of another project is not shared with the caller",
+				slog.String("snapshot", ref.String()))
+			return snapshotNotFound(ref)
+		}
+		return nil
+	}
 }
 
 func (s *server) UpdateImage(ctx context.Context, r *computev1.UpdateImageRequest) (*longrunningpb.Operation, error) {

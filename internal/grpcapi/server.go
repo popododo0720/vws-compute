@@ -55,6 +55,13 @@ type Option func(*server)
 // reconciler.WithClaims(Claims(v)) to resolve it.
 func WithVolumes(v VolumeLookup) Option { return func(s *server) { s.volumes = v } }
 
+// WithSnapshotPermissions sets how CreateImage learns that a snapshot of
+// another project in the caller's region is shared with the caller. Without
+// it, no snapshot is shared and every foreign snapshot is NOT_FOUND.
+func WithSnapshotPermissions(p SnapshotPermissions) Option {
+	return func(s *server) { s.snapshots = p }
+}
+
 // WithPublicImages makes the listed images readable by every project in the
 // image's region. Changing or deleting them stays with their owner.
 func WithPublicImages(p compute.PublicImages) Option { return func(s *server) { s.public = p } }
@@ -89,12 +96,13 @@ type server struct {
 	computev1.UnsafeKeyPairServiceServer
 	computev1.UnsafeOperationLookupServiceServer
 	longrunningpb.UnimplementedOperationsServer
-	ctl     *controller.Controller
-	read    store.Reader
-	reports store.ReportStore
-	clock   func() time.Time
-	volumes VolumeLookup
-	public  compute.PublicImages
+	ctl       *controller.Controller
+	read      store.Reader
+	reports   store.ReportStore
+	clock     func() time.Time
+	volumes   VolumeLookup
+	snapshots SnapshotPermissions
+	public    compute.PublicImages
 }
 
 func (s *server) GetOperation(ctx context.Context, r *longrunningpb.GetOperationRequest) (*longrunningpb.Operation, error) {
