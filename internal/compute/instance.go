@@ -28,7 +28,7 @@ type InstanceSpec struct {
 	// Deleting the key pair later does not change it. Nil means no key.
 	Key   *AuthorizedKey
 	Power Power
-	// Project, Zone, Volumes, NICs, and UserData describe a controller-driven
+	// Project, Zone, Volumes, NICs, UserData, and UserDataRaw describe a controller-driven
 	// instance, one created by CreateInstance. Zone is empty for a
 	// RunInstance instance, which has an Image and no volumes. The slices
 	// are never shared: stores copy them in and out.
@@ -37,6 +37,10 @@ type InstanceSpec struct {
 	Volumes  []VolumeAttachment
 	NICs     []NetworkInterface
 	UserData string
+	// UserDataRaw is InstanceSpec.user_data_raw: any bytes, not necessarily
+	// UTF-8, held in a string so the spec stays immutable. At most one of
+	// UserData and UserDataRaw is set.
+	UserDataRaw string
 	// RebootEpoch counts accepted reboots. Rebooting is a level, not an
 	// edge: the agent reboots once whenever the epoch it last applied is
 	// behind this one, so concurrent reboot requests coalesce.

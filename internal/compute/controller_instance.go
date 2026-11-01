@@ -221,7 +221,8 @@ func ApplyReport(inst Instance, rep InstanceReport, now time.Time) (InstanceStat
 	return next, true, nil
 }
 
-// MaxUserDataBytes is the InstanceSpec.user_data limit.
+// MaxUserDataBytes is the limit on each of InstanceSpec.user_data and
+// InstanceSpec.user_data_raw.
 const MaxUserDataBytes = 32768
 
 // CreateInstanceParams is a parsed CreateInstance request body. Strings are
@@ -234,6 +235,8 @@ type CreateInstanceParams struct {
 	Power       Power
 	KeyPair     string
 	UserData    string
+	// UserDataRaw is user_data_raw, any bytes. It excludes UserData.
+	UserDataRaw string
 	NICs        []NetworkInterface
 	Volumes     []VolumeAttachment
 	Labels      Labels
@@ -247,9 +250,11 @@ type createInstance struct {
 	power    Power
 	key      KeyName
 	userData string
-	nics     []NetworkInterface
-	volumes  []VolumeAttachment
-	labels   Labels
+	// userDataRaw holds bytes, not text.
+	userDataRaw string
+	nics        []NetworkInterface
+	volumes     []VolumeAttachment
+	labels      Labels
 }
 
 // NewCreateInstance creates a controller-driven instance under the caller's id.
@@ -279,6 +284,12 @@ func NewCreateInstance(p CreateInstanceParams) (Intent, error) {
 	if len(p.UserData) > MaxUserDataBytes {
 		return nil, Errorf(CodeInvalid, "user_data exceeds %d bytes", MaxUserDataBytes)
 	}
+	if len(p.UserDataRaw) > MaxUserDataBytes {
+		return nil, Errorf(CodeInvalid, "user_data_raw exceeds %d bytes", MaxUserDataBytes)
+	}
+	if p.UserData != "" && p.UserDataRaw != "" {
+		return nil, Errorf(CodeInvalid, "user_data and user_data_raw are mutually exclusive")
+	}
 	if err := checkAttachments(p.Zone, p.Volumes); err != nil {
 		return nil, err
 	}
@@ -294,7 +305,8 @@ func NewCreateInstance(p CreateInstanceParams) (Intent, error) {
 	}
 	return createInstance{
 		id: id, project: p.Project, zone: p.Zone, typ: typ, power: p.Power, key: key,
-		userData: p.UserData, nics: cloneNICs(p.NICs), volumes: append([]VolumeAttachment(nil), p.Volumes...), labels: p.Labels,
+		userData: p.UserData, userDataRaw: p.UserDataRaw, nics: cloneNICs(p.NICs),
+		volumes: append([]VolumeAttachment(nil), p.Volumes...), labels: p.Labels,
 	}, nil
 }
 
@@ -339,6 +351,12 @@ func (in createInstance) encode(e *encoder) {
 	if in.labels.Len() > 0 {
 		e.labelSet("labels=", in.labels)
 	}
+	// Added after the labels and only when set, so every create persisted
+	// before user_data_raw keeps its fingerprint.
+	if in.userDataRaw != "" {
+		e.field("user_data_raw=")
+		e.field(in.userDataRaw)
+	}
 }
 
 // plan writes generation 1 under the caller's id. An id that already holds
@@ -372,7 +390,7 @@ func (in createInstance) plan(v View, env Env) (Change, error) {
 	ch := Change{Write: true, Spec: InstanceSpec{
 		ID: in.id, Generation: 1, CreatedAt: env.Now, ChangedAt: env.Now,
 		Type: in.typ, Key: key, Power: in.power,
-		Project: in.project, Zone: in.zone, UserData: in.userData,
+		Project: in.project, Zone: in.zone, UserData: in.userData, UserDataRaw: in.userDataRaw,
 		Volumes: append([]VolumeAttachment(nil), in.volumes...), NICs: cloneNICs(in.nics),
 	}}
 	if in.labels.Len() > 0 {
@@ -384,7 +402,7 @@ func (in createInstance) plan(v View, env Env) (Change, error) {
 func (in createInstance) matches(cur Instance) bool {
 	s := cur.Spec
 	if s.Power == PowerTerminated || !s.ControllerDriven() || s.Project != in.project || s.Zone != in.zone ||
-		s.Type.name != in.typ.name || s.Power != in.power || s.UserData != in.userData ||
+		s.Type.name != in.typ.name || s.Power != in.power || s.UserData != in.userData || s.UserDataRaw != in.userDataRaw ||
 		len(s.Volumes) != len(in.volumes) || len(s.NICs) != len(in.nics) || !cur.Meta.Labels.Equal(in.labels) {
 		return false
 	}
