@@ -504,7 +504,7 @@ func TestCreateImageRoundTrip(t *testing.T) {
 		Parent: parent, ImageId: "other-disk", RequestId: "66666666-6666-4666-8666-666666666666",
 		ValidateOnly: true,
 		Image: &computev1.Image{Spec: &computev1.ImageSpec{
-			Source: &computev1.ImageSpec_Volume{Volume: "projects/demo/zones/demo/volumes/root"},
+			Source: &computev1.ImageSpec_Volume{Volume: "projects/demo/zones/demoa/volumes/root"},
 		}},
 	})
 	if err != nil || !only.GetDone() {
