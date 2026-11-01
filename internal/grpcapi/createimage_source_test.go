@@ -14,9 +14,10 @@ import (
 )
 
 // TestCreateImageOfAnotherProjectsSourceIsNotFound: a CreateImage whose
-// volume or snapshot sits in another project, or a snapshot in another
-// region, fails as NOT_FOUND, as AWS answers InvalidVolume.NotFound and
-// InvalidSnapshot.NotFound for a resource the caller cannot see. The answer
+// volume or snapshot sits in another project, a volume in a zone outside the
+// caller's region, or a snapshot in another region, fails as NOT_FOUND, as
+// AWS answers InvalidVolume.NotFound and InvalidSnapshot.NotFound for a
+// resource the caller cannot see. The answer
 // does not depend on whether the foreign source exists, validate_only
 // answers the same, a retry answers the same, and nothing is stored.
 func TestCreateImageOfAnotherProjectsSourceIsNotFound(t *testing.T) {
@@ -76,6 +77,27 @@ func createImageOfAnotherProjectsSourceIsNotFound(t *testing.T, h *harness) {
 			wantNamed: "volume",
 			requestID: "40404040-4040-4040-8040-404040404040",
 		},
+		{
+			name:      "volume in a zone of another region",
+			source:    volSpec("projects/a222222222222/zones/vws-2a/volumes/held"),
+			other:     volSpec("projects/a222222222222/zones/vws-2a/volumes/absent"),
+			wantNamed: "volume",
+			requestID: "50505050-5050-4050-8050-505050505050",
+		},
+		{
+			name:      "volume in a zone that only starts with the region",
+			source:    volSpec("projects/a222222222222/zones/vws-10a/volumes/held"),
+			other:     volSpec("projects/a222222222222/zones/vws-10a/volumes/absent"),
+			wantNamed: "volume",
+			requestID: "60606060-6060-4060-8060-606060606060",
+		},
+		{
+			name:      "volume named by the region, not a zone",
+			source:    volSpec("projects/a222222222222/zones/vws-1/volumes/held"),
+			other:     volSpec("projects/a222222222222/zones/vws-1/volumes/absent"),
+			wantNamed: "volume",
+			requestID: "70707070-7070-4070-8070-707070707070",
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			for _, validateOnly := range []bool{false, true} {
@@ -104,6 +126,14 @@ func createImageOfAnotherProjectsSourceIsNotFound(t *testing.T, h *harness) {
 				}
 			}
 		})
+	}
+	// The caller's own volume in a zone of its region passes the scope check.
+	own := &computev1.CreateImageRequest{
+		Parent: caller, ImageId: "ami-0000000000000ccc3", RequestId: "80808080-8080-4080-8080-808080808080",
+		ValidateOnly: true, Image: &computev1.Image{Spec: volSpec("projects/a222222222222/zones/vws-1a/volumes/root")},
+	}
+	if op, err := h.img.CreateImage(ctx, own); err != nil || !op.GetDone() {
+		t.Fatalf("own volume in vws-1a: %v %v", op, err)
 	}
 	listed, err := h.img.ListImages(ctx, &computev1.ListImagesRequest{Parent: caller})
 	if err != nil {

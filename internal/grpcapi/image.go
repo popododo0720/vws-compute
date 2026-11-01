@@ -130,14 +130,15 @@ func copySource(spec *computev1.ImageSpec) (compute.CopySource, error) {
 }
 
 // checkSourceScope fails a copy source the caller cannot see as NOT_FOUND:
-// a volume or snapshot of another project, or a snapshot of another region.
+// a volume or snapshot of another project, a volume whose zone is not in the
+// caller's region, or a snapshot of another region.
 // AWS answers InvalidVolume.NotFound and InvalidSnapshot.NotFound for such a
 // source. The answer depends on the names alone, so it is the same whether or
 // not the source exists and says nothing about another project.
 func checkSourceScope(project, region string, src compute.CopySource) error {
 	switch s := src.(type) {
 	case compute.FromVolume:
-		if s.Ref.Project() != project {
+		if s.Ref.Project() != project || !compute.ZoneInRegion(s.Ref.Zone(), region) {
 			return notFound("volume " + s.Ref.String() + " not found")
 		}
 	case compute.FromSnapshot:
