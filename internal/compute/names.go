@@ -127,6 +127,20 @@ func (r SnapshotRef) String() string { return r.s }
 // Project is the project segment of the volume name.
 func (r VolumeRef) Project() string { return nameSegment(r.s, 1) }
 
+// Zone is the zone segment of the volume name.
+func (r VolumeRef) Zone() string { return nameSegment(r.s, 3) }
+
+// ZoneInRegion reports whether zone is an availability zone of region. As in
+// AWS, a zone name is its region name followed by one letter identifier
+// (vws-1a is in vws-1). An empty region or zone is in nothing.
+func ZoneInRegion(zone, region string) bool {
+	if region == "" || len(zone) != len(region)+1 || !strings.HasPrefix(zone, region) {
+		return false
+	}
+	c := zone[len(zone)-1]
+	return c >= 'a' && c <= 'z'
+}
+
 // Project is the project segment of the snapshot name.
 func (r SnapshotRef) Project() string { return nameSegment(r.s, 1) }
 
