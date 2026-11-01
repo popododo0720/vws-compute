@@ -111,6 +111,9 @@ func instancePB(i compute.Instance, name string) *computev1.Instance {
 	if i.Spec.Key != nil {
 		spec.KeyPair = i.Spec.Key.Name.String()
 	}
+	if i.Spec.UserDataRaw != "" {
+		spec.UserDataRaw = []byte(i.Spec.UserDataRaw)
+	}
 	for _, v := range i.Spec.Volumes {
 		spec.Volumes = append(spec.Volumes, &computev1.VolumeAttachment{Volume: v.Volume.String(), DeviceName: v.DeviceName, Boot: v.Boot})
 	}

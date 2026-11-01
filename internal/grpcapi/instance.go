@@ -126,7 +126,8 @@ func createInstanceIntent(project, zone, id string, body *computev1.Instance, cl
 		return nil, toStatus(err)
 	}
 	p := compute.CreateInstanceParams{
-		ID: id, Project: project, Zone: zone, MachineType: spec.GetMachineType(), UserData: spec.GetUserData(), Labels: labels,
+		ID: id, Project: project, Zone: zone, MachineType: spec.GetMachineType(), UserData: spec.GetUserData(),
+		UserDataRaw: string(spec.GetUserDataRaw()), Labels: labels,
 	}
 	if spec.GetPower() == computev1.InstancePower_INSTANCE_POWER_RUNNING {
 		p.Power = compute.PowerRunning
@@ -538,8 +539,14 @@ func validateCreateInstance(zone, name string, inst *computev1.Instance) error {
 			return err
 		}
 	}
-	if len(spec.GetUserData()) > 32768 {
+	if len(spec.GetUserData()) > compute.MaxUserDataBytes {
 		return invalidSpec("instance.spec.user_data exceeds 32768 bytes")
+	}
+	if len(spec.GetUserDataRaw()) > compute.MaxUserDataBytes {
+		return invalidSpec("instance.spec.user_data_raw exceeds 32768 bytes")
+	}
+	if spec.GetUserData() != "" && len(spec.GetUserDataRaw()) > 0 {
+		return invalidSpec("instance.spec.user_data and instance.spec.user_data_raw are mutually exclusive")
 	}
 	if err := validateNICs(spec.GetNetworkInterfaces()); err != nil {
 		return err
@@ -641,8 +648,8 @@ func instanceSpecDelta(spec *computev1.InstanceSpec, cur compute.Instance) error
 	if spec.GetKeyPair() != key && spec.GetKeyPair() != "" {
 		return invalidSpec("key_pair is immutable")
 	}
-	if spec.GetUserData() != "" || len(spec.GetNetworkInterfaces()) > 0 {
-		return invalidSpec("network interfaces and user_data are not mutable")
+	if spec.GetUserData() != "" || len(spec.GetUserDataRaw()) > 0 || len(spec.GetNetworkInterfaces()) > 0 {
+		return invalidSpec("network interfaces, user_data and user_data_raw are not mutable")
 	}
 	return nil
 }
