@@ -84,6 +84,44 @@ func controllerRoundTrip(f fixture) {
 	f.mustCreateControllerDriven("req-3", "web-3", "other", t0)
 }
 
+// userDataRaw is every byte value, so it is not UTF-8 and holds a NUL.
+func userDataRaw() string {
+	b := make([]byte, 256)
+	for i := range b {
+		b[i] = byte(255 - i)
+	}
+	return string(b)
+}
+
+// userDataRawRoundTrip stores InstanceSpec.user_data_raw and reads the same
+// bytes back, from this handle and from a listing.
+func userDataRawRoundTrip(f fixture) {
+	raw := userDataRaw()
+	spec := controllerSpec("web-1", "root", 1, compute.PowerRunning)
+	spec.UserData, spec.UserDataRaw = "", raw
+	in := ok(compute.NewCreateInstance(compute.CreateInstanceParams{
+		ID: "web-1", Project: "p", Zone: "z", MachineType: "vws.small", Power: compute.PowerRunning, UserDataRaw: raw,
+		Volumes: spec.Volumes, NICs: spec.NICs,
+	}))
+	op, err := compute.NewOperation(compute.Env{Now: t0, Rand: rand.Reader}, ok(compute.ParseRequestID("req-1")), in,
+		compute.Change{Spec: spec, Write: true})
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	_, err = f.s.CommitDesired(context.Background(), store.DesiredChange{Op: op, Spec: spec, Write: true})
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	got := f.instance("web-1")
+	if got.Spec.UserDataRaw != raw || got.Spec.UserData != "" {
+		f.t.Fatalf("user data = %q raw %q, want raw %q", got.Spec.UserData, got.Spec.UserDataRaw, raw)
+	}
+	page, err := f.s.Instances(context.Background(), store.InstanceQuery{})
+	if err != nil || len(page.Items) != 1 || page.Items[0].Spec.UserDataRaw != raw {
+		f.t.Fatalf("listed instances = %+v, %v", page.Items, err)
+	}
+}
+
 func controllerNotUnconverged(f fixture) {
 	f.mustCreateControllerDriven("req-1", "web-1", "root", t0)
 	f.mustCommit("req-2", runIntent("vws.small"), instanceSpec(1, 1, compute.PowerRunning), true)

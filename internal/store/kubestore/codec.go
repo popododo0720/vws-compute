@@ -117,6 +117,9 @@ type instanceJSON struct {
 	Project     string `json:"project,omitempty"`
 	Zone        string `json:"zone,omitempty"`
 	UserData    string `json:"user_data,omitempty"`
+	// UserDataRaw is base64 in JSON, so non-UTF-8 bytes survive. Rows
+	// written before user_data_raw lack it and decode as unset.
+	UserDataRaw []byte `json:"user_data_raw,omitempty"`
 
 	Volumes []volumeJSON `json:"volumes,omitempty"`
 	NICs    []nicJSON    `json:"nics,omitempty"`
@@ -333,6 +336,9 @@ func instanceTo(in compute.Instance) *instanceJSON {
 	if s.Key != nil {
 		j.KeyName, j.KeyPublic = s.Key.Name.String(), s.Key.PublicKey.AuthorizedKey()
 	}
+	if s.UserDataRaw != "" {
+		j.UserDataRaw = []byte(s.UserDataRaw)
+	}
 	for _, v := range s.Volumes {
 		j.Volumes = append(j.Volumes, volumeJSON{Volume: v.Volume.String(), Device: v.DeviceName, Boot: v.Boot, Claim: v.Claim, DeleteOnTermination: v.DeleteOnTermination})
 	}
@@ -405,7 +411,8 @@ func instanceFrom(j *instanceJSON) (compute.Instance, error) {
 		Spec: compute.InstanceSpec{
 			ID: id, Generation: j.Generation, CreatedAt: fromNanos(j.CreatedAt), ChangedAt: fromNanos(j.ChangedAt),
 			Image: img, Type: typ, Key: key, Power: compute.Power(j.Power), RebootEpoch: j.RebootEpoch,
-			Project: j.Project, Zone: j.Zone, UserData: j.UserData, Volumes: vols, NICs: nics,
+			Project: j.Project, Zone: j.Zone, UserData: j.UserData, UserDataRaw: string(j.UserDataRaw),
+			Volumes: vols, NICs: nics,
 		},
 		Status: compute.InstanceStatus{
 			Observed: obs, Machine: compute.MachineState(j.Machine), RebootEpoch: j.AppliedEpoch,

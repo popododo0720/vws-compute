@@ -1,6 +1,7 @@
 package compute_test
 
 import (
+	"encoding/hex"
 	"testing"
 
 	"github.com/popododo0720/vws-compute/internal/compute"
@@ -162,6 +163,13 @@ func TestCreateInstanceValidation(t *testing.T) {
 		"bad machine type":   func(p *compute.CreateInstanceParams) { p.MachineType = "N1" },
 		"duplicate nic":      func(p *compute.CreateInstanceParams) { p.NICs = append(p.NICs, p.NICs[0]) },
 		"user data too long": func(p *compute.CreateInstanceParams) { p.UserData = string(make([]byte, compute.MaxUserDataBytes+1)) },
+		"raw user data too long": func(p *compute.CreateInstanceParams) {
+			p.UserDataRaw = string(make([]byte, compute.MaxUserDataBytes+1))
+		},
+		"user data and raw user data": func(p *compute.CreateInstanceParams) {
+			p.UserData = "#cloud-config"
+			p.UserDataRaw = "\xff"
+		},
 	}
 	for name, m := range mutate {
 		t.Run(name, func(t *testing.T) {
@@ -174,6 +182,82 @@ func TestCreateInstanceValidation(t *testing.T) {
 	}
 	if _, err := compute.NewCreateInstance(createParams()); err != nil {
 		t.Fatal(err)
+	}
+	p := createParams()
+	p.UserDataRaw = string(make([]byte, compute.MaxUserDataBytes))
+	if _, err := compute.NewCreateInstance(p); err != nil {
+		t.Fatalf("raw user data at the limit: %v", err)
+	}
+}
+
+// nonUTF8 is user_data_raw that no proto3 string can carry: invalid UTF-8,
+// a NUL, and a lone continuation byte.
+const nonUTF8 = "\xff\xfe#!/bin/sh\x00\x80echo hi\n"
+
+func TestCreateInstanceUserDataRaw(t *testing.T) {
+	p := createParams()
+	p.UserDataRaw = nonUTF8
+	in := ok(compute.NewCreateInstance(p))
+	ch, err := compute.Plan(newView(), envNow(), in)
+	if err != nil || !ch.Write {
+		t.Fatalf("%+v %v", ch, err)
+	}
+	spec := ch.Spec.(compute.InstanceSpec)
+	if spec.UserDataRaw != nonUTF8 || spec.UserData != "" {
+		t.Fatalf("spec user data = %q raw %q, want raw %q", spec.UserData, spec.UserDataRaw, nonUTF8)
+	}
+	v := newView().with(compute.Instance{Spec: spec})
+	if ch, err := compute.Plan(v, envNow(), in); err != nil || ch.Write {
+		t.Fatalf("same create on the live instance = %+v, %v; want no write", ch, err)
+	}
+	other := createParams()
+	other.UserDataRaw = nonUTF8 + "x"
+	_, err = compute.Plan(v, envNow(), ok(compute.NewCreateInstance(other)))
+	if compute.CodeOf(err) != compute.CodeAlreadyExists {
+		t.Fatalf("different raw user data on the live instance = %v, want already exists", err)
+	}
+	_, err = compute.Plan(v, envNow(), ok(compute.NewCreateInstance(createParams())))
+	if compute.CodeOf(err) != compute.CodeAlreadyExists {
+		t.Fatalf("no raw user data on the live instance = %v, want already exists", err)
+	}
+}
+
+// TestCreateInstanceFingerprintCoversUserDataRaw pins the encoding: raw user
+// data changes the fingerprint, and a create without it keeps the
+// fingerprint that main 45461aa persisted, so stored operations still replay.
+func TestCreateInstanceFingerprintCoversUserDataRaw(t *testing.T) {
+	const (
+		plainBefore   = "b8e58edcf9bbab31ffde38cbfe578fba312917f1d41b3d1cf4193f2f2898f2f1"
+		labeledBefore = "97c07d2277703c2f44865606124fe8109300303a7762aab82b94d7bf6b3b47e9"
+	)
+	hexOf := func(p compute.CreateInstanceParams) string {
+		fp := compute.FingerprintOf(ok(compute.NewCreateInstance(p)))
+		return hex.EncodeToString(fp[:])
+	}
+	labeled := createParams()
+	labeled.UserData = "#cloud-config"
+	labeled.Labels = ok(compute.ParseLabels(map[string]string{"app": "web"}))
+	if got := hexOf(createParams()); got != plainBefore {
+		t.Fatalf("fingerprint without raw user data = %s, want %s", got, plainBefore)
+	}
+	if got := hexOf(labeled); got != labeledBefore {
+		t.Fatalf("labeled fingerprint without raw user data = %s, want %s", got, labeledBefore)
+	}
+	seen := map[string]string{plainBefore: "none"}
+	for _, raw := range []string{nonUTF8, nonUTF8 + "x", "\x00", "#cloud-config"} {
+		p := createParams()
+		p.UserDataRaw = raw
+		got := hexOf(p)
+		if prev, dup := seen[got]; dup {
+			t.Fatalf("raw user data %q has the fingerprint of %q", raw, prev)
+		}
+		seen[got] = raw
+	}
+	// Raw bytes equal to the text user data are still a different request.
+	text, raw := createParams(), createParams()
+	text.UserData, raw.UserDataRaw = "#cloud-config", "#cloud-config"
+	if hexOf(text) == hexOf(raw) {
+		t.Fatal("user_data and user_data_raw with the same bytes share a fingerprint")
 	}
 }
 
