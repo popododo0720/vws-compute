@@ -212,7 +212,9 @@ func (a *Agent) checkAttachable(ctx context.Context, machine string, vm *unstruc
 // into the create, and the first refusal is returned so the reconciler
 // fails that attachment and leaves the machine running, as a refused
 // attach to a running machine does.
-func (a *Agent) attachableAtCreate(ctx context.Context, machine string, want []hypervisor.Volume) ([]hypervisor.Volume, error) {
+func (a *Agent) attachableAtCreate(
+	ctx context.Context, machine string, want []hypervisor.Volume,
+) ([]hypervisor.Volume, error) {
 	fresh := &unstructured.Unstructured{Object: map[string]any{}}
 	var ok []hypervisor.Volume
 	var refused error
