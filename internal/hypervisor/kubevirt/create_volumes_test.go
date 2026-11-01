@@ -357,3 +357,66 @@ func TestCreatedInstanceLeavesNoRefusedVolumeAttaching(t *testing.T) {
 		}
 	}
 }
+
+// TestAttachReportsEveryRefusedVolume: an attach to a running machine that
+// refuses two volumes at once reports both, so neither stays ATTACHING on the
+// READY instance and the next plan drops both.
+func TestAttachReportsEveryRefusedVolume(t *testing.T) {
+	ctx := context.Background()
+	c, ns, _ := newClient(t)
+	claim(t, c, ns, "pvc-root", corev1.ReadWriteOnce)
+	fs := corev1.PersistentVolumeFilesystem
+	claimIn(t, c, ns, "pvc-fs1", corev1.ReadWriteOnce, &fs)
+	claimIn(t, c, ns, "pvc-fs2", corev1.ReadWriteOnce, &fs)
+	repo := memstore.New()
+	rec := reconciler.New(repo, New(c, Config{Namespace: ns}), reconciler.WithReports(repo))
+	ctl := controller.New(repo)
+	id := ok(compute.ParseInstanceID("i-0123456789abcdef8"))
+	root := ok(compute.ParseVolumeRef("projects/p/zones/z/volumes/root"))
+	fs1 := ok(compute.ParseVolumeRef("projects/p/zones/z/volumes/fs1"))
+	fs2 := ok(compute.ParseVolumeRef("projects/p/zones/z/volumes/fs2"))
+	boot := compute.VolumeAttachment{Volume: root, DeviceName: "vda", Boot: true, Claim: "pvc-root"}
+	submit(t, ctl, "create", ok(compute.NewCreateInstance(compute.CreateInstanceParams{
+		ID: id.String(), Project: "p", Zone: "z", MachineType: "vws.small", Power: compute.PowerRunning,
+		Volumes: []compute.VolumeAttachment{boot},
+	})))
+	sweep := func() compute.Instance {
+		t.Helper()
+		if err := rec.Sweep(ctx); err != nil {
+			t.Fatal(err)
+		}
+		inst, err := repo.Instance(ctx, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return inst
+	}
+	if inst := sweep(); inst.Status.Report.State != compute.ReportReady {
+		t.Fatalf("instance %v, want READY", inst.Status.Report.State)
+	}
+	attach := submit(t, ctl, "attach", ok(compute.NewUpdateInstanceSpec(id.String(), compute.PowerRunning,
+		[]compute.VolumeAttachment{
+			boot,
+			{Volume: fs1, DeviceName: "/dev/sdf", Claim: "pvc-fs1"},
+			{Volume: fs2, DeviceName: "/dev/sdh", Claim: "pvc-fs2"},
+		}, compute.MetadataPatch{})))
+	inst := sweep()
+	if inst.Status.Report.State != compute.ReportReady {
+		t.Fatalf("instance %v, want READY", inst.Status.Report.State)
+	}
+	failure := inst.Status.Observed.AttachmentFailure
+	if failure == nil || !failure.Refused(fs1) || !failure.Refused(fs2) {
+		t.Fatalf("attachment failure = %+v, want /dev/sdf and /dev/sdh refused", failure)
+	}
+	if got := op(t, repo, attach); got.State() != compute.OperationFailed {
+		t.Fatalf("attach operation = %s, want failed", got.State())
+	}
+	for _, v := range inst.Status.Report.Volumes {
+		if v.State == compute.AttachAttaching {
+			t.Fatalf("volume %s still attaching: %+v", v.Volume, inst.Status.Report.Volumes)
+		}
+		if v.Volume == fs1 || v.Volume == fs2 {
+			t.Fatalf("refused volume %s reported: %+v", v.Volume, inst.Status.Report.Volumes)
+		}
+	}
+}

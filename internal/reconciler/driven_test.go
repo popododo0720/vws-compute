@@ -233,6 +233,43 @@ func TestRefusedAttachmentDoesNotBlockAStop(t *testing.T) {
 	})
 }
 
+// TestEveryRefusedAttachmentIsDroppedFromDesiredState: when one converge
+// refuses two volumes, both leave the report and desired state, so a later
+// stop is not blocked by the one the agent named second.
+func TestEveryRefusedAttachmentIsDroppedFromDesiredState(t *testing.T) {
+	eachStore(t, func(h *harness) {
+		drivenHarness(h)
+		h.submit("create", createInstance("web"))
+		h.sweep()
+		boot := compute.VolumeAttachment{Volume: ok(compute.ParseVolumeRef(bootVolume)), DeviceName: "vda", Boot: true}
+		data := compute.VolumeAttachment{
+			Volume: ok(compute.ParseVolumeRef("projects/p/zones/z/volumes/data")), DeviceName: "vdb", Claim: "pvc-data",
+		}
+		other := compute.VolumeAttachment{
+			Volume: ok(compute.ParseVolumeRef("projects/p/zones/z/volumes/other")), DeviceName: "vdc", Claim: "pvc-other",
+		}
+
+		h.agent.Fail("web", errors.Join(
+			hypervisor.Attachment(hypervisor.Volume{Name: "vdb", Claim: "pvc-data"}, errors.New("claim is not Block")),
+			hypervisor.Attachment(hypervisor.Volume{Name: "vdc", Claim: "pvc-other"}, errors.New("claim is not Block"))))
+		attach := h.submit("attach", updateVolumes(boot, data, other))
+		h.sweep()
+		h.wantStates(compute.OperationFailed, attach)
+		h.wantVolumes("web", bootAttached)
+		failure := h.instance(ok(compute.ParseInstanceID("web"))).Status.Observed.AttachmentFailure
+		if failure == nil || len(failure.Volumes) != 2 {
+			h.t.Fatalf("attachment failure = %+v, want both refused volumes", failure)
+		}
+
+		stop := h.submit("stop", ok(compute.NewStopInstance("web")))
+		h.sweep()
+		h.wantStates(compute.OperationSucceeded, stop)
+		if vols := h.instance(ok(compute.ParseInstanceID("web"))).Spec.Volumes; len(vols) != 1 || vols[0] != boot {
+			h.t.Fatalf("volumes after stop = %+v, want only the boot entry", vols)
+		}
+	})
+}
+
 // A refusal recorded at an earlier generation must not drop a later, explicit
 // attach of the same volume: the attach either attaches the disk or fails.
 func TestReattachAfterRefusalIsNotDropped(t *testing.T) {

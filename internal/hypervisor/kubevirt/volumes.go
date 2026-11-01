@@ -138,7 +138,9 @@ func dataVolumeEntries(want []hypervisor.Volume) (volumes, disks []any) {
 // checkAttachable fails permanently when a volume that is being attached is a
 // single-writer claim already used by another VirtualMachine, or, with
 // hotplug, a claim whose volumeMode is not Block. A claim that does not exist
-// yet is transient: the storage service may still be creating it.
+// yet is transient: the storage service may still be creating it. Every
+// permanent hotplug refusal is returned in one joined attachment error, so no
+// refused volume is left out of the report.
 //
 // KubeVirt hot-plugs a Block claim as a raw device but expects a Filesystem
 // claim to hold a disk.img, which a fresh storage volume does not. That fails
@@ -156,6 +158,7 @@ func (a *Agent) checkAttachable(ctx context.Context, machine string, vm *unstruc
 		}
 	}
 	var others *unstructured.UnstructuredList
+	var refused []error
 	for _, v := range want {
 		if have[v.Claim] {
 			continue
@@ -170,7 +173,8 @@ func (a *Agent) checkAttachable(ctx context.Context, machine string, vm *unstruc
 		}
 		if hotplug {
 			if err := requireBlock(machine, v, &pvc); err != nil {
-				return hypervisor.Attachment(v, err)
+				refused = append(refused, hypervisor.Attachment(v, err))
+				continue
 			}
 		}
 		if !singleWriter(pvc.Spec.AccessModes) {
@@ -183,6 +187,7 @@ func (a *Agent) checkAttachable(ctx context.Context, machine string, vm *unstruc
 				return fmt.Errorf("machine %s: list VirtualMachines: %w", machine, err)
 			}
 		}
+		holder := ""
 		for i := range others.Items {
 			o := &others.Items[i]
 			if o.GetName() == machine {
@@ -192,17 +197,32 @@ func (a *Agent) checkAttachable(ctx context.Context, machine string, vm *unstruc
 				// Any claim volume counts, including another machine's
 				// boot-from-claim root disk.
 				if _, claim, _, ok := pvcOf(ov); ok && claim == v.Claim {
-					err := fmt.Errorf("machine %s: claim %s is single-writer and already attached to %s",
-						machine, v.Claim, o.GetName())
-					if hotplug {
-						return hypervisor.Attachment(v, err)
-					}
-					return hypervisor.Permanent(err)
+					holder = o.GetName()
+					break
 				}
 			}
+			if holder != "" {
+				break
+			}
 		}
+		if holder == "" {
+			continue
+		}
+		err = fmt.Errorf("machine %s: claim %s is single-writer and already attached to %s",
+			machine, v.Claim, holder)
+		if hotplug {
+			refused = append(refused, hypervisor.Attachment(v, err))
+			continue
+		}
+		return hypervisor.Permanent(err)
 	}
-	return nil
+	switch len(refused) {
+	case 0:
+		return nil
+	case 1:
+		return refused[0]
+	}
+	return errors.Join(refused...)
 }
 
 // attachableAtCreate checks each data volume of a machine about to be
