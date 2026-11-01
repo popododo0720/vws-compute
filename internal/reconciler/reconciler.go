@@ -634,7 +634,12 @@ func machineSpec(s compute.InstanceSpec) hypervisor.MachineSpec {
 	if s.Key != nil {
 		m.AuthorizedKeys = []string{s.Key.PublicKey.AuthorizedKey()}
 	}
+	// user_data and user_data_raw exclude each other; either reaches the
+	// guest byte for byte.
 	m.UserData = s.UserData
+	if s.UserDataRaw != "" {
+		m.UserData = s.UserDataRaw
+	}
 	// Data volumes go to the agent by device name and the claim storage
 	// reported. The boot entry is the root disk, not a data volume.
 	for _, v := range s.Volumes {
