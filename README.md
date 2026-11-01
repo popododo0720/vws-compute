@@ -72,7 +72,7 @@ go run ./cmd/vws-compute -namespace vws -seed-images images.json
 
 Every field is required. Unknown fields are errors. Starting again with the same file writes nothing. Changing an entry's family or path after that id was registered stops startup; give the image a new id. An image deleted with `DeleteImage` stays deleted. `GetImage` leaves `spec.volume` and `spec.snapshot` unset for a seeded image, because the proto source is a volume or a snapshot and the path is not on the wire.
 
-`CreateImage` copies a volume or a snapshot and mints the image id (`img-` and 17 hex digits). The caller's `image_id` is a request field, not the stored name. `GetImage` on the operation's image name returns the source it copied. A filesystem path is not a `CreateImage` source.
+`CreateImage` copies a volume or a snapshot and mints the image id (`img-` and 17 hex digits). The caller's `image_id` is a request field, not the stored name. `GetImage` on the operation's image name returns the source it copied. A filesystem path is not a `CreateImage` source. A snapshot of another project in the caller's region is a source only when its owner shared it with the caller's project or with `all` through createVolumePermission (EC2 ModifySnapshotAttribute); this process reads that permission through `grpcapi.WithSnapshotPermissions` and does not store it. Until vws-storage serves the permission, `cmd/vws-compute` configures none, so every foreign snapshot is `NOT_FOUND`.
 
 ## Test
 
