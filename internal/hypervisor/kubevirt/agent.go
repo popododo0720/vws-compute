@@ -229,6 +229,9 @@ func (a *Agent) create(ctx context.Context, spec hypervisor.MachineSpec) error {
 	if spec.Subnet != "" && len(spec.Interfaces) > 0 {
 		return hypervisor.Permanent(fmt.Errorf("machine %s: a subnet and an interface list are exclusive", spec.Name))
 	}
+	if err := validateVolumes(spec.Name, spec.Volumes); err != nil {
+		return err
+	}
 	ifaceDevs, nets, netAnnotations, err := networks(spec.Name, a.cfg.Namespace, spec.Interfaces)
 	if err != nil {
 		return err
@@ -291,6 +294,25 @@ func (a *Agent) create(ctx context.Context, spec hypervisor.MachineSpec) error {
 			"cloudInitNoCloud": map[string]any{"secretRef": map[string]any{"name": cloudInitSecret(spec.Name)}},
 		})
 	}
+	// Data volumes go in as the same hot-pluggable entries an attach adds,
+	// so KubeVirt hot-plugs them once the instance runs and MachineVolumes
+	// reports each plugged only after its hot-plug is Ready. A volume that
+	// cannot be attached yet does not hold the boot back: the machine is
+	// created without data volumes and attachErr is returned after the
+	// create. A transient error (the claim does not exist yet) makes the
+	// reconciler converge again, and update hot-plugs the volumes then. A
+	// permanent attachment error leaves the machine running without the
+	// refused volume, as a failed attach to a running machine does.
+	var attachErr error
+	if len(spec.Volumes) > 0 {
+		fresh := &unstructured.Unstructured{Object: map[string]any{}}
+		attachErr = a.checkAttachable(ctx, spec.Name, fresh, spec.Volumes, true)
+		if attachErr == nil {
+			hotVolumes, hotDisks := dataVolumeEntries(spec.Volumes)
+			volumes = append(volumes, hotVolumes...)
+			disks = append(disks, hotDisks...)
+		}
+	}
 	var access []any
 	if len(spec.AuthorizedKeys) > 0 {
 		// The keys also go in the NoCloud meta-data as public-keys (EC2
@@ -350,7 +372,7 @@ func (a *Agent) create(ctx context.Context, spec hypervisor.MachineSpec) error {
 	if err := a.c.Create(ctx, vm); err != nil {
 		return fmt.Errorf("machine %s: create VirtualMachine: %w", spec.Name, err)
 	}
-	return nil
+	return attachErr
 }
 
 func rootDiskName(instance string) string { return instance + "-root" }
