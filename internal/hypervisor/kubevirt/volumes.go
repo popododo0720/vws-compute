@@ -105,6 +105,15 @@ func volumeChange(vm *unstructured.Unstructured, want []hypervisor.Volume) (volu
 			disks = append(disks, d)
 		}
 	}
+	hotVolumes, hotDisks := dataVolumeEntries(want)
+	return append(volumes, hotVolumes...), append(disks, hotDisks...), true
+}
+
+// dataVolumeEntries returns the template volume and disk entries of the data
+// volumes in want, sorted by name: a hot-pluggable claim volume and a scsi
+// disk of the same name for each. Create and attach both use it, so a volume
+// declared at create is the same entry an attach would add.
+func dataVolumeEntries(want []hypervisor.Volume) (volumes, disks []any) {
 	sorted := slices.Clone(want)
 	slices.SortFunc(sorted, func(a, b hypervisor.Volume) int {
 		switch {
@@ -122,7 +131,7 @@ func volumeChange(vm *unstructured.Unstructured, want []hypervisor.Volume) (volu
 		})
 		disks = append(disks, map[string]any{"name": v.Name, "serial": v.Name, "disk": map[string]any{"bus": "scsi"}})
 	}
-	return volumes, disks, true
+	return volumes, disks
 }
 
 // checkAttachable fails permanently when a volume that is being attached is a
