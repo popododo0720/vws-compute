@@ -177,3 +177,85 @@ func TestCreatedDataVolumeIsReportedAttachedAfterHotplug(t *testing.T) {
 	setVolumeStatus(ctx, t, c, ns, id.String(), hotplugStatus("sdf", "Ready"))
 	want(report(), compute.AttachAttached, compute.AttachAttached)
 }
+
+// TestCreateKeepsTheAttachableVolumesBesideARefusedOne: one refused data
+// volume does not drop the others from the create. The valid one is
+// hot-plugged with the machine, and the converge still fails with an
+// attachment error naming only the refused one.
+func TestCreateKeepsTheAttachableVolumesBesideARefusedOne(t *testing.T) {
+	c, ns, _ := newClient(t)
+	standardImage(t, c, ns)
+	ctx := context.Background()
+	a := New(c, Config{Namespace: ns})
+	fs := corev1.PersistentVolumeFilesystem
+	claimIn(t, c, ns, "data-fs", corev1.ReadWriteOnce, &fs)
+	claim(t, c, ns, "data-ok", corev1.ReadWriteOnce)
+	s := spec("i-0123456789abcdef3", hypervisor.PowerOn)
+	s.Volumes = []hypervisor.Volume{{Name: "data1", Claim: "data-fs"}, {Name: "data2", Claim: "data-ok"}}
+	err := a.ConvergeMachine(ctx, s)
+	if hypervisor.CauseOf(err) != hypervisor.CauseAttachment || !hypervisor.IsPermanent(err) {
+		t.Fatalf("converge = %v, want a permanent attachment error", err)
+	}
+	if v, ok := hypervisor.AttachmentVolume(err); !ok || v.Name != "data1" {
+		t.Fatalf("attachment error names %v (%t), want data1", v, ok)
+	}
+	if vols, _ := diskNames(t, c, ns, s.Name); !equal(vols, []string{"rootdisk", "data2"}) {
+		t.Fatalf("volumes %v, want the root disk and data2", vols)
+	}
+	setVolumeStatus(ctx, t, c, ns, s.Name, hotplugStatus("data2", "Ready"))
+	wantPhases(ctx, t, a, s.Name, map[string]hypervisor.VolumePhase{"data2": hypervisor.VolumePlugged})
+}
+
+// TestCreatedInstanceAttachesTheValidVolumeBesideARefusedOne is the
+// multi-volume #142 case through the controller and the reconciler: a
+// CreateInstance with /dev/sdf on a Filesystem claim and /dev/sdg on a Block
+// claim reports /dev/sdg attached once its hot-plug is Ready, though /dev/sdf
+// was refused and the generation settled.
+func TestCreatedInstanceAttachesTheValidVolumeBesideARefusedOne(t *testing.T) {
+	ctx := context.Background()
+	c, ns, _ := newClient(t)
+	claim(t, c, ns, "pvc-root", corev1.ReadWriteOnce)
+	fs := corev1.PersistentVolumeFilesystem
+	claimIn(t, c, ns, "pvc-fs", corev1.ReadWriteOnce, &fs)
+	claim(t, c, ns, "pvc-ok", corev1.ReadWriteOnce)
+	repo := memstore.New()
+	rec := reconciler.New(repo, New(c, Config{Namespace: ns}), reconciler.WithReports(repo))
+	ctl := controller.New(repo)
+	id := ok(compute.ParseInstanceID("i-0123456789abcdef5"))
+	root := ok(compute.ParseVolumeRef("projects/p/zones/z/volumes/root"))
+	fsRef := ok(compute.ParseVolumeRef("projects/p/zones/z/volumes/fs"))
+	okRef := ok(compute.ParseVolumeRef("projects/p/zones/z/volumes/ok"))
+	submit(t, ctl, "create", ok(compute.NewCreateInstance(compute.CreateInstanceParams{
+		ID: id.String(), Project: "p", Zone: "z", MachineType: "vws.small", Power: compute.PowerRunning,
+		Volumes: []compute.VolumeAttachment{
+			{Volume: root, DeviceName: "vda", Boot: true, Claim: "pvc-root"},
+			{Volume: fsRef, DeviceName: "/dev/sdf", Claim: "pvc-fs"},
+			{Volume: okRef, DeviceName: "/dev/sdg", Claim: "pvc-ok"},
+		},
+	})))
+	stateOf := func(ref compute.VolumeRef) (compute.ReportState, compute.AttachState) {
+		t.Helper()
+		if err := rec.Sweep(ctx); err != nil {
+			t.Fatal(err)
+		}
+		inst, err := repo.Instance(ctx, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, v := range inst.Status.Report.Volumes {
+			if v.Volume == ref {
+				return inst.Status.Report.State, v.State
+			}
+		}
+		return inst.Status.Report.State, compute.AttachUnspecified
+	}
+	if st, as := stateOf(okRef); st != compute.ReportReady || as != compute.AttachAttaching {
+		t.Fatalf("before hot-plug: instance %v, /dev/sdg %v, want READY and attaching", st, as)
+	}
+	setVolumeStatus(ctx, t, c, ns, id.String(), hotplugStatus("sdg", "Ready"))
+	for range 3 {
+		if st, as := stateOf(okRef); st != compute.ReportReady || as != compute.AttachAttached {
+			t.Fatalf("after hot-plug: instance %v, /dev/sdg %v, want READY and attached", st, as)
+		}
+	}
+}

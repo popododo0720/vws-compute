@@ -297,21 +297,13 @@ func (a *Agent) create(ctx context.Context, spec hypervisor.MachineSpec) error {
 	// Data volumes go in as the same hot-pluggable entries an attach adds,
 	// so KubeVirt hot-plugs them once the instance runs and MachineVolumes
 	// reports each plugged only after its hot-plug is Ready. A volume that
-	// cannot be attached yet does not hold the boot back: the machine is
-	// created without data volumes and attachErr is returned after the
-	// create. A transient error (the claim does not exist yet) makes the
-	// reconciler converge again, and update hot-plugs the volumes then. A
-	// permanent attachment error leaves the machine running without the
-	// refused volume, as a failed attach to a running machine does.
-	var attachErr error
-	if len(spec.Volumes) > 0 {
-		fresh := &unstructured.Unstructured{Object: map[string]any{}}
-		attachErr = a.checkAttachable(ctx, spec.Name, fresh, spec.Volumes, true)
-		if attachErr == nil {
-			hotVolumes, hotDisks := dataVolumeEntries(spec.Volumes)
-			volumes = append(volumes, hotVolumes...)
-			disks = append(disks, hotDisks...)
-		}
+	// cannot be attached does not hold the boot back; attachErr is returned
+	// after the create.
+	attachable, attachErr := a.attachableAtCreate(ctx, spec.Name, spec.Volumes)
+	if len(attachable) > 0 {
+		hotVolumes, hotDisks := dataVolumeEntries(attachable)
+		volumes = append(volumes, hotVolumes...)
+		disks = append(disks, hotDisks...)
 	}
 	var access []any
 	if len(spec.AuthorizedKeys) > 0 {

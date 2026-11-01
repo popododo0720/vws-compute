@@ -204,6 +204,34 @@ func (a *Agent) checkAttachable(ctx context.Context, machine string, vm *unstruc
 	return nil
 }
 
+// attachableAtCreate checks each data volume of a machine about to be
+// created and returns the ones the create should carry. A transient error
+// (a claim does not exist yet) returns no volumes and that error: the
+// reconciler converges again and update hot-plugs them all then. A
+// permanent refusal drops only the refused volume, so the others still go
+// into the create, and the first refusal is returned so the reconciler
+// fails that attachment and leaves the machine running, as a refused
+// attach to a running machine does.
+func (a *Agent) attachableAtCreate(ctx context.Context, machine string, want []hypervisor.Volume) ([]hypervisor.Volume, error) {
+	fresh := &unstructured.Unstructured{Object: map[string]any{}}
+	var ok []hypervisor.Volume
+	var refused error
+	for _, v := range want {
+		err := a.checkAttachable(ctx, machine, fresh, []hypervisor.Volume{v}, true)
+		switch {
+		case err == nil:
+			ok = append(ok, v)
+		case hypervisor.IsPermanent(err):
+			if refused == nil {
+				refused = err
+			}
+		default:
+			return nil, err
+		}
+	}
+	return ok, refused
+}
+
 // singleWriter reports whether a claim can be attached to one machine at a
 // time: it offers no shared access mode.
 func singleWriter(modes []corev1.PersistentVolumeAccessMode) bool {
