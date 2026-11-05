@@ -236,37 +236,133 @@ func TestDeregisteredCopyNeedsNoStorage(t *testing.T) {
 	}
 }
 
-func TestRestoreClonesTheReportedObject(t *testing.T) {
+// restarted is the harness after a restart: the same repository, a fresh
+// agent that holds nothing, and a reconciler built with opts.
+func (h *copyHarness) restarted(opts ...reconciler.Option) *copyHarness {
+	fresh := *h.harness
+	fresh.agent = fakeagent.New()
+	return fresh.withReconciler(opts...)
+}
+
+// copiedAndConverged returns a harness whose copy of tc.source converged
+// against storage reporting tc.reported.
+func copiedAndConverged(t *testing.T, tc copyCase) (*copyHarness, compute.Operation) {
+	t.Helper()
+	h := newCopyHarness(t, tc.option(&storageAnswers{answers: []answer{{name: tc.reported}}}))
+	op := h.copyImage("77777777-7777-4777-8777-777777777777", tc.source)
+	h.sweep()
+	h.wantStates(compute.OperationSucceeded, op)
+	return h, op
+}
+
+func (h *copyHarness) wantLaunchSucceeds(req string, op compute.Operation) {
+	h.t.Helper()
+	run := h.submit(req, ok(compute.NewRunInstance(op.Target.ID, "vws.small", "")))
+	h.sweep()
+	h.wantStates(compute.OperationSucceeded, run)
+}
+
+// TestRestoreClonesTheStoredObject: the object storage reported is kept with
+// the converged image, and restore hands the agent that name without asking
+// storage.
+func TestRestoreClonesTheStoredObject(t *testing.T) {
 	for _, tc := range copyCases {
 		t.Run(tc.name, func(t *testing.T) {
-			s := &storageAnswers{answers: []answer{{name: tc.reported}}}
-			h := newCopyHarness(t, tc.option(s))
-			op := h.copyImage("77777777-7777-4777-8777-777777777777", tc.source)
-			h.sweep()
-			h.wantStates(compute.OperationSucceeded, op)
+			h, op := copiedAndConverged(t, tc)
+			if got := h.image(op).Status.SourceObject; got != tc.reported {
+				t.Fatalf("stored source object = %q, want %q", got, tc.reported)
+			}
 
-			fresh := &imageRecorder{Agent: fakeagent.New()}
-			restart := reconciler.New(h.repo, fresh, reconciler.WithClock(h.clock.Now),
-				tc.option(&storageAnswers{answers: []answer{{name: tc.reported}}}))
-			if err := restart.Restore(context.Background()); err != nil {
+			s := &storageAnswers{answers: []answer{{name: "vol-other"}}}
+			restart := h.restarted(tc.option(s))
+			if err := restart.rec.Restore(context.Background()); err != nil {
 				t.Fatal(err)
 			}
-			calls := fresh.calls()
+			calls := restart.agent.calls()
 			if len(calls) != 1 || tc.field(calls[0]) != tc.reported {
 				t.Fatalf("restore gave the agent %+v, want one image on %q", calls, tc.reported)
 			}
-			if !fresh.HasImage(op.Target.ID) {
+			if len(s.asked) != 0 {
+				t.Fatalf("restore asked storage %v, want nothing", s.asked)
+			}
+			restart.sweep()
+			if n := len(restart.agent.calls()); n != 1 {
+				t.Fatalf("agent got %d image calls after a sweep, want the restore's one", n)
+			}
+		})
+	}
+}
+
+// TestRestoreSurvivesTheSourceBeingDeleted: deleting the volume or snapshot
+// after imaging leaves the image available, as an AWS AMI outlives its
+// snapshot. A restart must put its artifact back and keep launches working.
+func TestRestoreSurvivesTheSourceBeingDeleted(t *testing.T) {
+	for _, tc := range copyCases {
+		t.Run(tc.name, func(t *testing.T) {
+			h, op := copiedAndConverged(t, tc)
+			gone := &storageAnswers{answers: []answer{{err: hypervisor.Permanent(errors.New("the source is gone"))}}}
+			restart := h.restarted(tc.option(gone))
+			if err := restart.rec.Restore(context.Background()); err != nil {
+				t.Fatalf("restore: %v", err)
+			}
+			if !restart.agent.HasImage(op.Target.ID) {
 				t.Fatal("restore did not put the copy back")
 			}
+			if !restart.image(op).Available() {
+				t.Fatal("the image stopped being available when its source was deleted")
+			}
+			restart.wantLaunchSucceeds("99999999-9999-4999-8999-999999999999", op)
+		})
+	}
+}
 
-			down := reconciler.New(h.repo, fresh, reconciler.WithClock(h.clock.Now),
-				tc.option(&storageAnswers{answers: []answer{{err: errors.New("storage is down")}}}))
-			before := len(fresh.calls())
-			if err := down.Restore(context.Background()); err == nil || !strings.Contains(err.Error(), "storage is down") {
+func TestRestoreSurvivesStorageBeingDown(t *testing.T) {
+	for _, tc := range copyCases {
+		t.Run(tc.name, func(t *testing.T) {
+			h, op := copiedAndConverged(t, tc)
+			down := &storageAnswers{answers: []answer{{err: errors.New("storage is down")}}}
+			restart := h.restarted(tc.option(down))
+			if err := restart.rec.Restore(context.Background()); err != nil {
+				t.Fatalf("restore: %v", err)
+			}
+			if !restart.agent.HasImage(op.Target.ID) {
+				t.Fatal("restore did not put the copy back")
+			}
+			restart.wantLaunchSucceeds("99999999-9999-4999-8999-999999999999", op)
+		})
+	}
+}
+
+// TestRestoreResolvesARecordWrittenBeforeTheObjectWasStored: an available copy
+// with no stored object still asks storage, and does not call the agent
+// without a resolved source.
+func TestRestoreResolvesARecordWrittenBeforeTheObjectWasStored(t *testing.T) {
+	for _, tc := range copyCases {
+		t.Run(tc.name, func(t *testing.T) {
+			h, op := copiedAndConverged(t, tc)
+			old := h.image(op).Status
+			old.SourceObject = ""
+			if err := h.repo.CommitImageStatus(context.Background(), ok(compute.ParseImageID(op.Target.ID)), old); err != nil {
+				t.Fatal(err)
+			}
+
+			s := &storageAnswers{answers: []answer{{name: tc.reported}}}
+			restart := h.restarted(tc.option(s))
+			if err := restart.rec.Restore(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			calls := restart.agent.calls()
+			if len(calls) != 1 || tc.field(calls[0]) != tc.reported || len(s.asked) != 1 || s.asked[0] != tc.ref {
+				t.Fatalf("agent got %+v and storage was asked %v, want one image on %q from %s",
+					calls, s.asked, tc.reported, tc.ref)
+			}
+
+			down := h.restarted(tc.option(&storageAnswers{answers: []answer{{err: errors.New("storage is down")}}}))
+			if err := down.rec.Restore(context.Background()); err == nil || !strings.Contains(err.Error(), "storage is down") {
 				t.Fatalf("restore with storage down = %v, want its error", err)
 			}
-			if len(fresh.calls()) != before {
-				t.Fatal("restore called the agent without a resolved source")
+			if n := len(down.agent.calls()); n != 0 {
+				t.Fatalf("restore called the agent %d times without a resolved source", n)
 			}
 		})
 	}

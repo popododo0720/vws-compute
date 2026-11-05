@@ -10,6 +10,7 @@
 package reconciler
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -421,7 +422,7 @@ func (r *Reconciler) Restore(ctx context.Context) error {
 		if !img.Available() {
 			return nil
 		}
-		want, err := r.image(ctx, img.Spec)
+		want, err := r.restoredImage(ctx, img)
 		if err != nil {
 			return err
 		}
@@ -559,6 +560,7 @@ func (r *Reconciler) convergeImage(ctx context.Context, ref compute.Ref) error {
 	st.Observed, st.Retry = verdict(st.Observed, st.Retry, spec.Generation, spec.ChangedAt, agentErr, now)
 	if agentErr == nil {
 		st.Present, st.SizeBytes = want.Present, size
+		st.SourceObject = cmp.Or(want.SourceClaim, want.SourceVolumeSnapshot)
 	}
 	st.UpdatedAt = now
 	return r.store.CommitImageStatus(ctx, id, st)
@@ -723,6 +725,25 @@ func (r *Reconciler) image(ctx context.Context, s compute.ImageSpec) (hypervisor
 		i.SourceVolumeSnapshot, err = resolveSource(ctx, s.ID, "snapshot", src.Ref.String(), r.snapshots)
 	}
 	return i, err
+}
+
+// restoredImage is the spec to re-apply for an available image. The object a
+// copy cloned from was stored when it converged, so a source deleted since, or
+// storage being down, does not keep the artifact from coming back. A record
+// written before that was stored is resolved through storage.
+func (r *Reconciler) restoredImage(ctx context.Context, img compute.Image) (hypervisor.ImageSpec, error) {
+	obj := img.Status.SourceObject
+	if obj == "" {
+		return r.image(ctx, img.Spec)
+	}
+	i := imageSpec(img.Spec)
+	switch img.Spec.Source.(type) {
+	case compute.FromVolume:
+		i.SourceClaim = obj
+	case compute.FromSnapshot:
+		i.SourceVolumeSnapshot = obj
+	}
+	return i, nil
 }
 
 type objectFunc = func(ctx context.Context, ref string) (string, error)

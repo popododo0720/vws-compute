@@ -431,7 +431,10 @@ func roundTrip(f fixture) {
 	img := imageSpec(2, 1)
 	img.Source = compute.FromInstance{Instance: instanceID(1)}
 	f.mustCommit("rt-2", ok(compute.NewCreateImage(instanceID(1).String(), "snap-1")), img, true)
-	ist := compute.ImageStatus{Observed: compute.Observed{Generation: 1}, Present: true, SizeBytes: 10 << 30, UpdatedAt: t0.Add(time.Minute)}
+	ist := compute.ImageStatus{
+		Observed: compute.Observed{Generation: 1}, Present: true, SizeBytes: 10 << 30,
+		SourceObject: "snap-5e1c0d93ab7742f0", UpdatedAt: t0.Add(time.Minute),
+	}
 	if err := f.s.CommitImageStatus(ctx, imageID(2), ist); err != nil {
 		f.t.Fatal(err)
 	}
