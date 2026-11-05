@@ -42,6 +42,7 @@ type retryJSON struct {
 
 type metaJSON struct {
 	Labels      map[string]string `json:"labels,omitempty"`
+	Annotations map[string]string `json:"annotations,omitempty"`
 	Description string            `json:"description,omitempty"`
 	Revision    int64             `json:"revision,omitempty"`
 	ChangedAt   int64             `json:"changed_at,omitempty"`
@@ -273,7 +274,10 @@ func retryFrom(r retryJSON) compute.Retry {
 }
 
 func metaTo(m compute.Metadata) metaJSON {
-	return metaJSON{Labels: m.Labels.Map(), Description: m.Description.String(), Revision: m.Revision, ChangedAt: nanos(m.ChangedAt)}
+	return metaJSON{
+		Labels: m.Labels.Map(), Annotations: m.Annotations.Map(), Description: m.Description.String(),
+		Revision: m.Revision, ChangedAt: nanos(m.ChangedAt),
+	}
 }
 
 func metaFrom(m metaJSON) (compute.Metadata, error) {
@@ -284,10 +288,13 @@ func metaFrom(m metaJSON) (compute.Metadata, error) {
 	if (m.Revision == 0) != (m.ChangedAt == 0) {
 		err4 = errors.New("metadata revision and change time disagree")
 	}
-	if err := errors.Join(err1, err2, err3, err4); err != nil {
+	annots, err5 := compute.ParseAnnotations(m.Annotations)
+	if err := errors.Join(err1, err2, err3, err4, err5); err != nil {
 		return compute.Metadata{}, err
 	}
-	return compute.Metadata{Labels: labels, Description: desc, Revision: m.Revision, ChangedAt: fromNanos(m.ChangedAt)}, nil
+	return compute.Metadata{
+		Labels: labels, Annotations: annots, Description: desc, Revision: m.Revision, ChangedAt: fromNanos(m.ChangedAt),
+	}, nil
 }
 
 func opTo(o compute.Operation) opJSON {

@@ -125,8 +125,13 @@ func createInstanceIntent(project, zone, id string, body *computev1.Instance, cl
 	if err != nil {
 		return nil, toStatus(err)
 	}
+	annots, err := compute.ParseAnnotations(body.GetAnnotations())
+	if err != nil {
+		return nil, toStatus(err)
+	}
 	p := compute.CreateInstanceParams{
 		ID: id, Project: project, Zone: zone, MachineType: spec.GetMachineType(), UserData: spec.GetUserData(), Labels: labels,
+		Annotations: annots,
 	}
 	if spec.GetPower() == computev1.InstancePower_INSTANCE_POWER_RUNNING {
 		p.Power = compute.PowerRunning
@@ -222,12 +227,22 @@ func (s *server) UpdateInstance(ctx context.Context, r *computev1.UpdateInstance
 		return nil, err
 	}
 	paths := effectiveMask(r.GetUpdateMask().GetPaths())
-	if err := checkMask(paths); err != nil {
+	if err := checkMask(paths, "annotations"); err != nil {
 		return nil, err
 	}
 	patch, err := metadataPatch(paths, body.GetLabels(), nil, maskIncludes(paths, "spec"))
 	if err != nil {
 		return nil, toStatus(err)
+	}
+	// Annotations change only when the mask names them. The default mask
+	// leaves them alone, so a client built before the field cannot clear
+	// them by omission.
+	if slices.Contains(paths, "annotations") {
+		annots, err := compute.ParseAnnotations(body.GetAnnotations())
+		if err != nil {
+			return nil, toStatus(err)
+		}
+		patch = patch.ReplaceAnnotations(annots)
 	}
 	existing, name, err := s.liveInstance(ctx, body.GetName())
 	if err != nil {
@@ -321,6 +336,9 @@ func (s *server) UpdateInstance(ctx context.Context, r *computev1.UpdateInstance
 		in, err = compute.NewUpdateInstanceMetadata(id, patch)
 	}
 	if r.GetValidateOnly() {
+		if err == nil {
+			err = patch.Check(existing.Meta)
+		}
 		if err != nil {
 			return nil, toStatus(err)
 		}
@@ -523,6 +541,9 @@ func validateCreateInstance(zone, name string, inst *computev1.Instance) error {
 	if _, err := compute.ParseLabels(inst.GetLabels()); err != nil {
 		return toStatus(err)
 	}
+	if _, err := compute.ParseAnnotations(inst.GetAnnotations()); err != nil {
+		return toStatus(err)
+	}
 	spec := inst.GetSpec()
 	if !machineTypePattern.MatchString(spec.GetMachineType()) {
 		return invalidSpec("instance.spec.machine_type is invalid")
@@ -540,6 +561,9 @@ func validateCreateInstance(zone, name string, inst *computev1.Instance) error {
 	}
 	if len(spec.GetUserData()) > 32768 {
 		return invalidSpec("instance.spec.user_data exceeds 32768 bytes")
+	}
+	if len(spec.GetUserDataRaw()) > 0 {
+		return invalidSpec("instance.spec.user_data_raw is not supported yet")
 	}
 	if err := validateNICs(spec.GetNetworkInterfaces()); err != nil {
 		return err
@@ -641,7 +665,7 @@ func instanceSpecDelta(spec *computev1.InstanceSpec, cur compute.Instance) error
 	if spec.GetKeyPair() != key && spec.GetKeyPair() != "" {
 		return invalidSpec("key_pair is immutable")
 	}
-	if spec.GetUserData() != "" || len(spec.GetNetworkInterfaces()) > 0 {
+	if spec.GetUserData() != "" || len(spec.GetUserDataRaw()) > 0 || len(spec.GetNetworkInterfaces()) > 0 {
 		return invalidSpec("network interfaces and user_data are not mutable")
 	}
 	return nil

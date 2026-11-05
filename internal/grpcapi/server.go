@@ -16,6 +16,7 @@ package grpcapi
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"time"
 
@@ -148,11 +149,14 @@ func (s *server) wait(ctx context.Context, name string, timeout time.Duration) (
 	}
 }
 
-func checkMask(paths []string) error {
+// checkMask accepts spec, labels, and their subpaths, and each exact path
+// in extra.
+func checkMask(paths []string, extra ...string) error {
 	for _, p := range paths {
 		switch {
 		case p == "spec" || strings.HasPrefix(p, "spec."):
 		case p == "labels" || strings.HasPrefix(p, "labels."):
+		case slices.Contains(extra, p):
 		default:
 			return invalidSpec("field " + p + " cannot be updated")
 		}

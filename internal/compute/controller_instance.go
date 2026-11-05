@@ -237,6 +237,7 @@ type CreateInstanceParams struct {
 	NICs        []NetworkInterface
 	Volumes     []VolumeAttachment
 	Labels      Labels
+	Annotations Annotations
 }
 
 type createInstance struct {
@@ -250,6 +251,7 @@ type createInstance struct {
 	nics     []NetworkInterface
 	volumes  []VolumeAttachment
 	labels   Labels
+	annots   Annotations
 }
 
 // NewCreateInstance creates a controller-driven instance under the caller's id.
@@ -292,9 +294,13 @@ func NewCreateInstance(p CreateInstanceParams) (Intent, error) {
 	if !validResourceID(p.Project) || !validResourceID(p.Zone) {
 		return nil, Errorf(CodeInvalid, "invalid project or zone")
 	}
+	if err := p.Annotations.userOnly(); err != nil {
+		return nil, err
+	}
 	return createInstance{
 		id: id, project: p.Project, zone: p.Zone, typ: typ, power: p.Power, key: key,
 		userData: p.UserData, nics: cloneNICs(p.NICs), volumes: append([]VolumeAttachment(nil), p.Volumes...), labels: p.Labels,
+		annots: p.Annotations,
 	}, nil
 }
 
@@ -307,8 +313,10 @@ func cloneNICs(in []NetworkInterface) []NetworkInterface {
 	return out
 }
 
-func (createInstance) Kind() OperationKind      { return OpCreateInstance }
-func (in createInstance) carriesMetadata() bool { return in.labels.Len() > 0 }
+func (createInstance) Kind() OperationKind { return OpCreateInstance }
+func (in createInstance) carriesMetadata() bool {
+	return in.labels.Len() > 0 || in.annots.Len() > 0
+}
 
 // encode is positional and length-prefixed. Order is the order of the
 // proto fields: it is persisted, so it must stay byte-stable.
@@ -338,6 +346,9 @@ func (in createInstance) encode(e *encoder) {
 	}
 	if in.labels.Len() > 0 {
 		e.labelSet("labels=", in.labels)
+	}
+	if in.annots.Len() > 0 {
+		e.stringMap("annotations=", in.annots.m)
 	}
 }
 
@@ -375,8 +386,8 @@ func (in createInstance) plan(v View, env Env) (Change, error) {
 		Project: in.project, Zone: in.zone, UserData: in.userData,
 		Volumes: append([]VolumeAttachment(nil), in.volumes...), NICs: cloneNICs(in.nics),
 	}}
-	if in.labels.Len() > 0 {
-		ch.Meta = &Metadata{Labels: in.labels}
+	if in.carriesMetadata() {
+		ch.Meta = &Metadata{Labels: in.labels, Annotations: in.annots}
 	}
 	return ch, nil
 }
@@ -385,7 +396,8 @@ func (in createInstance) matches(cur Instance) bool {
 	s := cur.Spec
 	if s.Power == PowerTerminated || !s.ControllerDriven() || s.Project != in.project || s.Zone != in.zone ||
 		s.Type.name != in.typ.name || s.Power != in.power || s.UserData != in.userData ||
-		len(s.Volumes) != len(in.volumes) || len(s.NICs) != len(in.nics) || !cur.Meta.Labels.Equal(in.labels) {
+		len(s.Volumes) != len(in.volumes) || len(s.NICs) != len(in.nics) || !cur.Meta.Labels.Equal(in.labels) ||
+		!cur.Meta.Annotations.Equal(in.annots) {
 		return false
 	}
 	if (s.Key == nil) != in.key.IsZero() || (s.Key != nil && s.Key.Name != in.key) {
