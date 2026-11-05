@@ -42,7 +42,7 @@ func TestReconcileMetricsOnEnvtest(t *testing.T) {
 	// Submit does not kick, so Run sweeps once and the backlog stays recorded.
 	ctl := controller.New(repo, controller.WithClock(clk.Now))
 	rc, err := ctl.Submit(ctx, ok(compute.ParseRequestID("img-1")),
-		ok(compute.NewRegisterImage("debian-13", "https://images.example/debian-13.qcow2")))
+		ok(compute.NewRegisterFile("debian-13", "/var/lib/vws/images/debian-13.qcow2", "debian-13")))
 	if err != nil {
 		t.Fatal(err)
 	}

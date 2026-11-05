@@ -67,6 +67,10 @@ type fixture struct {
 	s store.Repository
 }
 
+func fileIntent() compute.Intent {
+	return ok(compute.NewRegisterFile("debian-13", "/var/lib/vws/images/debian-13.qcow2", "debian-13"))
+}
+
 func ok[T any](v T, err error) T {
 	if err != nil {
 		panic(err)
@@ -121,9 +125,13 @@ func runIntent(typ string) compute.Intent {
 	return ok(compute.NewRunInstance(imageID(1).String(), typ, ""))
 }
 
-func stopIntent(n int) compute.Intent { return ok(compute.NewStopInstance(instanceID(n).String())) }
+func stopIntent(n int) compute.Intent {
+	return ok(compute.NewSetPower(instanceID(n).String(), compute.PowerStopped, compute.MetadataPatch{}))
+}
 
-func startIntent(n int) compute.Intent { return ok(compute.NewStartInstance(instanceID(n).String())) }
+func startIntent(n int) compute.Intent {
+	return ok(compute.NewSetPower(instanceID(n).String(), compute.PowerRunning, compute.MetadataPatch{}))
+}
 
 func (f fixture) commit(req string, in compute.Intent, spec compute.Spec, write bool, expect ...store.Version) (compute.Operation, error) {
 	f.t.Helper()
@@ -377,7 +385,7 @@ func monotonic(f fixture) {
 	err = f.s.CommitInstanceStatus(ctx, instanceID(9), compute.InstanceStatus{UpdatedAt: t1})
 	wantCode(f.t, err, compute.CodeNotFound)
 
-	f.mustCommit("m-3", ok(compute.NewRegisterImage("debian-13", "https://images.example/d.qcow2")), imageSpec(1, 1), true)
+	f.mustCommit("m-3", fileIntent(), imageSpec(1, 1), true)
 	err = f.s.CommitImageStatus(ctx, imageID(1), compute.ImageStatus{Observed: compute.Observed{Generation: 2}, UpdatedAt: t1})
 	wantCode(f.t, err, compute.CodeInternal)
 	err = f.s.CommitImageStatus(ctx, imageID(1), compute.ImageStatus{Observed: compute.Observed{Generation: 1}, Present: true})
@@ -394,7 +402,7 @@ func unconverged(f fixture) {
 	f.observeInstance(2, compute.InstanceStatus{Observed: compute.Observed{Generation: 1}, UpdatedAt: t1})
 	f.observeInstance(3, compute.InstanceStatus{Observed: compute.Observed{Generation: 1, Failure: &compute.Failure{Code: compute.CodeInternal, Message: "parked"}}, UpdatedAt: t1})
 	f.observeInstance(4, compute.InstanceStatus{Retry: compute.Retry{Attempts: 1, At: t0.Add(10 * time.Second), LastError: "busy"}, UpdatedAt: t0})
-	f.mustCommit("u-img", ok(compute.NewRegisterImage("debian-13", "https://images.example/d.qcow2")), imageSpec(1, 1), true)
+	f.mustCommit("u-img", fileIntent(), imageSpec(1, 1), true)
 	f.mustCommit("u-key", ok(compute.NewImportKeyPair("k", rsa2048, compute.Labels{})), keySpec(1, "k", 1, false), true)
 
 	want := func(at time.Time, refs ...compute.Ref) {
@@ -493,7 +501,7 @@ func paging(f fixture) {
 	ctx := context.Background()
 	for n := 1; n <= 3; n++ {
 		f.mustCommit(fmt.Sprintf("p-%d", n), runIntent("vws.small"), instanceSpec(n, 1, compute.PowerRunning), true)
-		f.mustCommit(fmt.Sprintf("pi-%d", n), ok(compute.NewRegisterImage("debian-13", "https://images.example/d.qcow2")), imageSpec(n, 1), true)
+		f.mustCommit(fmt.Sprintf("pi-%d", n), fileIntent(), imageSpec(n, 1), true)
 		f.mustCommit(fmt.Sprintf("pk-%d", n), ok(compute.NewImportKeyPair(fmt.Sprintf("key-%d", n), rsa2048, compute.Labels{})), keySpec(n, fmt.Sprintf("key-%d", n), 1, false), true)
 	}
 	p1 := ok(f.s.Instances(ctx, store.InstanceQuery{PageSize: 2}))
@@ -567,7 +575,7 @@ func metadataRoundTrip(f fixture) {
 
 	img := imageSpec(1, 1)
 	imgMeta := &compute.Metadata{Labels: labels, Description: desc}
-	f.mustChange("md-img", ok(compute.NewRegisterImage("debian-13", "https://images.example/d.qcow2")), compute.Change{Spec: img, Write: true, Meta: imgMeta})
+	f.mustChange("md-img", fileIntent(), compute.Change{Spec: img, Write: true, Meta: imgMeta})
 	if got, want := ok(f.s.Image(ctx, imageID(1))).Meta, *imgMeta; !reflect.DeepEqual(got, want) {
 		f.t.Fatalf("image metadata = %+v, want %+v", got, want)
 	}
@@ -671,7 +679,7 @@ func staleMetadata(f fixture) {
 
 func createOverExistingImage(f fixture) {
 	ctx := context.Background()
-	f.mustCommit("img-a", ok(compute.NewRegisterImage("debian-13", "https://images.example/d.qcow2")), imageSpec(1, 1), true)
+	f.mustCommit("img-a", fileIntent(), imageSpec(1, 1), true)
 	again := imageSpec(1, 1)
 	again.Source = compute.FromFile{Path: ok(compute.ParseImagePath("/var/lib/vws/images/debian-13.qcow2"))}
 	_, err := f.commit("img-b", ok(compute.NewRegisterFile(imageID(1).String(), "/var/lib/vws/images/debian-13.qcow2", "debian-13")), again, true)

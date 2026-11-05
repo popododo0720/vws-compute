@@ -113,8 +113,8 @@ type DesiredChange struct {
 	// Op is the Pending operation from compute.NewOperation.
 	Op compute.Operation
 	// Spec, Write, and Meta come from compute.Change. There is deliberately
-	// no field for the change's private key. A nil Meta leaves stored
-	// metadata untouched.
+	// no field for a private key. A nil Meta leaves stored metadata
+	// untouched.
 	Spec  compute.Spec
 	Write bool
 	Meta  *compute.Metadata

@@ -114,7 +114,11 @@ func (a *Agent) imageSource(ctx context.Context, spec hypervisor.ImageSpec) (map
 			}
 			return nil, fmt.Errorf("image %s: get source machine %s: %w", spec.Name, spec.SourceMachine, err)
 		}
-		return map[string]any{"pvc": map[string]any{"namespace": ns, "name": spec.SourceMachine + "-root"}}, nil
+		disk := rootClaim(root)
+		if disk == "" {
+			disk = rootDiskName(spec.SourceMachine)
+		}
+		return map[string]any{"pvc": map[string]any{"namespace": ns, "name": disk}}, nil
 	case spec.SourceClaim != "":
 		if err := objectName(spec.Name, "claim", spec.SourceClaim); err != nil {
 			return nil, err

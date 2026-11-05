@@ -14,6 +14,7 @@ type CopySource interface {
 }
 
 // FromURL registers an existing disk image the agent fetches over https.
+// No intent writes it any more; images stored with it still converge.
 type FromURL struct{ URL ImageURL }
 
 // FromInstance captures the root disk of an instance.

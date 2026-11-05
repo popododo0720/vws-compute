@@ -38,7 +38,7 @@ Rules for anyone changing this repository, human or agent. A rule with an enforc
 | Production packages do not import `testing`. `storetest` is the one declared exception. | `TestArchitectureRules` |
 | An operation changes state only through `compute.Settle`, and terminal states are absorbing. | Unexported fields, `TestOperationStateIsUnexported`, and the `Settle` table in `internal/compute` |
 | Transition rules live only in `compute.Plan`. Each intent carries its own `plan` method. | The compiler, because `Intent` is sealed by unexported methods |
-| Private keys are never stored. | `store.DesiredChange` has no field for one, `TestSchemaHasNoPrivateKeyColumn`, and `TestComputeMessagesCarryNoPrivateKey` |
+| Private keys are never generated or stored: a key pair is imported. | `compute.Change` and `store.DesiredChange` have no field for one, and `TestComputeMessagesCarryNoPrivateKey` |
 | Every repository behaves the same. | `storetest.Run`, called from both store test packages |
 | A capture finishes before its source instance is destroyed, and a launch finishes before its image is deregistered. | `TestCaptureBeforeTerminate` and `TestLaunchBeforeDeregister` |
 | A new desired generation does not wait out the previous retry. | `TestNewGenerationDoesNotInheritBackoff` |

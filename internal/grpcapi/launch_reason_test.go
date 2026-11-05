@@ -50,7 +50,7 @@ func TestImageNotFoundPublishesReadyReasonAndDeletesRootDisk(t *testing.T) {
 	ctl := controller.New(repo, controller.WithClock(clock), controller.WithKick(rec.Kick))
 
 	reg, err := ctl.Submit(ctx, mustRequest(t, "register-image"), okIntent(
-		compute.NewRegisterImage("debian-13", "https://images.example/debian-13.qcow2")))
+		compute.NewRegisterFile("debian-13", "/var/lib/vws/images/debian-13.qcow2", "debian-13")))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -1,14 +1,9 @@
 package compute_test
 
 import (
-	"bytes"
-	"crypto/ed25519"
-	"crypto/rand"
 	"fmt"
 	"testing"
 	"time"
-
-	"golang.org/x/crypto/ssh"
 
 	"github.com/popododo0720/vws-compute/internal/compute"
 )
@@ -83,47 +78,6 @@ func TestParsePublicKeyReadsKeysOutsideTheImportRange(t *testing.T) {
 		if _, err := compute.ParsePublicKey(line); err != nil {
 			t.Fatalf("ParsePublicKey of a stored key: %v", err)
 		}
-	}
-}
-
-func TestCreateKeyPairSecretMatchesStoredPublicKey(t *testing.T) {
-	in, err := compute.NewCreateKeyPair("deploy")
-	if err != nil {
-		t.Fatal(err)
-	}
-	ch, err := compute.Plan(newView(), compute.Env{Now: t0, Rand: rand.Reader}, in)
-	if err != nil {
-		t.Fatal(err)
-	}
-	spec := ch.Spec.(compute.KeyPairSpec)
-	if ch.Secret == nil {
-		t.Fatal("CreateKeyPair plan has no private key")
-	}
-	raw, err := ssh.ParseRawPrivateKey(ch.Secret.OpenSSH())
-	if err != nil {
-		t.Fatalf("private key is not OpenSSH PEM: %v", err)
-	}
-	priv, ok := raw.(*ed25519.PrivateKey)
-	if !ok {
-		t.Fatalf("private key type = %T, want *ed25519.PrivateKey", raw)
-	}
-	pub, err := ssh.NewPublicKey(priv.Public())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got, want := ssh.FingerprintSHA256(pub), spec.PublicKey.Fingerprint(); got != want {
-		t.Fatalf("private key fingerprint %q, stored public key %q", got, want)
-	}
-	if got := fmt.Sprint(*ch.Secret); got != "PrivateKey(REDACTED)" {
-		t.Fatalf("fmt.Sprint(private key) = %q", got)
-	}
-	if got := fmt.Sprintf("%#v", *ch.Secret); got != "compute.PrivateKey{}" {
-		t.Fatalf("%%#v = %q", got)
-	}
-	leaked := ch.Secret.OpenSSH()
-	leaked[0] ^= 0xff
-	if bytes.Equal(ch.Secret.OpenSSH(), leaked) {
-		t.Fatal("OpenSSH returned its backing array")
 	}
 }
 

@@ -37,9 +37,10 @@ type InstanceSpec struct {
 	Volumes  []VolumeAttachment
 	NICs     []NetworkInterface
 	UserData string
-	// RebootEpoch counts accepted reboots. Rebooting is a level, not an
+	// RebootEpoch counts the reboots RebootInstance accepted in earlier
+	// releases. No intent advances it any more. Rebooting is a level, not an
 	// edge: the agent reboots once whenever the epoch it last applied is
-	// behind this one, so concurrent reboot requests coalesce.
+	// behind this one.
 	RebootEpoch uint32
 }
 

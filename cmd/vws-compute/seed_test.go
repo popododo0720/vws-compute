@@ -145,13 +145,13 @@ func TestSeededImageLaunchStopStartTerminate(t *testing.T) {
 				t.Fatalf("after run = %d", life)
 			}
 
-			step(t, ctl, repo, "stop", mustIntent(compute.NewStopInstance(id)))
+			step(t, ctl, repo, "stop", mustIntent(compute.NewSetPower(id, compute.PowerStopped, compute.MetadataPatch{})))
 			wantMachine(t, agent, id, hypervisor.PowerOff)
 			if life := instanceLife(t, repo, id); life != compute.InstanceStopped {
 				t.Fatalf("after stop = %d", life)
 			}
 
-			step(t, ctl, repo, "start", mustIntent(compute.NewStartInstance(id)))
+			step(t, ctl, repo, "start", mustIntent(compute.NewSetPower(id, compute.PowerRunning, compute.MetadataPatch{})))
 			wantMachine(t, agent, id, hypervisor.PowerOn)
 			if got := agent.Creations(id); got != 1 {
 				t.Fatalf("creations after start = %d, want 1", got)
@@ -167,7 +167,8 @@ func TestSeededImageLaunchStopStartTerminate(t *testing.T) {
 			if life := instanceLife(t, repo, id); life != compute.InstanceTerminated {
 				t.Fatalf("after terminate = %d", life)
 			}
-			_, err = ctl.Submit(ctx, okReq(t, "start-again"), mustIntent(compute.NewStartInstance(id)))
+			start := mustIntent(compute.NewSetPower(id, compute.PowerRunning, compute.MetadataPatch{}))
+			_, err = ctl.Submit(ctx, okReq(t, "start-again"), start)
 			if compute.CodeOf(err) != compute.CodeFailedPrecondition {
 				t.Fatalf("start after terminate = %v, want FailedPrecondition", err)
 			}
