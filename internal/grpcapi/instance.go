@@ -541,6 +541,9 @@ func validateCreateInstance(zone, name string, inst *computev1.Instance) error {
 	if len(spec.GetUserData()) > 32768 {
 		return invalidSpec("instance.spec.user_data exceeds 32768 bytes")
 	}
+	if len(spec.GetUserDataRaw()) > 0 {
+		return invalidSpec("instance.spec.user_data_raw is not supported yet")
+	}
 	if err := validateNICs(spec.GetNetworkInterfaces()); err != nil {
 		return err
 	}
@@ -641,7 +644,7 @@ func instanceSpecDelta(spec *computev1.InstanceSpec, cur compute.Instance) error
 	if spec.GetKeyPair() != key && spec.GetKeyPair() != "" {
 		return invalidSpec("key_pair is immutable")
 	}
-	if spec.GetUserData() != "" || len(spec.GetNetworkInterfaces()) > 0 {
+	if spec.GetUserData() != "" || len(spec.GetUserDataRaw()) > 0 || len(spec.GetNetworkInterfaces()) > 0 {
 		return invalidSpec("network interfaces and user_data are not mutable")
 	}
 	return nil
