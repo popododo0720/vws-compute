@@ -78,14 +78,29 @@ func readyReason(conds []*commonv1.Condition) string {
 	return ""
 }
 
+// Storage reads volumes and snapshots from the storage service.
+type Storage interface {
+	VolumeLookup
+	SnapshotLookup
+}
+
+type storage struct {
+	storageVolumes
+	storageSnapshots
+}
+
 // DialStorage connects lazily to the storage service at addr and returns a
-// lookup over it and a function that closes the connection.
-func DialStorage(addr string) (VolumeLookup, func() error, error) {
+// lookup over it and a function that closes the connection. The lookup also
+// deletes volumes (see DeleteVolumes).
+func DialStorage(addr string) (Storage, func() error, error) {
 	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		return nil, nil, fmt.Errorf("dial storage %s: %w", addr, err)
 	}
-	return NewStorageVolumes(storagev1.NewVolumeServiceClient(conn)), conn.Close, nil
+	return storage{
+		storageVolumes{storagev1.NewVolumeServiceClient(conn)},
+		storageSnapshots{storagev1.NewSnapshotServiceClient(conn)},
+	}, conn.Close, nil
 }
 
 // Claims resolves, through l, the claim of a volume that was still

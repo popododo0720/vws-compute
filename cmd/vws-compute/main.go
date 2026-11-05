@@ -107,7 +107,7 @@ func run(ctx context.Context, cfg config) error {
 		return err
 	}
 	opts := []grpcapi.Option{grpcapi.WithPublicImages(cfg.publicImages)}
-	var lookup grpcapi.VolumeLookup
+	var lookup grpcapi.Storage
 	if storage != "" {
 		// The connection is lazy: the storage service may come up after this
 		// process, and CreateInstance answers UNAVAILABLE until it does.
@@ -131,7 +131,10 @@ func run(ctx context.Context, cfg config) error {
 		reconciler.WithPublicImages(cfg.publicImages),
 	}
 	if lookup != nil {
-		recOpts = append(recOpts, reconciler.WithClaims(grpcapi.Claims(lookup)))
+		recOpts = append(recOpts,
+			reconciler.WithClaims(grpcapi.Claims(lookup)),
+			reconciler.WithSnapshotObjects(grpcapi.SnapshotObjects(lookup)),
+		)
 		if del := grpcapi.DeleteVolumes(lookup); del != nil {
 			// Root volumes go with their instance (DeleteOnTermination).
 			recOpts = append(recOpts, reconciler.WithVolumeDeleter(del))

@@ -3,7 +3,6 @@ package kubevirt
 import (
 	"context"
 	"fmt"
-	"path"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -88,7 +87,8 @@ func (a *Agent) ensure(ctx context.Context, gvk schema.GroupVersionKind, name st
 // imageSource maps exactly one ImageSpec source to a DataVolume source.
 func (a *Agent) imageSource(ctx context.Context, spec hypervisor.ImageSpec) (map[string]any, error) {
 	n := 0
-	for _, s := range []string{spec.SourceURL, spec.SourcePath, spec.SourceMachine, spec.SourceVolume, spec.SourceSnapshot} {
+	sources := []string{spec.SourceURL, spec.SourcePath, spec.SourceMachine, spec.SourceClaim, spec.SourceVolumeSnapshot}
+	for _, s := range sources {
 		if s != "" {
 			n++
 		}
@@ -115,11 +115,26 @@ func (a *Agent) imageSource(ctx context.Context, spec hypervisor.ImageSpec) (map
 			return nil, fmt.Errorf("image %s: get source machine %s: %w", spec.Name, spec.SourceMachine, err)
 		}
 		return map[string]any{"pvc": map[string]any{"namespace": ns, "name": spec.SourceMachine + "-root"}}, nil
-	case spec.SourceVolume != "":
-		return map[string]any{"pvc": map[string]any{"namespace": ns, "name": path.Base(spec.SourceVolume)}}, nil
+	case spec.SourceClaim != "":
+		if err := objectName(spec.Name, "claim", spec.SourceClaim); err != nil {
+			return nil, err
+		}
+		return map[string]any{"pvc": map[string]any{"namespace": ns, "name": spec.SourceClaim}}, nil
 	default:
-		return map[string]any{"snapshot": map[string]any{"namespace": ns, "name": path.Base(spec.SourceSnapshot)}}, nil
+		if err := objectName(spec.Name, "VolumeSnapshot", spec.SourceVolumeSnapshot); err != nil {
+			return nil, err
+		}
+		return map[string]any{"snapshot": map[string]any{"namespace": ns, "name": spec.SourceVolumeSnapshot}}, nil
 	}
+}
+
+// objectName refuses a copy source that is not a Kubernetes object name, such
+// as a resource name the caller forgot to resolve.
+func objectName(image, kind, name string) error {
+	if errs := validation.IsDNS1123Subdomain(name); len(errs) > 0 {
+		return hypervisor.Permanent(fmt.Errorf("image %s: %s %q is not an object name: %s", image, kind, name, errs[0]))
+	}
+	return nil
 }
 
 // imageStorage is the target claim of the DataVolume. Naming the class and

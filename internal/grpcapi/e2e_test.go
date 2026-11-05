@@ -48,6 +48,8 @@ type harness struct {
 	ops    longrunningpb.OperationsClient
 	lookup computev1.OperationLookupServiceClient
 	agent  *fakeagent.Agent
+	// images is every image spec the reconciler handed the agent.
+	images *imageLog
 	ctl    *controller.Controller
 	stop   func()
 }
@@ -67,7 +69,9 @@ func serveRepoServer(t *testing.T, repo store.Repository, serverOpts []grpc.Serv
 ) *harness {
 	t.Helper()
 	agent := fakeagent.New()
-	rec := reconciler.New(repo, agent, reconciler.WithInterval(10*time.Millisecond))
+	images := &imageLog{Agent: agent}
+	rec := reconciler.New(repo, images, reconciler.WithInterval(10*time.Millisecond),
+		reconciler.WithClaims(fakeClaim), reconciler.WithSnapshotObjects(fakeSnapshotObject))
 	ctl := controller.New(repo, controller.WithKick(rec.Kick))
 
 	lis := bufconn.Listen(1 << 20)
@@ -94,6 +98,7 @@ func serveRepoServer(t *testing.T, repo store.Repository, serverOpts []grpc.Serv
 		ops:    longrunningpb.NewOperationsClient(conn),
 		lookup: computev1.NewOperationLookupServiceClient(conn),
 		agent:  agent,
+		images: images,
 		ctl:    ctl,
 	}
 	var once sync.Once
