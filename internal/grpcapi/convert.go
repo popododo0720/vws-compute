@@ -166,15 +166,16 @@ func instancePB(i compute.Instance, name string) *computev1.Instance {
 		}}
 	}
 	out := &computev1.Instance{
-		Name:       name,
-		Uid:        i.Spec.ID.String(),
-		Generation: i.Spec.Generation,
-		Etag:       etagOf(i.Spec.Generation, i.Meta.Revision),
-		Labels:     i.Meta.Labels.Map(),
-		Spec:       spec,
-		Status:     status,
-		CreateTime: timestamppb.New(i.Spec.CreatedAt),
-		UpdateTime: timestamppb.New(latest(i.Spec.ChangedAt, i.Meta.ChangedAt)),
+		Name:        name,
+		Uid:         i.Spec.ID.String(),
+		Generation:  i.Spec.Generation,
+		Etag:        etagOf(i.Spec.Generation, i.Meta.Revision),
+		Labels:      i.Meta.Labels.Map(),
+		Annotations: i.Meta.Annotations.Map(),
+		Spec:        spec,
+		Status:      status,
+		CreateTime:  timestamppb.New(i.Spec.CreatedAt),
+		UpdateTime:  timestamppb.New(latest(i.Spec.ChangedAt, i.Meta.ChangedAt)),
 	}
 	if i.Spec.Power == compute.PowerTerminated {
 		out.DeleteTime = timestamppb.New(i.Spec.ChangedAt)

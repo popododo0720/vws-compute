@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -547,13 +548,26 @@ func (f fixture) mustChange(req string, in compute.Intent, ch compute.Change, ex
 	return op
 }
 
+// largestAnnotations is the largest set the envelope allows: 50 user
+// entries of 128-character keys and 256-character values, each character
+// 3 bytes of UTF-8, plus one reserved entry. It is about 58 KB, more than
+// the 30 KB of the largest EC2 tag set.
+func largestAnnotations() compute.Annotations {
+	m := map[string]string{"aws:cloudformation:stack-name": "s"}
+	for i := range compute.MaxAnnotations {
+		k := fmt.Sprintf("Name %02d ", i)
+		m[k+strings.Repeat("\u20ac", 128-len(k))] = strings.Repeat("\u20ac", 256)
+	}
+	return ok(compute.ParseAnnotations(m))
+}
+
 func metadataRoundTrip(f fixture) {
 	ctx := context.Background()
 	labels := sampleLabels()
 	desc := ok(compute.ParseDescription("debian\nstable\tbuild"))
 
 	inst := instanceSpec(1, 1, compute.PowerRunning)
-	born := &compute.Metadata{Labels: labels}
+	born := &compute.Metadata{Labels: labels, Annotations: largestAnnotations()}
 	f.mustChange("md-i", runIntent("vws.small"), compute.Change{Spec: inst, Write: true, Meta: born})
 	got := ok(f.s.Instance(ctx, instanceID(1)))
 	if !reflect.DeepEqual(got.Meta, *born) || !got.Spec.ChangedAt.Equal(inst.ChangedAt) {

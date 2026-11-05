@@ -123,6 +123,7 @@ func (d Description) String() string { return d.s }
 // image unavailable.
 type Metadata struct {
 	Labels      Labels
+	Annotations Annotations
 	Description Description
 	// Revision is 0 when the resource is created and advances by exactly 1
 	// on every committed metadata change. CommitDesired rejects a write
@@ -138,8 +139,9 @@ type Metadata struct {
 // value changes nothing and encodes to zero bytes, so an intent that gained
 // a patch field keeps its old fingerprint when the patch is zero.
 type MetadataPatch struct {
-	labels labelPatch
-	desc   descriptionPatch
+	labels      labelPatch
+	annotations annotationPatch
+	desc        descriptionPatch
 }
 
 type labelMode uint8
@@ -158,6 +160,13 @@ type labelPatch struct {
 	// remove is used only by editLabels. Keys are unique, ascending, valid,
 	// and not in set.
 	remove []string
+}
+
+// annotationPatch replaces the user entries when set. Reserved entries
+// stay as stored.
+type annotationPatch struct {
+	set bool
+	a   Annotations
 }
 
 type descriptionPatch struct {
@@ -194,6 +203,15 @@ func (p MetadataPatch) EditLabels(set Labels, remove []string) (MetadataPatch, e
 	return p, nil
 }
 
+// ReplaceAnnotations makes p replace the user annotations with a. An empty
+// a clears them, which is not the same as the zero patch. Reserved entries
+// stay as stored, and apply fails with CodeInvalid when a sets, changes, or
+// drops the value of a reserved key it names.
+func (p MetadataPatch) ReplaceAnnotations(a Annotations) MetadataPatch {
+	p.annotations = annotationPatch{set: true, a: a}
+	return p
+}
+
 // SetDescription makes p replace the description with d. An empty d clears
 // it, which is not the same as the zero patch.
 func (p MetadataPatch) SetDescription(d Description) MetadataPatch {
@@ -203,13 +221,13 @@ func (p MetadataPatch) SetDescription(d Description) MetadataPatch {
 
 // IsZero reports whether p changes nothing.
 func (p MetadataPatch) IsZero() bool {
-	return p.labels.mode == keepLabels && !p.desc.set
+	return p.labels.mode == keepLabels && !p.annotations.set && !p.desc.set
 }
 
-// apply returns cur with p applied and reports whether labels or
-// description changed. It leaves Revision and ChangedAt as they were. It
-// fails with CodeInvalid when an edit would leave more than MaxLabels
-// entries.
+// apply returns cur with p applied and reports whether labels,
+// annotations, or description changed. It leaves Revision and ChangedAt as
+// they were. It fails with CodeInvalid when an edit would leave more than
+// MaxLabels entries, or an annotation patch sets a reserved key.
 func (p MetadataPatch) apply(cur Metadata) (Metadata, bool, error) {
 	next := cur
 	switch p.labels.mode {
@@ -232,11 +250,26 @@ func (p MetadataPatch) apply(cur Metadata) (Metadata, bool, error) {
 		}
 		next.Labels = labelsOf(m)
 	}
+	if p.annotations.set {
+		a, err := p.annotations.a.over(cur.Annotations)
+		if err != nil {
+			return Metadata{}, false, err
+		}
+		next.Annotations = a
+	}
 	if p.desc.set {
 		next.Description = p.desc.d
 	}
-	changed := !next.Labels.Equal(cur.Labels) || next.Description != cur.Description
+	changed := !next.Labels.Equal(cur.Labels) || !next.Annotations.Equal(cur.Annotations) ||
+		next.Description != cur.Description
 	return next, changed, nil
+}
+
+// Check fails as applying p to cur would, without changing anything. A
+// validate_only request uses it because it does not plan.
+func (p MetadataPatch) Check(cur Metadata) error {
+	_, _, err := p.apply(cur)
+	return err
 }
 
 // next returns the metadata after p, or nil when p changes nothing. It is
@@ -257,6 +290,7 @@ func (p MetadataPatch) next(cur Metadata, env Env) (*Metadata, error) {
 //
 //	replace  "labels=" count k1 v1 ... kn vn
 //	edit     "labels+" count k1 v1 ... kn vn  "labels-" count r1 ... rm
+//	annot    "annotations=" count k1 v1 ... kn vn
 //	desc     "description=" text
 func (p MetadataPatch) encode(e *encoder) {
 	switch p.labels.mode {
@@ -270,6 +304,9 @@ func (p MetadataPatch) encode(e *encoder) {
 			e.field(k)
 		}
 	}
+	if p.annotations.set {
+		e.stringMap("annotations=", p.annotations.a.m)
+	}
 	if p.desc.set {
 		e.field("description=")
 		e.field(p.desc.d.s)
@@ -278,13 +315,14 @@ func (p MetadataPatch) encode(e *encoder) {
 
 func (e *encoder) count(n int) { e.field(strconv.Itoa(n)) }
 
-func (e *encoder) labelSet(tag string, l Labels) {
-	keys := l.keys()
+func (e *encoder) labelSet(tag string, l Labels) { e.stringMap(tag, l.m) }
+
+func (e *encoder) stringMap(tag string, m map[string]string) {
+	keys := slices.Sorted(maps.Keys(m))
 	e.field(tag)
 	e.count(len(keys))
 	for _, k := range keys {
 		e.field(k)
-		v, _ := l.Get(k)
-		e.field(v)
+		e.field(m[k])
 	}
 }
