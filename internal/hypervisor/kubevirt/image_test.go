@@ -299,6 +299,18 @@ func TestImageSources(t *testing.T) {
 	if got := pvcName(source("ami-3"), "pvc"); got != "i-0123456789abcdef0-root" {
 		t.Fatalf("capture source claim %v, want the machine's root disk", got)
 	}
+
+	claim(t, c, ns, "vol-0b1c2d3e4f5a6b7c8", corev1.ReadWriteOnce)
+	if err := a.ConvergeMachine(ctx, bootSpec("i-0fedcba9876543210", "vol-0b1c2d3e4f5a6b7c8")); err != nil {
+		t.Fatal(err)
+	}
+	booted := hypervisor.ImageSpec{Name: "ami-4", Present: true, SourceMachine: "i-0fedcba9876543210"}
+	if _, err := a.ConvergeImage(ctx, booted); err == nil {
+		t.Fatal("want an error until CDI finishes")
+	}
+	if got := pvcName(source("ami-4"), "pvc"); got != "vol-0b1c2d3e4f5a6b7c8" {
+		t.Fatalf("capture of a claim-booted machine clones %v, want the claim it boots from", got)
+	}
 }
 
 func TestImagePermanentErrors(t *testing.T) {
