@@ -18,7 +18,11 @@ import (
 const errorDomain = "vws.dev"
 
 func withReason(code codes.Code, reason, msg string) error {
-	st, err := status.New(code, msg).WithDetails(&errdetails.ErrorInfo{Reason: reason, Domain: errorDomain})
+	return withInfo(code, &errdetails.ErrorInfo{Reason: reason, Domain: errorDomain}, msg)
+}
+
+func withInfo(code codes.Code, info *errdetails.ErrorInfo, msg string) error {
+	st, err := status.New(code, msg).WithDetails(info)
 	if err != nil {
 		return status.Error(code, msg)
 	}
@@ -27,6 +31,16 @@ func withReason(code codes.Code, reason, msg string) error {
 
 func invalidSpec(msg string) error {
 	return withReason(codes.InvalidArgument, "INVALID_SPEC", msg)
+}
+
+// zoneMismatch is INVALID_SPEC with the EC2 code InvalidVolume.ZoneMismatch
+// in ErrorInfo metadata aws_code, so the EC2 edge can answer as AttachVolume
+// does without parsing the message.
+func zoneMismatch(msg string) error {
+	return withInfo(codes.InvalidArgument, &errdetails.ErrorInfo{
+		Reason: "INVALID_SPEC", Domain: errorDomain,
+		Metadata: map[string]string{"aws_code": "InvalidVolume.ZoneMismatch"},
+	}, msg)
 }
 
 func invalidID(msg string) error {
@@ -72,6 +86,8 @@ func toStatus(err error) error {
 	switch compute.CodeOf(err) {
 	case compute.CodeInvalid:
 		return invalidSpec(err.Error())
+	case compute.CodeZoneMismatch:
+		return zoneMismatch(err.Error())
 	case compute.CodeNotFound:
 		return notFound(err.Error())
 	case compute.CodeAlreadyExists:
@@ -91,7 +107,7 @@ func toStatus(err error) error {
 
 func grpcCode(c compute.Code) codes.Code {
 	switch c {
-	case compute.CodeInvalid:
+	case compute.CodeInvalid, compute.CodeZoneMismatch:
 		return codes.InvalidArgument
 	case compute.CodeNotFound:
 		return codes.NotFound

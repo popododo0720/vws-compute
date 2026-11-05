@@ -27,6 +27,10 @@ const (
 	// CodeLimitExceeded reports a write the store cannot hold, such as a
 	// resource record over its size limit. Retrying it fails the same way.
 	CodeLimitExceeded
+	// CodeZoneMismatch reports a volume outside the instance zone, which EC2
+	// answers with InvalidVolume.ZoneMismatch. It is an invalid request:
+	// retrying it fails the same way.
+	CodeZoneMismatch
 )
 
 var codeNames = [...]string{
@@ -38,6 +42,7 @@ var codeNames = [...]string{
 	CodeAborted:            "Aborted",
 	CodeInternal:           "Internal",
 	CodeLimitExceeded:      "LimitExceeded",
+	CodeZoneMismatch:       "ZoneMismatch",
 }
 
 func (c Code) String() string {

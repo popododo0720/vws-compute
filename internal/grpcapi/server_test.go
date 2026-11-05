@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -99,6 +100,28 @@ func TestReconciliationCoversLifecycles(t *testing.T) {
 	}
 }
 
+// TestOnlyAZoneMismatchCarriesAnAWSCode: a domain CodeZoneMismatch reaches the
+// wire as INVALID_SPEC with aws_code InvalidVolume.ZoneMismatch; CodeInvalid
+// keeps INVALID_SPEC without metadata.
+func TestOnlyAZoneMismatchCarriesAnAWSCode(t *testing.T) {
+	for c, want := range map[compute.Code]string{
+		compute.CodeZoneMismatch: "InvalidVolume.ZoneMismatch",
+		compute.CodeInvalid:      "",
+	} {
+		st, _ := status.FromError(toStatus(fmt.Errorf("plan: %w", compute.Errorf(c, "x"))))
+		var info *errdetails.ErrorInfo
+		for _, d := range st.Details() {
+			if i, ok := d.(*errdetails.ErrorInfo); ok {
+				info = i
+			}
+		}
+		if st.Code() != codes.InvalidArgument || info.GetReason() != "INVALID_SPEC" ||
+			info.GetMetadata()["aws_code"] != want {
+			t.Errorf("%s: status %s info %v, want aws_code %q", c, st.Code(), info, want)
+		}
+	}
+}
+
 func TestErrorsMapToGRPCCodes(t *testing.T) {
 	for _, tc := range []struct {
 		err  error
@@ -112,6 +135,7 @@ func TestErrorsMapToGRPCCodes(t *testing.T) {
 		{compute.Errorf(compute.CodeAborted, "x"), codes.Aborted},
 		{compute.Errorf(compute.CodeInternal, "x"), codes.Internal},
 		{compute.Errorf(compute.CodeLimitExceeded, "x"), codes.ResourceExhausted},
+		{compute.Errorf(compute.CodeZoneMismatch, "x"), codes.InvalidArgument},
 		{fmt.Errorf("wrapped: %w", compute.Errorf(compute.CodeNotFound, "x")), codes.NotFound},
 		{errors.New("disk full"), codes.Internal},
 		{context.Canceled, codes.Canceled},
