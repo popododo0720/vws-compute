@@ -10,6 +10,7 @@
 package reconciler
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -43,6 +44,8 @@ type Reconciler struct {
 	log      *slog.Logger
 	observe  func(ctx context.Context, result string, d time.Duration, err error)
 	claims   ClaimFunc
+	// snapshots is set by WithSnapshotObjects.
+	snapshots SnapshotFunc
 	// deleteVolume is set by WithVolumeDeleter.
 	deleteVolume VolumeDeleter
 	kick         chan struct{}
@@ -71,6 +74,17 @@ type ClaimFunc func(ctx context.Context, volume string) (string, error)
 // it resolves the instance stays unconverged and is retried. Without it an
 // empty claim reaches the agent as it is.
 func WithClaims(f ClaimFunc) Option { return func(r *Reconciler) { r.claims = f } }
+
+// SnapshotFunc returns the VolumeSnapshot name storage reports for a
+// snapshot. "" with a nil error means the snapshot is still being created. A
+// hypervisor.Permanent error means it never will have one.
+type SnapshotFunc func(ctx context.Context, snapshot string) (string, error)
+
+// WithSnapshotObjects resolves, on every converge and on restore, the
+// VolumeSnapshot an image copied from a snapshot clones from. Without it, and
+// without WithClaims for a volume, such an image parks: compute derives no
+// storage object name of its own.
+func WithSnapshotObjects(f SnapshotFunc) Option { return func(r *Reconciler) { r.snapshots = f } }
 
 // Sweep results passed to the WithSweepObserver function.
 const (
@@ -408,7 +422,11 @@ func (r *Reconciler) Restore(ctx context.Context) error {
 		if !img.Available() {
 			return nil
 		}
-		_, err := r.agent.ConvergeImage(ctx, imageSpec(img.Spec))
+		want, err := r.restoredImage(ctx, img)
+		if err != nil {
+			return err
+		}
+		_, err = r.agent.ConvergeImage(ctx, want)
 		return err
 	}); err != nil {
 		errs = append(errs, err)
@@ -529,8 +547,11 @@ func (r *Reconciler) convergeImage(ctx context.Context, ref compute.Ref) error {
 	if img.Status.Observed.Generation >= spec.Generation {
 		return nil
 	}
-	want := imageSpec(spec)
-	size, agentErr := r.agent.ConvergeImage(ctx, want)
+	want, agentErr := r.image(ctx, spec)
+	var size int64
+	if agentErr == nil {
+		size, agentErr = r.agent.ConvergeImage(ctx, want)
+	}
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
@@ -539,6 +560,7 @@ func (r *Reconciler) convergeImage(ctx context.Context, ref compute.Ref) error {
 	st.Observed, st.Retry = verdict(st.Observed, st.Retry, spec.Generation, spec.ChangedAt, agentErr, now)
 	if agentErr == nil {
 		st.Present, st.SizeBytes = want.Present, size
+		st.SourceObject = cmp.Or(want.SourceClaim, want.SourceVolumeSnapshot)
 	}
 	st.UpdatedAt = now
 	return r.store.CommitImageStatus(ctx, id, st)
@@ -687,6 +709,62 @@ func machineState(p hypervisor.Power) compute.MachineState {
 	return compute.MachineAbsent
 }
 
+// image is imageSpec with the object a copied volume or snapshot lives in
+// resolved through WithClaims or WithSnapshotObjects. A deregistered image
+// resolves nothing, so it can be removed while storage is down.
+func (r *Reconciler) image(ctx context.Context, s compute.ImageSpec) (hypervisor.ImageSpec, error) {
+	i := imageSpec(s)
+	if !i.Present {
+		return i, nil
+	}
+	var err error
+	switch src := s.Source.(type) {
+	case compute.FromVolume:
+		i.SourceClaim, err = resolveSource(ctx, s.ID, "volume", src.Ref.String(), r.claims)
+	case compute.FromSnapshot:
+		i.SourceVolumeSnapshot, err = resolveSource(ctx, s.ID, "snapshot", src.Ref.String(), r.snapshots)
+	}
+	return i, err
+}
+
+// restoredImage is the spec to re-apply for an available image. The object a
+// copy cloned from was stored when it converged, so a source deleted since, or
+// storage being down, does not keep the artifact from coming back. A record
+// written before that was stored is resolved through storage.
+func (r *Reconciler) restoredImage(ctx context.Context, img compute.Image) (hypervisor.ImageSpec, error) {
+	obj := img.Status.SourceObject
+	if obj == "" {
+		return r.image(ctx, img.Spec)
+	}
+	i := imageSpec(img.Spec)
+	switch img.Spec.Source.(type) {
+	case compute.FromVolume:
+		i.SourceClaim = obj
+	case compute.FromSnapshot:
+		i.SourceVolumeSnapshot = obj
+	}
+	return i, nil
+}
+
+type objectFunc = func(ctx context.Context, ref string) (string, error)
+
+func resolveSource(ctx context.Context, image compute.ImageID, kind, ref string, resolve objectFunc) (string, error) {
+	if resolve == nil {
+		return "", hypervisor.Permanent(fmt.Errorf("image %s: copying a %s needs the storage service", image, kind))
+	}
+	name, err := resolve(ctx, ref)
+	switch {
+	case err != nil && hypervisor.IsPermanent(err):
+		return "", err
+	case err != nil:
+		return "", fmt.Errorf("image %s: %s %s: %w", image, kind, ref, err)
+	case name == "":
+		return "", fmt.Errorf("image %s: %s %s has no storage object yet", image, kind, ref)
+	}
+	return name, nil
+}
+
+// imageSpec is the part of an image's spec that needs no lookup.
 func imageSpec(s compute.ImageSpec) hypervisor.ImageSpec {
 	i := hypervisor.ImageSpec{Name: s.ID.String(), Present: !s.Deregistered}
 	switch src := s.Source.(type) {
@@ -696,10 +774,6 @@ func imageSpec(s compute.ImageSpec) hypervisor.ImageSpec {
 		i.SourcePath = src.Path.String()
 	case compute.FromInstance:
 		i.SourceMachine = src.Instance.String()
-	case compute.FromVolume:
-		i.SourceVolume = src.Ref.String()
-	case compute.FromSnapshot:
-		i.SourceSnapshot = src.Ref.String()
 	}
 	return i
 }

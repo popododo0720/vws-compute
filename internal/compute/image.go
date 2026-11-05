@@ -81,8 +81,14 @@ type ImageStatus struct {
 	// Present reports that the artifact exists and is complete on the agent.
 	Present   bool
 	SizeBytes int64
-	Retry     Retry
-	UpdatedAt time.Time
+	// SourceObject is the PersistentVolumeClaim or VolumeSnapshot name the
+	// storage service reported for a copied volume or snapshot, which the
+	// artifact was cloned from. The reconciler sets it when the copy converges,
+	// so a restart restores the artifact without asking storage again. Empty
+	// for any other source and for a record written before the field existed.
+	SourceObject string
+	Retry        Retry
+	UpdatedAt    time.Time
 }
 
 // Image is the merged read model.

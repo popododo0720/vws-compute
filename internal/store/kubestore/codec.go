@@ -146,9 +146,11 @@ type imageJSON struct {
 	Observed  observedJSON `json:"observed"`
 	Present   bool         `json:"present,omitempty"`
 	SizeBytes int64        `json:"size_bytes,omitempty"`
-	Retry     retryJSON    `json:"retry"`
-	UpdatedAt int64        `json:"updated_at,omitempty"`
-	Meta      metaJSON     `json:"meta"`
+	// SourceObject is absent from records written before it was stored.
+	SourceObject string    `json:"source_object,omitempty"`
+	Retry        retryJSON `json:"retry"`
+	UpdatedAt    int64     `json:"updated_at,omitempty"`
+	Meta         metaJSON  `json:"meta"`
 }
 
 type keyPairJSON struct {
@@ -423,7 +425,7 @@ func imageTo(in compute.Image) (*imageJSON, error) {
 		Generation: s.Generation, CreatedAt: nanos(s.CreatedAt), ChangedAt: nanos(s.ChangedAt),
 		Name: s.Name.String(), Deregistered: s.Deregistered,
 		Observed: observedTo(st.Observed), Present: st.Present, SizeBytes: st.SizeBytes,
-		Retry: retryTo(st.Retry), UpdatedAt: nanos(st.UpdatedAt), Meta: metaTo(in.Meta),
+		SourceObject: st.SourceObject, Retry: retryTo(st.Retry), UpdatedAt: nanos(st.UpdatedAt), Meta: metaTo(in.Meta),
 	}
 	switch src := s.Source.(type) {
 	case compute.FromURL:
@@ -489,7 +491,8 @@ func imageFrom(j *imageJSON, legacy compute.ImageScope) (compute.Image, error) {
 			Name: name, Source: src, Deregistered: j.Deregistered,
 		},
 		Status: compute.ImageStatus{
-			Observed: obs, Present: j.Present, SizeBytes: j.SizeBytes, Retry: retryFrom(j.Retry), UpdatedAt: fromNanos(j.UpdatedAt),
+			Observed: obs, Present: j.Present, SizeBytes: j.SizeBytes, SourceObject: j.SourceObject,
+			Retry: retryFrom(j.Retry), UpdatedAt: fromNanos(j.UpdatedAt),
 		},
 		Meta: meta,
 	}, nil

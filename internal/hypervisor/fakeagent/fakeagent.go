@@ -274,7 +274,8 @@ func (a *Agent) ConvergeImage(ctx context.Context, spec hypervisor.ImageSpec) (i
 		return size, nil
 	}
 	n := 0
-	for _, s := range []string{spec.SourceURL, spec.SourcePath, spec.SourceMachine, spec.SourceVolume, spec.SourceSnapshot} {
+	sources := []string{spec.SourceURL, spec.SourcePath, spec.SourceMachine, spec.SourceClaim, spec.SourceVolumeSnapshot}
+	for _, s := range sources {
 		if s != "" {
 			n++
 		}

@@ -105,12 +105,15 @@ type ImageSpec struct {
 	Present bool
 	// Exactly one source is set. SourceMachine is the instance ID whose root
 	// disk is captured. SourcePath is a disk image file on the agent's host.
-	// SourceVolume and SourceSnapshot are resource names of a copy.
-	SourceURL      string
-	SourcePath     string
-	SourceMachine  string
-	SourceVolume   string
-	SourceSnapshot string
+	// SourceClaim is the PersistentVolumeClaim name the storage service
+	// reported for a volume (VolumeStatus.claim_name), and
+	// SourceVolumeSnapshot the VolumeSnapshot name it reported for a snapshot
+	// (SnapshotStatus.snapshot_object_name). Nothing derives either name.
+	SourceURL            string
+	SourcePath           string
+	SourceMachine        string
+	SourceClaim          string
+	SourceVolumeSnapshot string
 }
 
 // ImageAuth is who may clone an image artifact: the project and region that

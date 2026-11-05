@@ -142,7 +142,7 @@ func TestImageDataVolumeTakesItsConfiguredStorage(t *testing.T) {
 		want   string
 	}{
 		{"import", urlImage(), "10Gi"},
-		{"clone", hypervisor.ImageSpec{Name: imageID, Present: true, SourceVolume: "volumes/vol-1"}, ""},
+		{"clone", hypervisor.ImageSpec{Name: imageID, Present: true, SourceClaim: "vol-1"}, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			c, ns, _ := newClient(t)
@@ -267,17 +267,19 @@ func TestImageSources(t *testing.T) {
 		return inner["name"]
 	}
 
-	if _, err := a.ConvergeImage(ctx, hypervisor.ImageSpec{Name: "ami-1", Present: true, SourceVolume: "volumes/vol-abc"}); err == nil {
+	vol := hypervisor.ImageSpec{Name: "ami-1", Present: true, SourceClaim: "vol-9f3a2b7c41d05e68"}
+	if _, err := a.ConvergeImage(ctx, vol); err == nil {
 		t.Fatal("want an error until CDI finishes")
 	}
-	if got := pvcName(source("ami-1"), "pvc"); got != "vol-abc" {
-		t.Fatalf("volume source claim %v, want vol-abc", got)
+	if got := pvcName(source("ami-1"), "pvc"); got != "vol-9f3a2b7c41d05e68" {
+		t.Fatalf("volume source claim %v, want exactly the claim storage reported", got)
 	}
-	if _, err := a.ConvergeImage(ctx, hypervisor.ImageSpec{Name: "ami-2", Present: true, SourceSnapshot: "snapshots/snap-abc"}); err == nil {
+	snap := hypervisor.ImageSpec{Name: "ami-2", Present: true, SourceVolumeSnapshot: "snap-5e1c0d93ab7742f0"}
+	if _, err := a.ConvergeImage(ctx, snap); err == nil {
 		t.Fatal("want an error until CDI finishes")
 	}
-	if got := pvcName(source("ami-2"), "snapshot"); got != "snap-abc" {
-		t.Fatalf("snapshot source %v, want snap-abc", got)
+	if got := pvcName(source("ami-2"), "snapshot"); got != "snap-5e1c0d93ab7742f0" {
+		t.Fatalf("snapshot source %v, want exactly the VolumeSnapshot storage reported", got)
 	}
 
 	capture := hypervisor.ImageSpec{Name: "ami-3", Present: true, SourceMachine: "i-0123456789abcdef0"}
@@ -304,15 +306,28 @@ func TestImagePermanentErrors(t *testing.T) {
 	ctx := context.Background()
 	a := imageAgent(c, ns)
 	noSize := New(c, Config{Namespace: ns})
+	spec := func(mutate func(*hypervisor.ImageSpec)) hypervisor.ImageSpec {
+		s := hypervisor.ImageSpec{Name: "ami-4", Present: true}
+		mutate(&s)
+		return s
+	}
 	for name, tc := range map[string]struct {
 		a *Agent
 		s hypervisor.ImageSpec
 	}{
-		"bad name":         {a, hypervisor.ImageSpec{Name: "Not_A_Name", Present: true, SourceURL: "https://x"}},
-		"no source":        {a, hypervisor.ImageSpec{Name: "ami-4", Present: true}},
-		"two sources":      {a, hypervisor.ImageSpec{Name: "ami-4", Present: true, SourceURL: "https://x", SourceVolume: "v"}},
-		"host file":        {a, hypervisor.ImageSpec{Name: "ami-4", Present: true, SourcePath: "/var/disk.img"}},
-		"url without size": {noSize, hypervisor.ImageSpec{Name: "ami-4", Present: true, SourceURL: "https://x"}},
+		"bad name":  {a, hypervisor.ImageSpec{Name: "Not_A_Name", Present: true, SourceURL: "https://x"}},
+		"no source": {a, spec(func(*hypervisor.ImageSpec) {})},
+		"host file": {a, spec(func(s *hypervisor.ImageSpec) { s.SourcePath = "/var/disk.img" })},
+		"two sources": {a, spec(func(s *hypervisor.ImageSpec) {
+			s.SourceURL, s.SourceClaim = "https://x", "v"
+		})},
+		"resource name as claim": {a, spec(func(s *hypervisor.ImageSpec) {
+			s.SourceClaim = "projects/p/zones/vws-1a/volumes/vol-1"
+		})},
+		"resource name as snapshot": {a, spec(func(s *hypervisor.ImageSpec) {
+			s.SourceVolumeSnapshot = "snapshots/snap-1"
+		})},
+		"url without size": {noSize, spec(func(s *hypervisor.ImageSpec) { s.SourceURL = "https://x" })},
 	} {
 		if _, err := tc.a.ConvergeImage(ctx, tc.s); !hypervisor.IsPermanent(err) {
 			t.Errorf("%s: got %v, want a permanent error", name, err)

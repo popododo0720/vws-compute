@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -16,6 +17,11 @@ import (
 	"github.com/popododo0720/vws-compute/internal/compute"
 	"github.com/popododo0720/vws-compute/internal/hypervisor"
 )
+
+// storageCallTimeout bounds one call to the storage service. The reconciler
+// calls it inside a sweep, so a call that hangs would stall every resource;
+// a timeout is transient and the caller's backoff retries it.
+const storageCallTimeout = 10 * time.Second
 
 // ErrVolumeNotFound is what a VolumeLookup returns for a volume the storage
 // service does not have.
@@ -51,6 +57,8 @@ type storageVolumes struct{ c storagev1.VolumeServiceClient }
 func NewStorageVolumes(c storagev1.VolumeServiceClient) VolumeLookup { return storageVolumes{c} }
 
 func (s storageVolumes) Volume(ctx context.Context, name string) (VolumeInfo, error) {
+	ctx, cancel := context.WithTimeout(ctx, storageCallTimeout)
+	defer cancel()
 	v, err := s.c.GetVolume(ctx, &storagev1.GetVolumeRequest{Name: name})
 	if status.Code(err) == codes.NotFound {
 		return VolumeInfo{}, ErrVolumeNotFound
@@ -78,14 +86,29 @@ func readyReason(conds []*commonv1.Condition) string {
 	return ""
 }
 
+// Storage reads volumes and snapshots from the storage service.
+type Storage interface {
+	VolumeLookup
+	SnapshotLookup
+}
+
+type storage struct {
+	storageVolumes
+	storageSnapshots
+}
+
 // DialStorage connects lazily to the storage service at addr and returns a
-// lookup over it and a function that closes the connection.
-func DialStorage(addr string) (VolumeLookup, func() error, error) {
+// lookup over it and a function that closes the connection. The lookup also
+// deletes volumes (see DeleteVolumes).
+func DialStorage(addr string) (Storage, func() error, error) {
 	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		return nil, nil, fmt.Errorf("dial storage %s: %w", addr, err)
 	}
-	return NewStorageVolumes(storagev1.NewVolumeServiceClient(conn)), conn.Close, nil
+	return storage{
+		storageVolumes{storagev1.NewVolumeServiceClient(conn)},
+		storageSnapshots{storagev1.NewSnapshotServiceClient(conn)},
+	}, conn.Close, nil
 }
 
 // Claims resolves, through l, the claim of a volume that was still
@@ -122,6 +145,8 @@ func Claims(l VolumeLookup) func(ctx context.Context, volume string) (string, er
 // The request carries no request id: storage answers a repeat with the
 // delete already in flight, and a fixed id would replay an old failure.
 func (s storageVolumes) DeleteVolume(ctx context.Context, name string) error {
+	ctx, cancel := context.WithTimeout(ctx, storageCallTimeout)
+	defer cancel()
 	op, err := s.c.DeleteVolume(ctx, &storagev1.DeleteVolumeRequest{Name: name, AllowMissing: true})
 	if err != nil {
 		return fmt.Errorf("delete volume %s: %w", name, err)
