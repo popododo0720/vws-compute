@@ -59,6 +59,8 @@ func NewStorageSnapshots(c storagev1.SnapshotServiceClient) SnapshotLookup {
 }
 
 func (s storageSnapshots) Snapshot(ctx context.Context, name string) (SnapshotInfo, error) {
+	ctx, cancel := context.WithTimeout(ctx, storageCallTimeout)
+	defer cancel()
 	v, err := s.c.GetSnapshot(ctx, &storagev1.GetSnapshotRequest{Name: name})
 	if status.Code(err) == codes.NotFound {
 		return SnapshotInfo{}, ErrSnapshotNotFound
