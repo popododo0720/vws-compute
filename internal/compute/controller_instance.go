@@ -39,7 +39,7 @@ func checkAttachments(zone string, vols []VolumeAttachment) error {
 		}
 		devices[a.DeviceName] = true
 		if segment(a.Volume.s, 3) != zone {
-			return Errorf(CodeInvalid, "volume %s is not in the instance zone", a.Volume)
+			return Errorf(CodeZoneMismatch, "volume %s is not in the instance zone", a.Volume)
 		}
 		if a.Boot {
 			boot++

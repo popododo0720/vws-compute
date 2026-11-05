@@ -154,9 +154,6 @@ func TestCreateInstanceValidation(t *testing.T) {
 			p.Volumes = append(p.Volumes, p.Volumes[0])
 			p.Volumes[1].Boot = false
 		},
-		"volume in another zone": func(p *compute.CreateInstanceParams) {
-			p.Volumes[0].Volume = ok(compute.ParseVolumeRef("projects/p/zones/other/volumes/root"))
-		},
 		"power unspecified":  func(p *compute.CreateInstanceParams) { p.Power = 0 },
 		"power terminated":   func(p *compute.CreateInstanceParams) { p.Power = compute.PowerTerminated },
 		"bad machine type":   func(p *compute.CreateInstanceParams) { p.MachineType = "N1" },
@@ -174,6 +171,39 @@ func TestCreateInstanceValidation(t *testing.T) {
 	}
 	if _, err := compute.NewCreateInstance(createParams()); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestVolumeInAnotherZoneIsZoneMismatch: a volume outside the instance zone is
+// CodeZoneMismatch at create and at attach, as EC2 answers
+// InvalidVolume.ZoneMismatch, and the attach writes nothing.
+func TestVolumeInAnotherZoneIsZoneMismatch(t *testing.T) {
+	for _, zone := range []string{"other", "zz"} {
+		p := createParams()
+		p.Volumes[0].Volume = ok(compute.ParseVolumeRef("projects/p/zones/" + zone + "/volumes/root"))
+		if _, err := compute.NewCreateInstance(p); compute.CodeOf(err) != compute.CodeZoneMismatch {
+			t.Fatalf("create with a volume in zone %s: got %v", zone, err)
+		}
+	}
+
+	ch, err := compute.Plan(newView(), envNow(), ok(compute.NewCreateInstance(createParams())))
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec := ch.Spec.(compute.InstanceSpec)
+	v := newView().with(compute.Instance{Spec: spec})
+	attach := func(volume string) (compute.Change, error) {
+		vols := append([]compute.VolumeAttachment(nil), spec.Volumes...)
+		vols = append(vols, compute.VolumeAttachment{Volume: ok(compute.ParseVolumeRef(volume)), DeviceName: "vdb"})
+		in := ok(compute.NewUpdateInstanceSpec("web-1", compute.PowerRunning, vols, compute.MetadataPatch{}))
+		return compute.Plan(v, envNow(), in)
+	}
+	ch, err = attach("projects/p/zones/other/volumes/data")
+	if compute.CodeOf(err) != compute.CodeZoneMismatch || ch.Write {
+		t.Fatalf("cross-zone attach: %+v %v", ch, err)
+	}
+	if ch, err := attach("projects/p/zones/z/volumes/data"); err != nil || !ch.Write {
+		t.Fatalf("same-zone attach: %+v %v", ch, err)
 	}
 }
 

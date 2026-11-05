@@ -615,7 +615,7 @@ func validateVolumes(zone string, vols []*computev1.VolumeAttachment) error {
 			return err
 		}
 		if volZone != zone {
-			return invalidSpec("volume " + v.GetVolume() + " is not in the instance zone")
+			return zoneMismatch("volume " + v.GetVolume() + " is not in the instance zone")
 		}
 		if v.GetBoot() {
 			boot++
