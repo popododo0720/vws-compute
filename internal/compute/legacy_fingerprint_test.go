@@ -24,7 +24,8 @@ func TestLegacyFingerprintMatchesThePreScopeRelease(t *testing.T) {
 			t.Fatal("the current fingerprint must include the scope")
 		}
 	}
-	if _, _, isCopy := compute.LegacyFingerprintOf(ok(compute.NewStopInstance("i-0123456789abcdef0"))); isCopy {
+	stop := ok(compute.NewSetPower("i-0123456789abcdef0", compute.PowerStopped, compute.MetadataPatch{}))
+	if _, _, isCopy := compute.LegacyFingerprintOf(stop); isCopy {
 		t.Fatal("only CreateImage has a legacy fingerprint")
 	}
 }

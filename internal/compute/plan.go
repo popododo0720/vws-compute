@@ -35,9 +35,6 @@ type Change struct {
 	// example StopInstance on a stopped instance. The operation then tracks
 	// the existing generation, and Settle may settle it at birth.
 	Write bool
-	// Secret is the private key for CreateKeyPair and nil otherwise.
-	// store.DesiredChange has no field for it.
-	Secret *PrivateKey
 	// Meta is the target's metadata after the intent, when the intent
 	// changes it, and nil otherwise. A create sets it with Revision 0.
 	// An update sets Revision to stored+1 through MetadataPatch.next.
@@ -194,30 +191,6 @@ func hasAttachment(vols []VolumeAttachment, a VolumeAttachment) bool {
 	return false
 }
 
-// plan requires desired power Running. Every accepted reboot advances the
-// epoch and the generation. The agent still reboots once per sweep, however
-// far the epoch is behind, so two reboots accepted before it runs become one
-// reboot and the earlier operation is superseded.
-func (in rebootInstance) plan(v View, env Env) (Change, error) {
-	inst, err := v.Instance(in.instance)
-	if err != nil {
-		return Change{}, err
-	}
-	cur := inst.Spec
-	switch cur.Power {
-	case PowerTerminated:
-		return Change{}, Errorf(CodeFailedPrecondition, "instance %s is terminated", in.instance)
-	case PowerStopped:
-		return Change{}, Errorf(CodeFailedPrecondition, "instance %s is stopped", in.instance)
-	}
-	next := cur
-	next.Volumes = withoutRefused(cur.Volumes, cur, inst.Status.Observed)
-	next.RebootEpoch++
-	next.Generation++
-	next.ChangedAt = env.Now
-	return Change{Spec: next, Write: true}, nil
-}
-
 // plan refuses an id that any image already holds, including a tombstone,
 // and writes generation 1. Two callers of the same id race at commit: the
 // loser gets a conflict, replans, and then sees the winner.
@@ -266,22 +239,6 @@ func (in registerFile) plan(v View, env Env) (Change, error) {
 	return admitNewImage(v, env, in.id, ImageScope{}, in.family, FromFile{Path: in.path}, nil)
 }
 
-// plan reads nothing: a URL image depends on no other resource.
-func (in registerImage) plan(_ View, env Env) (Change, error) {
-	id, err := newImageID(env.Rand)
-	if err != nil {
-		return Change{}, err
-	}
-	return Change{Write: true, Spec: ImageSpec{
-		ID:         id,
-		Generation: 1,
-		CreatedAt:  env.Now,
-		ChangedAt:  env.Now,
-		Name:       in.name,
-		Source:     FromURL{URL: in.url},
-	}}, nil
-}
-
 // plan requires the source instance to exist and not be desired Terminated.
 // The agent captures the disk when it converges the image; if the machine is
 // gone by then, the image generation fails and parks.
@@ -323,24 +280,6 @@ func (in deregisterImage) plan(v View, env Env) (Change, error) {
 	next.Generation++
 	next.ChangedAt = env.Now
 	return Change{Spec: next, Write: true}, nil
-}
-
-// plan fails with CodeAlreadyExists if the name is live. The private key
-// leaves Plan only in Change.Secret.
-func (in createKeyPair) plan(v View, env Env) (Change, error) {
-	if err := requireFreeName(v, in.name); err != nil {
-		return Change{}, err
-	}
-	pub, priv, err := generateEd25519(env.Rand)
-	if err != nil {
-		return Change{}, err
-	}
-	ch, err := newKeyPair(env, in.name, pub)
-	if err != nil {
-		return Change{}, err
-	}
-	ch.Secret = &priv
-	return ch, nil
 }
 
 // plan fails with CodeAlreadyExists if the name is live.

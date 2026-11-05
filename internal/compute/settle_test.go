@@ -11,7 +11,7 @@ import (
 // pendingOp builds the operation a Stop at target generation gen would get.
 func pendingOp(t *testing.T, gen int64) compute.Operation {
 	t.Helper()
-	in, err := compute.NewStopInstance(instanceID)
+	in, err := compute.NewSetPower(instanceID, compute.PowerStopped, compute.MetadataPatch{})
 	if err != nil {
 		t.Fatal(err)
 	}

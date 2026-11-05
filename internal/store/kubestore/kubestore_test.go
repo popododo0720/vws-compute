@@ -328,7 +328,7 @@ func TestRepairReleasesAClaimWhoseHolderNeverWasWritten(t *testing.T) {
 		Name:      ok(compute.ParseKeyName("deploy")),
 		PublicKey: ok(compute.ParsePublicKey("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl")),
 	}
-	in := ok(compute.NewCreateKeyPair("deploy"))
+	in := ok(compute.NewImportKeyPair("deploy", key.PublicKey.AuthorizedKey(), compute.Labels{}))
 	op := ok(compute.NewOperation(compute.Env{Now: t0, Rand: rand.Reader}, ok(compute.ParseRequestID("k-1")), in, compute.Change{Spec: key, Write: true}))
 	dc := store.DesiredChange{Op: op, Spec: key, Write: true}
 

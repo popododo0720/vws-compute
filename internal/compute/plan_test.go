@@ -94,6 +94,11 @@ func runningInstance() compute.Instance {
 	}
 }
 
+// power is StartInstance or StopInstance on instanceID.
+func power(p compute.Power) compute.Intent {
+	return ok(compute.NewSetPower(instanceID, p, compute.MetadataPatch{}))
+}
+
 func instanceWith(power compute.Power, mutate func(*compute.Instance)) compute.Instance {
 	i := runningInstance()
 	i.Spec.Power = power
@@ -131,7 +136,6 @@ func TestPlanRejects(t *testing.T) {
 	goneImage := availableImage()
 	goneImage.Spec.Deregistered, goneImage.Spec.Generation, goneImage.Status.Observed.Generation = true, 2, 2
 	terminated := instanceWith(compute.PowerTerminated, nil)
-	stopped := instanceWith(compute.PowerStopped, nil)
 
 	cases := []struct {
 		name string
@@ -145,13 +149,16 @@ func TestPlanRejects(t *testing.T) {
 		{"run with deregistered image", newView().with(goneImage), func() (compute.Intent, error) { return compute.NewRunInstance(imageID, "vws.small", "") }, compute.CodeFailedPrecondition},
 		{"run with missing key", newView().with(availableImage()), func() (compute.Intent, error) { return compute.NewRunInstance(imageID, "vws.small", "nope") }, compute.CodeNotFound},
 		{"run with deleted key", newView().with(availableImage(), keyPair(t, "old", true)), func() (compute.Intent, error) { return compute.NewRunInstance(imageID, "vws.small", "old") }, compute.CodeNotFound},
-		{"start terminated", newView().with(terminated), func() (compute.Intent, error) { return compute.NewStartInstance(instanceID) }, compute.CodeFailedPrecondition},
-		{"stop terminated", newView().with(terminated), func() (compute.Intent, error) { return compute.NewStopInstance(instanceID) }, compute.CodeFailedPrecondition},
-		{"reboot terminated", newView().with(terminated), func() (compute.Intent, error) { return compute.NewRebootInstance(instanceID) }, compute.CodeFailedPrecondition},
-		{"reboot stopped", newView().with(stopped), func() (compute.Intent, error) { return compute.NewRebootInstance(instanceID) }, compute.CodeFailedPrecondition},
-		{"stop missing instance", newView(), func() (compute.Intent, error) { return compute.NewStopInstance(instanceID) }, compute.CodeNotFound},
+		{"start terminated", newView().with(terminated), func() (compute.Intent, error) {
+			return compute.NewSetPower(instanceID, compute.PowerRunning, compute.MetadataPatch{})
+		}, compute.CodeFailedPrecondition},
+		{"stop terminated", newView().with(terminated), func() (compute.Intent, error) {
+			return compute.NewSetPower(instanceID, compute.PowerStopped, compute.MetadataPatch{})
+		}, compute.CodeFailedPrecondition},
+		{"stop missing instance", newView(), func() (compute.Intent, error) {
+			return compute.NewSetPower(instanceID, compute.PowerStopped, compute.MetadataPatch{})
+		}, compute.CodeNotFound},
 		{"create image from terminated", newView().with(terminated), func() (compute.Intent, error) { return compute.NewCreateImage(instanceID, "snap-1") }, compute.CodeFailedPrecondition},
-		{"create key with live name", newView().with(keyPair(t, "deploy", false)), func() (compute.Intent, error) { return compute.NewCreateKeyPair("deploy") }, compute.CodeAlreadyExists},
 		{"import key with live name", newView().with(keyPair(t, "deploy", false)), func() (compute.Intent, error) {
 			return compute.NewImportKeyPair("deploy", rsa2048Line, compute.Labels{})
 		}, compute.CodeAlreadyExists},
@@ -188,12 +195,13 @@ func TestIntentConstructorsValidate(t *testing.T) {
 				"9debian", testImageScope, compute.FromVolume{Ref: vol}, "", "", compute.Labels{},
 			)
 		},
-		"bad instance id": func() (compute.Intent, error) { return compute.NewStopInstance("i-XYZ") },
-		"http image url": func() (compute.Intent, error) {
-			return compute.NewRegisterImage("debian-13", "http://images.example/d.qcow2")
+		"bad instance id": func() (compute.Intent, error) {
+			return compute.NewSetPower("i-XYZ", compute.PowerStopped, compute.MetadataPatch{})
 		},
-		"short image name": func() (compute.Intent, error) { return compute.NewRegisterImage("d", "https://images.example/d.qcow2") },
-		"empty key name":   func() (compute.Intent, error) { return compute.NewCreateKeyPair("") },
+		"short image name": func() (compute.Intent, error) {
+			return compute.NewRegisterFile(imageID, "/var/lib/vws/images/d.qcow2", "d")
+		},
+		"empty key name": func() (compute.Intent, error) { return compute.NewDeleteKeyPair("") },
 		"weak rsa import": func() (compute.Intent, error) {
 			return compute.NewImportKeyPair("weak", rsa1023Line, compute.Labels{})
 		},
@@ -233,9 +241,6 @@ func TestPlanRunInstance(t *testing.T) {
 }
 
 func TestPlanTransitions(t *testing.T) {
-	rebootPending := instanceWith(compute.PowerRunning, func(i *compute.Instance) {
-		i.Spec.Generation, i.Spec.RebootEpoch = 2, 1
-	})
 	parkedRunning := instanceWith(compute.PowerRunning, func(i *compute.Instance) {
 		i.Status.Observed.Failure = parked
 	})
@@ -253,27 +258,29 @@ func TestPlanTransitions(t *testing.T) {
 		bornState compute.OperationState
 		check     func(t *testing.T, s compute.Spec)
 	}{
-		{"start running converged is born succeeded", newView().with(runningInstance()), ok(compute.NewStartInstance(instanceID)), false, 1, compute.OperationSucceeded, nil},
-		{"stop stopped converged is born succeeded", newView().with(stopped), ok(compute.NewStopInstance(instanceID)), false, 1, compute.OperationSucceeded, nil},
+		{
+			"start running converged is born succeeded", newView().with(runningInstance()),
+			power(compute.PowerRunning), false, 1, compute.OperationSucceeded, nil,
+		},
+		{
+			"stop stopped converged is born succeeded", newView().with(stopped),
+			power(compute.PowerStopped), false, 1, compute.OperationSucceeded, nil,
+		},
 		{"terminate terminated is born succeeded", newView().with(terminated), ok(compute.NewTerminateInstance(instanceID)), false, 1, compute.OperationSucceeded, nil},
-		{"stop running bumps", newView().with(runningInstance()), ok(compute.NewStopInstance(instanceID)), true, 2, compute.OperationPending, func(t *testing.T, s compute.Spec) {
-			if p := s.(compute.InstanceSpec).Power; p != compute.PowerStopped {
-				t.Fatalf("power = %d", p)
-			}
-		}},
-		{"start stopped bumps", newView().with(stopped), ok(compute.NewStartInstance(instanceID)), true, 2, compute.OperationPending, nil},
+		{
+			"stop running bumps", newView().with(runningInstance()),
+			power(compute.PowerStopped), true, 2, compute.OperationPending, func(t *testing.T, s compute.Spec) {
+				if p := s.(compute.InstanceSpec).Power; p != compute.PowerStopped {
+					t.Fatalf("power = %d", p)
+				}
+			},
+		},
+		{"start stopped bumps", newView().with(stopped), power(compute.PowerRunning), true, 2, compute.OperationPending, nil},
 		{"terminate stopped bumps", newView().with(stopped), ok(compute.NewTerminateInstance(instanceID)), true, 2, compute.OperationPending, nil},
-		{"start parked running retries with a bump", newView().with(parkedRunning), ok(compute.NewStartInstance(instanceID)), true, 2, compute.OperationPending, nil},
-		{"reboot converged bumps epoch", newView().with(runningInstance()), ok(compute.NewRebootInstance(instanceID)), true, 2, compute.OperationPending, func(t *testing.T, s compute.Spec) {
-			if e := s.(compute.InstanceSpec).RebootEpoch; e != 1 {
-				t.Fatalf("epoch = %d, want 1", e)
-			}
-		}},
-		{"reboot during an unapplied reboot bumps again", newView().with(rebootPending), ok(compute.NewRebootInstance(instanceID)), true, 3, compute.OperationPending, func(t *testing.T, s compute.Spec) {
-			if e := s.(compute.InstanceSpec).RebootEpoch; e != 2 {
-				t.Fatalf("epoch = %d, want 2", e)
-			}
-		}},
+		{
+			"start parked running retries with a bump", newView().with(parkedRunning),
+			power(compute.PowerRunning), true, 2, compute.OperationPending, nil,
+		},
 		{"deregister available bumps", newView().with(availableImage()), ok(compute.NewDeregisterImage(imageID)), true, 2, compute.OperationPending, nil},
 		{"deregister deregistered is born succeeded", newView().with(deregistered), ok(compute.NewDeregisterImage(imageID)), false, 2, compute.OperationSucceeded, nil},
 		{"create image from running", newView().with(runningInstance()), ok(compute.NewCreateImage(instanceID, "snap-1")), true, 1, compute.OperationPending, func(t *testing.T, s compute.Spec) {
@@ -288,7 +295,10 @@ func TestPlanTransitions(t *testing.T) {
 			}
 		}},
 		{"delete tombstone is a no-op", newView().with(keyPair(t, "deploy", true)), ok(compute.NewDeleteKeyPair("deploy")), false, 1, compute.OperationSucceeded, nil},
-		{"create key over tombstone", newView().with(keyPair(t, "deploy", true)), ok(compute.NewCreateKeyPair("deploy")), true, 1, compute.OperationSucceeded, nil},
+		{
+			"import key over tombstone", newView().with(keyPair(t, "deploy", true)),
+			ok(compute.NewImportKeyPair("deploy", rsa2048Line, compute.Labels{})), true, 1, compute.OperationSucceeded, nil,
+		},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

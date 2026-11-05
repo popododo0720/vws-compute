@@ -2,12 +2,9 @@ package controller_test
 
 import (
 	"context"
-	"strings"
 	"sync"
 	"testing"
 	"time"
-
-	"golang.org/x/crypto/ssh"
 
 	"github.com/popododo0720/vws-compute/internal/compute"
 	"github.com/popododo0720/vws-compute/internal/controller"
@@ -22,6 +19,16 @@ func ok[T any](v T, err error) T {
 		panic(err)
 	}
 	return v
+}
+
+const deployKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl"
+
+func importKey(name string) compute.Intent {
+	return ok(compute.NewImportKeyPair(name, deployKey, compute.Labels{}))
+}
+
+func registerFile() compute.Intent {
+	return ok(compute.NewRegisterFile("debian-13", "/var/lib/vws/images/debian-13.qcow2", "debian-13"))
 }
 
 func req(s string) compute.RequestID { return ok(compute.ParseRequestID(s)) }
@@ -50,7 +57,7 @@ func wantCode(t *testing.T, err error, want compute.Code) {
 // for a reconciler.
 func availableImage(t *testing.T, repo store.Repository, c *controller.Controller) compute.ImageID {
 	t.Helper()
-	r := submit(t, c, "image", ok(compute.NewRegisterImage("debian-13", "https://images.example/debian-13.qcow2")))
+	r := submit(t, c, "image", registerFile())
 	id := ok(compute.ParseImageID(r.Operation.Target.ID))
 	st := compute.ImageStatus{Observed: compute.Observed{Generation: 1}, Present: true, SizeBytes: 1, UpdatedAt: t0}
 	if err := repo.CommitImageStatus(context.Background(), id, st); err != nil {
@@ -88,8 +95,8 @@ func TestReusedRequestIDWithDifferentIntentMismatches(t *testing.T) {
 	first := submit(t, c, "run-1", ok(compute.NewRunInstance(img.String(), "vws.small", "")))
 	for _, in := range []compute.Intent{
 		ok(compute.NewRunInstance(img.String(), "vws.medium", "")),
-		ok(compute.NewStopInstance(first.Operation.Target.ID)),
-		ok(compute.NewCreateKeyPair("deploy")),
+		ok(compute.NewSetPower(first.Operation.Target.ID, compute.PowerStopped, compute.MetadataPatch{})),
+		importKey("deploy"),
 	} {
 		_, err := c.Submit(ctx, req("run-1"), in)
 		wantCode(t, err, compute.CodeRequestMismatch)
@@ -102,41 +109,35 @@ func TestReusedRequestIDWithDifferentIntentMismatches(t *testing.T) {
 	}
 }
 
-func TestCreateKeyPairReturnsPrivateKeyOnlyOnInsert(t *testing.T) {
+func TestImportKeyPairReplaysAndRefusesALiveName(t *testing.T) {
 	ctx := context.Background()
 	repo := memstore.New()
 	c := newController(repo)
-	create := ok(compute.NewCreateKeyPair("deploy"))
+	create := importKey("deploy")
 
 	first := submit(t, c, "key-1", create)
-	if first.PrivateKey == nil || first.Operation.State() != compute.OperationSucceeded {
-		t.Fatalf("create = key %v state %s, want a key and Succeeded", first.PrivateKey != nil, first.Operation.State())
-	}
-	signer, err := ssh.ParsePrivateKey(first.PrivateKey.OpenSSH())
-	if err != nil {
-		t.Fatalf("private key does not parse as OpenSSH: %v", err)
+	if first.Operation.State() != compute.OperationSucceeded {
+		t.Fatalf("import = %s, want Succeeded", first.Operation.State())
 	}
 	stored := ok(repo.KeyPairByName(ctx, ok(compute.ParseKeyName("deploy"))))
-	if got := strings.TrimSpace(string(ssh.MarshalAuthorizedKey(signer.PublicKey()))); got != stored.Spec.PublicKey.AuthorizedKey() {
-		t.Fatalf("private key's public half %q does not match stored %q", got, stored.Spec.PublicKey.AuthorizedKey())
-	}
-	if !strings.HasPrefix(stored.Spec.PublicKey.Fingerprint(), "SHA256:") {
-		t.Fatalf("fingerprint %q", stored.Spec.PublicKey.Fingerprint())
+	if got := stored.Spec.PublicKey.AuthorizedKey(); got != deployKey {
+		t.Fatalf("stored public key %q, want %q", got, deployKey)
 	}
 
 	again := submit(t, c, "key-1", create)
-	if again.Operation.ID != first.Operation.ID || again.PrivateKey != nil {
-		t.Fatalf("replay = op %s key %v, want op %s and no key", again.Operation.ID, again.PrivateKey != nil, first.Operation.ID)
+	if again.Operation.ID != first.Operation.ID {
+		t.Fatalf("replay = op %s, want op %s", again.Operation.ID, first.Operation.ID)
 	}
 
-	_, err = c.Submit(ctx, req("key-2"), create)
+	_, err := c.Submit(ctx, req("key-2"), create)
 	wantCode(t, err, compute.CodeAlreadyExists)
 }
 
-func TestConcurrentCreateKeyPairRetriesShareOneOperationAndOneKey(t *testing.T) {
+func TestConcurrentImportKeyPairRetriesShareOneOperationAndOneKey(t *testing.T) {
+	ctx := context.Background()
 	repo := memstore.New()
 	c := newController(repo)
-	create := ok(compute.NewCreateKeyPair("deploy"))
+	create := importKey("deploy")
 	const n = 8
 	receipts := make([]controller.Receipt, n)
 	errs := make([]error, n)
@@ -145,11 +146,10 @@ func TestConcurrentCreateKeyPairRetriesShareOneOperationAndOneKey(t *testing.T) 
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			receipts[i], errs[i] = c.Submit(context.Background(), req("same"), create)
+			receipts[i], errs[i] = c.Submit(ctx, req("same"), create)
 		}(i)
 	}
 	wg.Wait()
-	keys := 0
 	for i, r := range receipts {
 		if errs[i] != nil {
 			t.Fatalf("caller %d: %v", i, errs[i])
@@ -157,12 +157,9 @@ func TestConcurrentCreateKeyPairRetriesShareOneOperationAndOneKey(t *testing.T) 
 		if r.Operation.ID != receipts[0].Operation.ID {
 			t.Fatalf("callers got operations %s and %s", receipts[0].Operation.ID, r.Operation.ID)
 		}
-		if r.PrivateKey != nil {
-			keys++
-		}
 	}
-	if keys != 1 {
-		t.Fatalf("%d callers received the private key, want exactly 1", keys)
+	if n := len(ok(repo.KeyPairs(ctx, store.KeyPairQuery{})).Items); n != 1 {
+		t.Fatalf("key pairs = %d, want 1", n)
 	}
 }
 
@@ -183,12 +180,12 @@ func (s *lookupRacesCommit) OperationByRequest(ctx context.Context, r compute.Re
 
 func TestRetryThatLosesTheLookupRaceStillReplays(t *testing.T) {
 	repo := memstore.New()
-	create := ok(compute.NewCreateKeyPair("deploy"))
+	create := importKey("deploy")
 	first := submit(t, newController(repo), "key-1", create)
 
 	again := submit(t, newController(&lookupRacesCommit{DesiredStore: repo}), "key-1", create)
-	if again.Operation.ID != first.Operation.ID || again.PrivateKey != nil {
-		t.Fatalf("retry = op %s key %v, want op %s and no key", again.Operation.ID, again.PrivateKey != nil, first.Operation.ID)
+	if again.Operation.ID != first.Operation.ID {
+		t.Fatalf("retry = op %s, want op %s", again.Operation.ID, first.Operation.ID)
 	}
 }
 
@@ -201,7 +198,7 @@ func TestDeleteKeyPair(t *testing.T) {
 	_, err := c.Submit(ctx, req("del-0"), del)
 	wantCode(t, err, compute.CodeNotFound)
 
-	created := submit(t, c, "create-1", ok(compute.NewCreateKeyPair("deploy")))
+	created := submit(t, c, "create-1", importKey("deploy"))
 	gone := submit(t, c, "del-1", del)
 	if gone.Operation.State() != compute.OperationSucceeded || gone.Operation.TargetGeneration != 2 {
 		t.Fatalf("delete = %s gen %d, want Succeeded gen 2", gone.Operation.State(), gone.Operation.TargetGeneration)
@@ -213,7 +210,7 @@ func TestDeleteKeyPair(t *testing.T) {
 			again.Operation.ID, again.Operation.State(), again.Operation.Target, again.Operation.TargetGeneration, created.Operation.Target)
 	}
 
-	recreated := submit(t, c, "create-2", ok(compute.NewCreateKeyPair("deploy")))
+	recreated := submit(t, c, "create-2", importKey("deploy"))
 	if recreated.Operation.Target == created.Operation.Target {
 		t.Fatalf("re-created key pair reused id %s", created.Operation.Target)
 	}
@@ -245,7 +242,7 @@ func (c *conflicting) CommitDesired(ctx context.Context, ch store.DesiredChange)
 
 func TestSubmitReplansUpToMaxReplansThenAborts(t *testing.T) {
 	ctx := context.Background()
-	register := ok(compute.NewRegisterImage("debian-13", "https://images.example/debian-13.qcow2"))
+	register := registerFile()
 
 	repo := memstore.New()
 	r := submit(t, newController(&conflicting{DesiredStore: repo, n: controller.MaxReplans}), "reg", register)
@@ -319,7 +316,7 @@ func TestStopReplansWhenTheGenerationParksBeforeCommit(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	stop := ok(compute.NewStopInstance(id.String()))
+	stop := ok(compute.NewSetPower(id.String(), compute.PowerStopped, compute.MetadataPatch{}))
 	first := submit(t, c, "stop-1", stop)
 	if first.Operation.State() != compute.OperationPending || first.Operation.TargetGeneration != 2 {
 		t.Fatalf("first stop = %s gen %d, want Pending gen 2", first.Operation.State(), first.Operation.TargetGeneration)
@@ -340,7 +337,7 @@ func TestStopReplansWhenTheGenerationParksBeforeCommit(t *testing.T) {
 
 func TestSubmitValidatesArguments(t *testing.T) {
 	c := newController(memstore.New())
-	_, err := c.Submit(context.Background(), compute.RequestID{}, ok(compute.NewCreateKeyPair("k")))
+	_, err := c.Submit(context.Background(), compute.RequestID{}, importKey("k"))
 	wantCode(t, err, compute.CodeInvalid)
 	_, err = c.Submit(context.Background(), req("r"), nil)
 	wantCode(t, err, compute.CodeInvalid)

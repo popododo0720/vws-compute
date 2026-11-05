@@ -2,12 +2,9 @@ package compute
 
 import (
 	"bytes"
-	"crypto/ed25519"
 	"crypto/rsa"
 	"crypto/sha256"
 	"encoding/base64"
-	"encoding/pem"
-	"io"
 	"time"
 
 	"golang.org/x/crypto/ssh"
@@ -43,8 +40,7 @@ func ParsePublicKey(line string) (PublicKey, error) {
 }
 
 // ParseImportPublicKey parses a key that ImportKeyPair will store. It also
-// requires an ssh-rsa key to be 1024 to 4096 bits. CreateKeyPair mints
-// ed25519, which needs no range.
+// requires an ssh-rsa key to be 1024 to 4096 bits.
 func ParseImportPublicKey(line string) (PublicKey, error) {
 	return parsePublicKey(line, true)
 }
@@ -96,40 +92,6 @@ func (k PublicKey) AuthorizedKey() string {
 		typ = ssh.KeyAlgoRSA
 	}
 	return typ + " " + base64.StdEncoding.EncodeToString([]byte(k.wire))
-}
-
-// PrivateKey is a PEM-encoded OpenSSH private key. It exists only on the
-// response path of the CreateKeyPair call that inserted the key pair. No
-// store method accepts one.
-type PrivateKey struct{ openSSH []byte }
-
-// OpenSSH returns a copy of the PEM-encoded OpenSSH private key.
-func (k PrivateKey) OpenSSH() []byte { return append([]byte(nil), k.openSSH...) }
-
-// String redacts, so a stray %v in a log line cannot leak the key.
-func (PrivateKey) String() string { return "PrivateKey(REDACTED)" }
-
-// GoString redacts, so %#v cannot leak the key.
-func (PrivateKey) GoString() string { return "compute.PrivateKey{}" }
-
-// generateEd25519 draws a new ed25519 key pair from r.
-func generateEd25519(r io.Reader) (PublicKey, PrivateKey, error) {
-	if r == nil {
-		return PublicKey{}, PrivateKey{}, Errorf(CodeInternal, "no random source")
-	}
-	pub, priv, err := ed25519.GenerateKey(r)
-	if err != nil {
-		return PublicKey{}, PrivateKey{}, Errorf(CodeInternal, "generate ed25519 key: %v", err)
-	}
-	sshPub, err := ssh.NewPublicKey(pub)
-	if err != nil {
-		return PublicKey{}, PrivateKey{}, Errorf(CodeInternal, "encode ed25519 public key: %v", err)
-	}
-	block, err := ssh.MarshalPrivateKey(priv, "")
-	if err != nil {
-		return PublicKey{}, PrivateKey{}, Errorf(CodeInternal, "encode ed25519 private key: %v", err)
-	}
-	return PublicKey{alg: KeyED25519, wire: string(sshPub.Marshal())}, PrivateKey{openSSH: pem.EncodeToMemory(block)}, nil
 }
 
 // KeyPairSpec is the desired state of one key pair incarnation.

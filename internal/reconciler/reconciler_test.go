@@ -20,6 +20,12 @@ import (
 
 var t0 = time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
 
+const deployKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl"
+
+func fileIntent() compute.Intent {
+	return ok(compute.NewRegisterFile("debian-13", "/var/lib/vws/images/debian-13.qcow2", "debian-13"))
+}
+
 func ok[T any](v T, err error) T {
 	if err != nil {
 		panic(err)
@@ -113,7 +119,7 @@ func (h *harness) instance(id compute.InstanceID) compute.Instance {
 // image registers an image and converges it.
 func (h *harness) image() compute.ImageID {
 	h.t.Helper()
-	op := h.submit("register", ok(compute.NewRegisterImage("debian-13", "https://images.example/debian-13.qcow2")))
+	op := h.submit("register", fileIntent())
 	h.sweep()
 	h.wantStates(compute.OperationSucceeded, op)
 	return ok(compute.ParseImageID(op.Target.ID))
@@ -138,12 +144,11 @@ func TestSubmitNeverCallsTheAgent(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		intents := []compute.Intent{
-			ok(compute.NewRebootInstance(id.String())),
-			ok(compute.NewStopInstance(id.String())),
-			ok(compute.NewStartInstance(id.String())),
+			ok(compute.NewSetPower(id.String(), compute.PowerStopped, compute.MetadataPatch{})),
+			ok(compute.NewSetPower(id.String(), compute.PowerRunning, compute.MetadataPatch{})),
 			ok(compute.NewCreateImage(id.String(), "snapshot-1")),
-			ok(compute.NewRegisterImage("debian-14", "https://images.example/debian-14.qcow2")),
-			ok(compute.NewCreateKeyPair("deploy")),
+			ok(compute.NewRegisterFile("debian-14", "/var/lib/vws/images/debian-14.qcow2", "debian-14")),
+			ok(compute.NewImportKeyPair("deploy", deployKey, compute.Labels{})),
 			ok(compute.NewTerminateInstance(id.String())),
 		}
 		for i, in := range intents {
@@ -164,11 +169,11 @@ func TestSubmitNeverCallsTheAgent(t *testing.T) {
 func TestStartThenStopEndsStoppedWithPowerOff(t *testing.T) {
 	eachStore(t, func(h *harness) {
 		id := h.running()
-		h.submit("stop-1", ok(compute.NewStopInstance(id.String())))
+		h.submit("stop-1", ok(compute.NewSetPower(id.String(), compute.PowerStopped, compute.MetadataPatch{})))
 		h.sweep()
 
-		start := h.submit("start", ok(compute.NewStartInstance(id.String())))
-		stop := h.submit("stop-2", ok(compute.NewStopInstance(id.String())))
+		start := h.submit("start", ok(compute.NewSetPower(id.String(), compute.PowerRunning, compute.MetadataPatch{})))
+		stop := h.submit("stop-2", ok(compute.NewSetPower(id.String(), compute.PowerStopped, compute.MetadataPatch{})))
 		h.sweep()
 
 		h.wantStates(compute.OperationSuperseded, start)
@@ -203,33 +208,10 @@ func TestTerminateDestroysTheMachine(t *testing.T) {
 		if inst.Lifecycle() != compute.InstanceTerminated || inst.Status.Machine != compute.MachineAbsent {
 			h.t.Fatalf("instance = lifecycle %d machine %d, want terminated/absent", inst.Lifecycle(), inst.Status.Machine)
 		}
-		_, err := h.ctl.Submit(context.Background(), ok(compute.ParseRequestID("start")), ok(compute.NewStartInstance(id.String())))
+		start := ok(compute.NewSetPower(id.String(), compute.PowerRunning, compute.MetadataPatch{}))
+		_, err := h.ctl.Submit(context.Background(), ok(compute.ParseRequestID("start")), start)
 		if compute.CodeOf(err) != compute.CodeFailedPrecondition {
 			h.t.Fatalf("start after terminate: err = %v, want FailedPrecondition", err)
-		}
-	})
-}
-
-func TestConcurrentRebootsCoalesceIntoOne(t *testing.T) {
-	eachStore(t, func(h *harness) {
-		id := h.running()
-		first := h.submit("reboot-1", ok(compute.NewRebootInstance(id.String())))
-		second := h.submit("reboot-2", ok(compute.NewRebootInstance(id.String())))
-		if second.TargetGeneration != first.TargetGeneration+1 {
-			h.t.Fatalf("second reboot targets generation %d, want %d", second.TargetGeneration, first.TargetGeneration+1)
-		}
-		h.sweep()
-		h.wantStates(compute.OperationSuperseded, first)
-		h.wantStates(compute.OperationSucceeded, second)
-		if got := h.agent.Reboots(id.String()); got != 1 {
-			h.t.Fatalf("reboots = %d, want 1", got)
-		}
-
-		third := h.submit("reboot-3", ok(compute.NewRebootInstance(id.String())))
-		h.sweep()
-		h.wantStates(compute.OperationSucceeded, third)
-		if got := h.agent.Reboots(id.String()); got != 2 {
-			h.t.Fatalf("reboots after a later reboot = %d, want 2", got)
 		}
 	})
 }
@@ -256,7 +238,7 @@ func TestPermanentAgentErrorParksUntilAskedAgain(t *testing.T) {
 			h.t.Fatal("reconciler retried a parked generation")
 		}
 
-		start := h.submit("start", ok(compute.NewStartInstance(id.String())))
+		start := h.submit("start", ok(compute.NewSetPower(id.String(), compute.PowerRunning, compute.MetadataPatch{})))
 		if start.TargetGeneration != 2 {
 			h.t.Fatalf("start on a parked instance targets generation %d, want a new generation 2", start.TargetGeneration)
 		}
@@ -388,7 +370,7 @@ func TestNewGenerationDoesNotInheritBackoff(t *testing.T) {
 	eachStore(t, func(h *harness) {
 		id := h.running()
 		h.agent.Fail(id.String(), errors.New("agent unreachable"))
-		stop := h.submit("stop", ok(compute.NewStopInstance(id.String())))
+		stop := h.submit("stop", ok(compute.NewSetPower(id.String(), compute.PowerStopped, compute.MetadataPatch{})))
 		h.sweep()
 		h.wantStates(compute.OperationPending, stop)
 
@@ -586,7 +568,7 @@ func TestRunConverges(t *testing.T) {
 			for sweeps.n.Load() == 0 {
 				time.Sleep(time.Millisecond)
 			}
-			r, err := ctl.Submit(ctx, ok(compute.ParseRequestID("reg")), ok(compute.NewRegisterImage("debian-13", "https://images.example/d.qcow2")))
+			r, err := ctl.Submit(ctx, ok(compute.ParseRequestID("reg")), fileIntent())
 			if err != nil {
 				t.Fatal(err)
 			}

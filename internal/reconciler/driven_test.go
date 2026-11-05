@@ -45,7 +45,7 @@ func TestDrivenCreateAndDeleteFinishThroughReports(t *testing.T) {
 			h.t.Fatalf("machine = %+v, %v, want running", m, found)
 		}
 
-		stop := h.submit("stop", ok(compute.NewStopInstance(id.String())))
+		stop := h.submit("stop", ok(compute.NewSetPower(id.String(), compute.PowerStopped, compute.MetadataPatch{})))
 		h.sweep()
 		h.wantStates(compute.OperationSucceeded, stop)
 		if m, _ := h.agent.Machine("web"); m.Power != hypervisor.PowerOff {
@@ -217,7 +217,7 @@ func TestRefusedAttachmentDoesNotBlockAStop(t *testing.T) {
 		h.sweep()
 		h.wantStates(compute.OperationFailed, attach)
 
-		stop := h.submit("stop", ok(compute.NewStopInstance("web")))
+		stop := h.submit("stop", ok(compute.NewSetPower("web", compute.PowerStopped, compute.MetadataPatch{})))
 		h.sweep()
 		h.wantStates(compute.OperationSucceeded, stop)
 		if m, _ := h.agent.Machine("web"); m.Power != hypervisor.PowerOff {
@@ -261,7 +261,7 @@ func TestEveryRefusedAttachmentIsDroppedFromDesiredState(t *testing.T) {
 			h.t.Fatalf("attachment failure = %+v, want both refused volumes", failure)
 		}
 
-		stop := h.submit("stop", ok(compute.NewStopInstance("web")))
+		stop := h.submit("stop", ok(compute.NewSetPower("web", compute.PowerStopped, compute.MetadataPatch{})))
 		h.sweep()
 		h.wantStates(compute.OperationSucceeded, stop)
 		if vols := h.instance(ok(compute.ParseInstanceID("web"))).Spec.Volumes; len(vols) != 1 || vols[0] != boot {

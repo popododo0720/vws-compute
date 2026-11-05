@@ -27,8 +27,6 @@ type runInstance struct {
 	key   KeyName
 }
 
-// setPower is StartInstance, StopInstance, and TerminateInstance. The wanted
-// power determines the kind.
 // setPower is StartInstance, StopInstance, and TerminateInstance, plus the
 // power half of UpdateInstance. A non-zero patch is applied in the same
 // commit as any power change. A zero patch encodes nothing, so Start, Stop,
@@ -42,13 +40,6 @@ type setPower struct {
 	// UpdateInstance.
 	setVolumes bool
 	volumes    []VolumeAttachment
-}
-
-type rebootInstance struct{ instance InstanceID }
-
-type registerImage struct {
-	name ImageName
-	url  ImageURL
 }
 
 type copyImage struct {
@@ -72,8 +63,6 @@ type createImage struct {
 }
 
 type deregisterImage struct{ image ImageID }
-
-type createKeyPair struct{ name KeyName }
 
 type importKeyPair struct {
 	name   KeyName
@@ -121,22 +110,13 @@ func NewRunInstance(imageID, instanceType, keyName string) (Intent, error) {
 	return runInstance{image: img, typ: typ, key: key}, nil
 }
 
-func NewStartInstance(instanceID string) (Intent, error) {
-	return newSetPower(instanceID, PowerRunning, MetadataPatch{})
-}
-
-func NewStopInstance(instanceID string) (Intent, error) {
-	return newSetPower(instanceID, PowerStopped, MetadataPatch{})
-}
-
 func NewTerminateInstance(instanceID string) (Intent, error) {
 	return newSetPower(instanceID, PowerTerminated, MetadataPatch{})
 }
 
 // NewSetPower moves an instance to power and applies patch. power must be
-// PowerRunning or PowerStopped. With a zero patch it is NewStartInstance or
-// NewStopInstance, with the same kind and the same fingerprint. Terminate
-// has its own constructor and does not carry a patch.
+// PowerRunning or PowerStopped, which make it StartInstance or StopInstance.
+// Terminate has its own constructor and does not carry a patch.
 func NewSetPower(instanceID string, power Power, patch MetadataPatch) (Intent, error) {
 	switch power {
 	case PowerRunning, PowerStopped:
@@ -169,14 +149,6 @@ func newSetPower(instanceID string, want Power, patch MetadataPatch) (Intent, er
 		return nil, err
 	}
 	return setPower{instance: id, want: want, patch: patch}, nil
-}
-
-func NewRebootInstance(instanceID string) (Intent, error) {
-	id, err := ParseInstanceID(instanceID)
-	if err != nil {
-		return nil, err
-	}
-	return rebootInstance{instance: id}, nil
 }
 
 // NewCopyImage registers a copy of a volume or snapshot. id must be a
@@ -225,20 +197,6 @@ func NewRegisterFile(id, path, family string) (Intent, error) {
 	return registerFile{id: img, path: p, family: name}, nil
 }
 
-// NewRegisterImage registers the disk image at sourceURL, which must be
-// https. Plan mints the image id.
-func NewRegisterImage(name, sourceURL string) (Intent, error) {
-	n, err := ParseImageName(name)
-	if err != nil {
-		return nil, err
-	}
-	u, err := ParseImageURL(sourceURL)
-	if err != nil {
-		return nil, err
-	}
-	return registerImage{name: n, url: u}, nil
-}
-
 // NewCreateImage captures the root disk of an instance.
 func NewCreateImage(instanceID, name string) (Intent, error) {
 	id, err := ParseInstanceID(instanceID)
@@ -258,15 +216,6 @@ func NewDeregisterImage(imageID string) (Intent, error) {
 		return nil, err
 	}
 	return deregisterImage{image: id}, nil
-}
-
-// NewCreateKeyPair generates an ed25519 key pair at plan time.
-func NewCreateKeyPair(name string) (Intent, error) {
-	n, err := ParseKeyName(name)
-	if err != nil {
-		return nil, err
-	}
-	return createKeyPair{name: n}, nil
 }
 
 // NewImportKeyPair takes one authorized_keys line and the key pair's initial
@@ -336,30 +285,24 @@ func (in setPower) Kind() OperationKind {
 	}
 }
 
-func (rebootInstance) Kind() OperationKind         { return OpRebootInstance }
-func (registerImage) Kind() OperationKind          { return OpRegisterImage }
 func (copyImage) Kind() OperationKind              { return OpCopyImage }
 func (registerFile) Kind() OperationKind           { return OpRegisterFile }
 func (createImage) Kind() OperationKind            { return OpCreateImage }
 func (deregisterImage) Kind() OperationKind        { return OpDeregisterImage }
-func (createKeyPair) Kind() OperationKind          { return OpCreateKeyPair }
 func (importKeyPair) Kind() OperationKind          { return OpImportKeyPair }
 func (deleteKeyPair) Kind() OperationKind          { return OpDeleteKeyPair }
 func (updateInstanceMetadata) Kind() OperationKind { return OpUpdateInstanceMetadata }
 func (updateImageMetadata) Kind() OperationKind    { return OpUpdateImageMetadata }
 func (updateKeyPairMetadata) Kind() OperationKind  { return OpUpdateKeyPairMetadata }
 
-func (runInstance) carriesMetadata() bool    { return false }
-func (in setPower) carriesMetadata() bool    { return !in.patch.IsZero() }
-func (rebootInstance) carriesMetadata() bool { return false }
-func (registerImage) carriesMetadata() bool  { return false }
+func (runInstance) carriesMetadata() bool { return false }
+func (in setPower) carriesMetadata() bool { return !in.patch.IsZero() }
 func (in copyImage) carriesMetadata() bool {
 	return in.description.String() != "" || in.labels.Len() > 0
 }
 func (registerFile) carriesMetadata() bool           { return false }
 func (createImage) carriesMetadata() bool            { return false }
 func (deregisterImage) carriesMetadata() bool        { return false }
-func (createKeyPair) carriesMetadata() bool          { return false }
 func (in importKeyPair) carriesMetadata() bool       { return in.labels.Len() > 0 }
 func (deleteKeyPair) carriesMetadata() bool          { return false }
 func (updateInstanceMetadata) carriesMetadata() bool { return true }
@@ -432,12 +375,6 @@ func (in setPower) encode(e *encoder) {
 		}
 	}
 }
-func (in rebootInstance) encode(e *encoder) { e.field(in.instance.s) }
-
-func (in registerImage) encode(e *encoder) {
-	e.field(in.name.s)
-	e.field(in.url.s)
-}
 
 func (in copyImage) encode(e *encoder) { in.encodeScoped(e, true) }
 
@@ -479,7 +416,6 @@ func (in createImage) encode(e *encoder) {
 }
 
 func (in deregisterImage) encode(e *encoder) { e.field(in.image.s) }
-func (in createKeyPair) encode(e *encoder)   { e.field(in.name.s) }
 
 func (in importKeyPair) encode(e *encoder) {
 	e.field(in.name.s)

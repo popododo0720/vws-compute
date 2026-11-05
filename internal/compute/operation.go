@@ -6,7 +6,9 @@ import (
 )
 
 // OperationKind names the intent an operation tracks. String values are
-// persisted and fingerprinted, so they must never change.
+// persisted and fingerprinted, so they must never change. RebootInstance,
+// RegisterImage, and CreateKeyPair have no intent any more and stay so that
+// operations stored by earlier releases still decode.
 type OperationKind uint8
 
 const (

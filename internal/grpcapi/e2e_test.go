@@ -338,7 +338,7 @@ func TestInstanceAndImageProjection(t *testing.T) {
 	wantCode(t, err, codes.InvalidArgument)
 	wantReason(t, err, "INVALID_SPEC")
 
-	reg, err := compute.NewRegisterImage("debian-13", "https://images.example/debian-13.qcow2")
+	reg, err := compute.NewRegisterFile("debian-13", "/var/lib/vws/images/debian-13.qcow2", "debian-13")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -537,7 +537,7 @@ func TestWaitOperationReturnsPendingWhenTimeoutElapses(t *testing.T) {
 	release := h.agent.Block()
 	defer release()
 
-	reg, err := compute.NewRegisterImage("debian-13", "https://images.example/d.qcow2")
+	reg, err := compute.NewRegisterFile("debian-13", "/var/lib/vws/images/debian-13.qcow2", "debian-13")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -569,7 +569,7 @@ func TestWaitOperationReturnsPendingWhenTimeoutElapses(t *testing.T) {
 func TestFailedChangeSurfacesOnOperationAndInstance(t *testing.T) {
 	ctx := context.Background()
 	h := serve(t)
-	reg, err := compute.NewRegisterImage("debian-13", "https://images.example/d.qcow2")
+	reg, err := compute.NewRegisterFile("debian-13", "/var/lib/vws/images/debian-13.qcow2", "debian-13")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -628,7 +628,7 @@ func unpackKeyPair(t *testing.T, op *longrunningpb.Operation) *computev1.KeyPair
 
 func seedRunning(t *testing.T, h *harness) (instanceName, imageName string) {
 	t.Helper()
-	reg, err := compute.NewRegisterImage("debian-13", "https://images.example/debian-13.qcow2")
+	reg, err := compute.NewRegisterFile("debian-13", "/var/lib/vws/images/debian-13.qcow2", "debian-13")
 	if err != nil {
 		t.Fatal(err)
 	}

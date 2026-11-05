@@ -18,8 +18,8 @@ func TestFingerprintOf(t *testing.T) {
 	if first == run("vws.medium") {
 		t.Fatal("instance type does not change the fingerprint")
 	}
-	start := compute.FingerprintOf(ok(compute.NewStartInstance(instanceID)))
-	stop := compute.FingerprintOf(ok(compute.NewStopInstance(instanceID)))
+	start := compute.FingerprintOf(ok(compute.NewSetPower(instanceID, compute.PowerRunning, compute.MetadataPatch{})))
+	stop := compute.FingerprintOf(ok(compute.NewSetPower(instanceID, compute.PowerStopped, compute.MetadataPatch{})))
 	if start == stop {
 		t.Fatal("kind does not change the fingerprint")
 	}
@@ -33,7 +33,7 @@ func TestFingerprintOf(t *testing.T) {
 // Stored operations carry fingerprints, so changing the encoding breaks
 // retries of requests admitted by an older binary.
 func TestFingerprintIsStable(t *testing.T) {
-	fp := compute.FingerprintOf(ok(compute.NewStopInstance(instanceID)))
+	fp := compute.FingerprintOf(ok(compute.NewSetPower(instanceID, compute.PowerStopped, compute.MetadataPatch{})))
 	const want = "bc315f5ae58c5fd47a5370a0049c4763fbbf851dd0cde6c6fa354804591e85e7"
 	if got := hex.EncodeToString(fp[:]); got != want {
 		t.Fatalf("fingerprint = %s, want %s", got, want)
@@ -128,6 +128,7 @@ func TestParseValues(t *testing.T) {
 		"unclean image path":   errOf(compute.ParseImagePath("/var/lib/../vws/debian-12.qcow2")),
 		"control in key name":  errOf(compute.ParseKeyName("a\nb")),
 		"url with credentials": errOf(compute.ParseImageURL("https://u:p@images.example/a")),
+		"http image url":       errOf(compute.ParseImageURL("http://images.example/a.qcow2")),
 	}
 	for name, err := range invalid {
 		if compute.CodeOf(err) != compute.CodeInvalid {

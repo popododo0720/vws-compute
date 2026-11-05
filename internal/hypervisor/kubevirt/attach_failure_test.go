@@ -114,7 +114,7 @@ func TestHotplugFailureLeavesInstanceRunning(t *testing.T) {
 // the lifecycle matches it.
 func TestStopAfterRefusedHotplugHaltsTheMachine(t *testing.T) {
 	f := newRefusedHotplug(t)
-	stop := submit(t, f.ctl, "stop", ok(compute.NewStopInstance(f.id.String())))
+	stop := submit(t, f.ctl, "stop", ok(compute.NewSetPower(f.id.String(), compute.PowerStopped, compute.MetadataPatch{})))
 	if err := f.rec.Sweep(f.ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -133,26 +133,6 @@ func TestStopAfterRefusedHotplugHaltsTheMachine(t *testing.T) {
 	}
 	if vols, _ := diskNames(t, f.c, f.ns, f.id.String()); strings.Contains(strings.Join(vols, ","), "vdb") {
 		t.Fatalf("the refused volume reached the halted VirtualMachine: %v", vols)
-	}
-}
-
-// TestRebootAfterRefusedHotplugIsApplied: a reboot after the refused attach
-// still reaches the VirtualMachine and records the epoch.
-func TestRebootAfterRefusedHotplugIsApplied(t *testing.T) {
-	f := newRefusedHotplug(t)
-	reboot := submit(t, f.ctl, "reboot", ok(compute.NewRebootInstance(f.id.String())))
-	if err := f.rec.Sweep(f.ctx); err != nil {
-		t.Fatal(err)
-	}
-	if got := op(t, f.repo, reboot); got.State() != compute.OperationSucceeded {
-		t.Fatalf("reboot operation = %s, want %s (%+v)", got.State(), compute.OperationSucceeded, got.Failure())
-	}
-	vm, err := get(t, f.c, "VirtualMachine", f.ns, f.id.String())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := vm.GetAnnotations()[AnnotationRebootEpoch]; got != "1" {
-		t.Fatalf("applied reboot epoch = %q, want 1", got)
 	}
 }
 

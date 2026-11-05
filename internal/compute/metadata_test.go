@@ -74,7 +74,7 @@ func TestParseDescription(t *testing.T) {
 }
 
 func TestFingerprintMetadataIsCanonical(t *testing.T) {
-	stop := compute.FingerprintOf(ok(compute.NewStopInstance(instanceID)))
+	stop := compute.FingerprintOf(ok(compute.NewSetPower(instanceID, compute.PowerStopped, compute.MetadataPatch{})))
 	const wantStop = "bc315f5ae58c5fd47a5370a0049c4763fbbf851dd0cde6c6fa354804591e85e7"
 	if got := hex.EncodeToString(stop[:]); got != wantStop {
 		t.Fatalf("stop fingerprint = %s, want %s", got, wantStop)
