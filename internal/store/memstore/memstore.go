@@ -31,6 +31,9 @@ type Store struct {
 	ops         map[compute.OperationID]compute.Operation
 	opByRequest map[compute.RequestID]compute.OperationID
 	pending     map[compute.Ref]map[compute.OperationID]struct{}
+	// history holds each resource's operations in commit order, which
+	// store.PruneOperations reads as oldest first.
+	history map[compute.Ref][]compute.OperationID
 
 	// legacyImageScope is stored for an image spec written without a scope
 	// (a seed image). Zero leaves it in no project.
@@ -63,6 +66,7 @@ func New() *Store {
 		ops:         map[compute.OperationID]compute.Operation{},
 		opByRequest: map[compute.RequestID]compute.OperationID{},
 		pending:     map[compute.Ref]map[compute.OperationID]struct{}{},
+		history:     map[compute.Ref][]compute.OperationID{},
 	}
 }
 
@@ -250,7 +254,35 @@ func (s *Store) CommitDesired(_ context.Context, c store.DesiredChange) (compute
 		}
 		s.pending[ref][op.ID] = struct{}{}
 	}
+	s.history[ref] = append(s.history[ref], op.ID)
+	s.prune(ref, c.Op.CreatedAt)
 	return op, nil
+}
+
+// prune forgets the operations of ref that store.PruneOperations drops, with
+// their request ids. A dropped operation is settled, so none is pending.
+func (s *Store) prune(ref compute.Ref, now time.Time) {
+	ids := s.history[ref]
+	if len(ids) <= store.KeepOperations {
+		return
+	}
+	ops := make([]compute.Operation, len(ids))
+	for i, id := range ids {
+		ops[i] = s.ops[id]
+	}
+	kept, dropped := store.PruneOperations(ops, now)
+	if len(dropped) == 0 {
+		return
+	}
+	for _, op := range dropped {
+		delete(s.ops, op.ID)
+		delete(s.opByRequest, op.Request)
+	}
+	ids = ids[:0]
+	for _, op := range kept {
+		ids = append(ids, op.ID)
+	}
+	s.history[ref] = ids
 }
 
 func (s *Store) put(spec compute.Spec) error {

@@ -1,4 +1,4 @@
-package kubestore
+package store_test
 
 import (
 	"crypto/rand"
@@ -7,6 +7,12 @@ import (
 	"time"
 
 	"github.com/popododo0720/vws-compute/internal/compute"
+	"github.com/popododo0720/vws-compute/internal/store"
+)
+
+const (
+	keep      = store.KeepOperations
+	retention = store.OperationRetention
 )
 
 var pruneT0 = time.Date(2026, 10, 12, 9, 0, 0, 0, time.UTC)
@@ -52,28 +58,27 @@ func TestPruneKeepsTheNewestAndTheRecent(t *testing.T) {
 		now      time.Time
 		wantKept int
 	}{
-		{"at the limit", keepOps, pruneT0.Add(1000 * time.Hour), keepOps},
-		{"beyond the limit, all old", keepOps + 50, pruneT0.Add(1000 * time.Hour), keepOps},
-		{"beyond the limit, all within retention", keepOps + 50, pruneT0.Add(opRetention), keepOps + 50},
+		{"at the limit", keep, pruneT0.Add(1000 * time.Hour), keep},
+		{"beyond the limit, all old", keep + 50, pruneT0.Add(1000 * time.Hour), keep},
+		{"beyond the limit, all within retention", keep + 50, pruneT0.Add(retention), keep + 50},
 		// Generation g settles at hour g+1; the cutoff is hour 30.
-		{"beyond the limit, some within retention", keepOps + 50, pruneT0.Add(30*time.Hour + opRetention), keepOps + 22},
+		{"beyond the limit, some within retention", keep + 50, pruneT0.Add(30*time.Hour + retention), keep + 22},
 		{"empty", 0, pruneT0, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			e := &entry{ops: historyOf(t, tc.n)}
-			all := append([]compute.Operation(nil), e.ops...)
-			dropped := e.prune(tc.now)
-			if len(e.ops) != tc.wantKept || len(dropped)+len(e.ops) != tc.n {
-				t.Fatalf("kept %d, dropped %d of %d; want %d kept", len(e.ops), len(dropped), tc.n, tc.wantKept)
+			all := historyOf(t, tc.n)
+			kept, dropped := store.PruneOperations(all, tc.now)
+			if len(kept) != tc.wantKept || len(dropped)+len(kept) != tc.n {
+				t.Fatalf("kept %d, dropped %d of %d; want %d kept", len(kept), len(dropped), tc.n, tc.wantKept)
 			}
 			// The kept operations are the newest, in order.
-			for i, op := range e.ops {
+			for i, op := range kept {
 				if op.ID != all[tc.n-tc.wantKept+i].ID {
 					t.Fatalf("kept[%d] = %s, want %s", i, op.ID, all[tc.n-tc.wantKept+i].ID)
 				}
 			}
 			// Pruning again drops nothing: prune is idempotent.
-			if again := e.prune(tc.now); len(again) != 0 {
+			if _, again := store.PruneOperations(kept, tc.now); len(again) != 0 {
 				t.Fatalf("second prune dropped %d", len(again))
 			}
 		})
@@ -81,7 +86,7 @@ func TestPruneKeepsTheNewestAndTheRecent(t *testing.T) {
 }
 
 func TestPruneNeverDropsAPendingOperation(t *testing.T) {
-	ops := historyOf(t, keepOps+50)
+	ops := historyOf(t, keep+50)
 	// The oldest operation is still Pending, as an operation whose
 	// generation the agent never observed and no later spec superseded.
 	pending := historyOf(t, 1)[0]
@@ -89,28 +94,16 @@ func TestPruneNeverDropsAPendingOperation(t *testing.T) {
 		t.Fatal("fixture operation is settled")
 	}
 	ops[0] = pending
-	e := &entry{ops: ops}
-	dropped := e.prune(pruneT0.Add(1000 * time.Hour))
-	if len(e.ops) != keepOps+1 || len(dropped) != 49 {
-		t.Fatalf("kept %d, dropped %d; want %d kept and 49 dropped", len(e.ops), len(dropped), keepOps+1)
+	kept, dropped := store.PruneOperations(ops, pruneT0.Add(1000*time.Hour))
+	if len(kept) != keep+1 || len(dropped) != 49 {
+		t.Fatalf("kept %d, dropped %d; want %d kept and 49 dropped", len(kept), len(dropped), keep+1)
 	}
-	if e.ops[0].ID != pending.ID {
+	if kept[0].ID != pending.ID {
 		t.Fatalf("pending operation %s was dropped", pending.ID)
 	}
 	for _, op := range dropped {
 		if !op.State().Terminal() {
 			t.Fatalf("dropped a %v operation", op.State())
 		}
-	}
-}
-
-func TestRecordOverTheConfigMapLimitIsLimitExceeded(t *testing.T) {
-	e := &entry{ref: compute.Ref{Kind: compute.KindInstance, ID: "i-00000000000000001"}, exists: true}
-	// Recent operations are never pruned, so a burst can still outgrow the
-	// limit. Settled operations encode to a few hundred bytes each.
-	e.ops = historyOf(t, 6000)
-	_, err := e.configMap("ns")
-	if compute.CodeOf(err) != compute.CodeLimitExceeded {
-		t.Fatalf("configMap = %v, want LimitExceeded", err)
 	}
 }

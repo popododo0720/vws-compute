@@ -46,6 +46,9 @@ func Run(t *testing.T, open func(t *testing.T) store.Repository) {
 		{"ReportSettlesAndKeepsTheReport", reportSettles},
 		{"DeleteWaitsForTheControllersReport", deleteWaitsForTheController},
 		{"AttachClaimsAndDetachReleasesVolumes", attachClaimsVolumes},
+		{"OperationHistoryIsBounded", historyIsBounded},
+		{"RecentOperationsOutliveTheLimit", recentOperationsKept},
+		{"PendingOperationsAreNeverPruned", pendingNeverPruned},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) { c.fn(fixture{t: t, s: open(t)}) })
@@ -124,7 +127,15 @@ func startIntent(n int) compute.Intent { return ok(compute.NewStartInstance(inst
 
 func (f fixture) commit(req string, in compute.Intent, spec compute.Spec, write bool, expect ...store.Version) (compute.Operation, error) {
 	f.t.Helper()
-	op, err := compute.NewOperation(compute.Env{Now: t0, Rand: rand.Reader}, ok(compute.ParseRequestID(req)), in,
+	return f.commitAt(t0, req, in, spec, write, expect...)
+}
+
+// commitAt commits as of now, which the repository takes as the commit time.
+func (f fixture) commitAt(
+	now time.Time, req string, in compute.Intent, spec compute.Spec, write bool, expect ...store.Version,
+) (compute.Operation, error) {
+	f.t.Helper()
+	op, err := compute.NewOperation(compute.Env{Now: now, Rand: rand.Reader}, ok(compute.ParseRequestID(req)), in,
 		compute.Change{Spec: spec, Write: write})
 	if err != nil {
 		f.t.Fatal(err)

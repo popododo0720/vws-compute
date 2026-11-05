@@ -25,6 +25,8 @@ const (
 	labelKind = "vws.io/kind"
 	labelOp   = "vws.io/op"
 	recordKey = "record"
+	// maxConfigMapBytes is the Kubernetes limit on a ConfigMap's data.
+	maxConfigMapBytes = 1 << 20
 
 	kindRequest     = "request"
 	kindClaimKey    = "claim-keyname"

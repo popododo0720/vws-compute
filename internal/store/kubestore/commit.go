@@ -225,7 +225,9 @@ func (s *Store) apply(ctx context.Context, c store.DesiredChange, ref compute.Re
 		}
 		op := compute.Settle(c.Op, e.generation(), e.observed(), c.Op.CreatedAt)
 		e.ops = append(e.ops, op)
-		pruned = e.prune(c.Op.CreatedAt)
+		// The CAS update that writes e drops these, so a crash leaves
+		// either every pruned operation or none.
+		e.ops, pruned = store.PruneOperations(e.ops, c.Op.CreatedAt)
 		out, wrote = op, true
 		return true, nil
 	})
