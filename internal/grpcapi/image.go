@@ -140,14 +140,16 @@ func copySource(spec *computev1.ImageSpec) (compute.CopySource, error) {
 // project in the caller's region is left to shared, which passes one whose
 // owner granted the caller createVolumePermission.
 // AWS answers InvalidVolume.NotFound and InvalidSnapshot.NotFound for such a
-// source. The answer depends on the names and the grant alone, so it is the
-// same whether or not an unshared source exists and says nothing about
-// another project.
+// source, and the error carries that code in ErrorInfo metadata aws_code.
+// The answer depends on the names and the grant alone, so it is the same
+// whether or not an unshared source exists and says nothing about another
+// project.
 func checkSourceScope(project, region string, src compute.CopySource, shared func(compute.SnapshotRef) error) error {
 	switch s := src.(type) {
 	case compute.FromVolume:
 		if s.Ref.Project() != project || !compute.ZoneInRegion(s.Ref.Zone(), region) {
-			return notFound("volume " + s.Ref.String() + " not found")
+			return withAWSCode(codes.NotFound, "RESOURCE_NOT_FOUND", "InvalidVolume.NotFound",
+				"volume "+s.Ref.String()+" not found")
 		}
 	case compute.FromSnapshot:
 		if s.Ref.Region() != region {
@@ -161,7 +163,8 @@ func checkSourceScope(project, region string, src compute.CopySource, shared fun
 }
 
 func snapshotNotFound(ref compute.SnapshotRef) error {
-	return notFound("snapshot " + ref.String() + " not found")
+	return withAWSCode(codes.NotFound, "RESOURCE_NOT_FOUND", "InvalidSnapshot.NotFound",
+		"snapshot "+ref.String()+" not found")
 }
 
 // sharedSnapshot is the shared check of checkSourceScope for project: a

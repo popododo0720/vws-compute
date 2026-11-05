@@ -161,6 +161,11 @@ func createImageFromASharedSnapshot(t *testing.T, h *harness, g *grants) {
 			req.Image = &computev1.Image{Spec: snapSpec(absentSnap)}
 			_, absent := h.img.CreateImage(ctx, req)
 			wantCode(t, absent, codes.NotFound)
+			for _, err := range []error{private, absent} {
+				if got := awsCode(t, err); got != "InvalidSnapshot.NotFound" {
+					t.Fatalf("aws_code = %q, want InvalidSnapshot.NotFound", got)
+				}
+			}
 			if got, want := status.Convert(absent).Message(), "snapshot "+absentSnap+" not found"; got != want {
 				t.Fatalf("absent message %q, want %q", got, want)
 			}
@@ -177,6 +182,9 @@ func createImageFromASharedSnapshot(t *testing.T, h *harness, g *grants) {
 			Image: &computev1.Image{Spec: snapSpec(otherRegion)},
 		})
 		wantCode(t, err, codes.NotFound)
+		if got := awsCode(t, err); got != "InvalidSnapshot.NotFound" {
+			t.Fatalf("aws_code = %q, want InvalidSnapshot.NotFound", got)
+		}
 		if asked := g.questions()[before:]; len(asked) != 0 {
 			t.Fatalf("asked %v for a snapshot of another region", asked)
 		}
@@ -234,4 +242,7 @@ func TestForeignSnapshotIsNotFoundWithoutSnapshotPermissions(t *testing.T) {
 	})
 	wantCode(t, err, codes.NotFound)
 	wantReason(t, err, "RESOURCE_NOT_FOUND")
+	if got := awsCode(t, err); got != "InvalidSnapshot.NotFound" {
+		t.Fatalf("aws_code = %q, want InvalidSnapshot.NotFound", got)
+	}
 }
