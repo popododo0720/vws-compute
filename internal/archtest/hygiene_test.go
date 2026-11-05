@@ -290,3 +290,75 @@ func TestRBACManifestsAreNamespaced(t *testing.T) {
 		t.Fatal("no RBAC manifests found under deploy/rbac")
 	}
 }
+
+// TestRBACReadmeMatchesTheRoles fails when deploy/rbac/README.md says a
+// resource is not granted while a Role under deploy/rbac grants it (#73: the
+// README kept "Not granted: secrets" after the cloud-init Secrets were).
+func TestRBACReadmeMatchesTheRoles(t *testing.T) {
+	dir := filepath.Join(repoRoot(t), "deploy", "rbac")
+	readme, err := os.ReadFile(filepath.Join(dir, "README.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	notGranted := notGrantedResources(string(readme))
+	if notGranted == nil {
+		t.Fatal(`deploy/rbac/README.md has no "Not granted" paragraph`)
+	}
+	granted := map[string]bool{}
+	err = walkFiles(dir, func(rel string, data []byte) {
+		if strings.HasSuffix(rel, ".yaml") {
+			for _, r := range grantedResources(string(data)) {
+				granted[r] = true
+			}
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(granted) == 0 {
+		t.Fatal("no granted resources found under deploy/rbac")
+	}
+	for _, r := range notGranted {
+		if granted[r] {
+			t.Errorf("deploy/rbac/README.md says %q is not granted, but a Role grants it", r)
+		}
+	}
+}
+
+// grantedResources returns the names in every `resources: [...]` line.
+func grantedResources(manifest string) []string {
+	var out []string
+	for _, line := range strings.Split(manifest, "\n") {
+		code, _, _ := strings.Cut(line, "#")
+		_, list, ok := strings.Cut(code, "resources:")
+		if !ok {
+			continue
+		}
+		list = strings.Trim(strings.TrimSpace(list), "[]")
+		for _, r := range strings.Split(list, ",") {
+			if r = strings.Trim(strings.TrimSpace(r), `"'`); r != "" {
+				out = append(out, r)
+			}
+		}
+	}
+	return out
+}
+
+// notGrantedResources returns the words of the README paragraph that starts
+// with "Not granted", lowercased and stripped of punctuation and backticks.
+// It is nil when there is no such paragraph.
+func notGrantedResources(readme string) []string {
+	for _, para := range strings.Split(readme, "\n\n") {
+		if !strings.HasPrefix(para, "Not granted") {
+			continue
+		}
+		words := []string{}
+		for _, w := range strings.Fields(para) {
+			if w = strings.ToLower(strings.Trim(w, "`.,:;()")); w != "" {
+				words = append(words, w)
+			}
+		}
+		return words
+	}
+	return nil
+}

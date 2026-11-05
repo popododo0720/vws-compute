@@ -25,5 +25,14 @@ namespace `default` service account gets `create` on `datavolumes/source` in
 `vws-images` (`vws-compute-image-clone`). CDI `doc/RBAC.md` (PVC Cloning) and
 KubeVirt PR #2509 describe the check. Not verified on a real cluster.
 
-Not granted, because no code calls it: secrets, network-attachment-definitions,
+Granted in the VM namespace: `get`, `create`, `update`, `delete` on Secrets,
+because `cloudinit.go` writes two Secrets per machine before its VM:
+`<instance>-cloudinit` holds the cloud-init user data
+(`cloudInitNoCloud.secretRef`), and `<instance>-ssh-keys` holds the key pair's
+public keys (`accessCredentials`, propagation `noCloud`). Destroy deletes both
+after the VM. The Role cannot narrow these to compute's own Secrets
+(`resourceNames` cannot limit `create`), so compute touches only Secrets that
+carry its managed label. Keep no other Secrets in the VM namespace.
+
+Not granted, because no code calls it: network-attachment-definitions,
 `virtualmachines/addvolume` (hotplug), and `create`, `list`, `delete` on PVCs.
