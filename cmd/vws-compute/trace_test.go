@@ -115,23 +115,29 @@ func TestStorageCallJoinsTheCallersTrace(t *testing.T) {
 		t.Errorf("storage saw request id %q, want %s", gotRequest, requestID)
 	}
 
-	servers := map[trace.SpanID]bool{}
+	// The server span ends after the client has its response, so wait for it.
 	var clients []sdktrace.ReadOnlySpan
-	for _, s := range spans.Ended() {
-		switch {
-		case s.Name() == "vws.compute.v1.InstanceService/CreateInstance" && s.SpanKind() == trace.SpanKindServer:
-			servers[s.SpanContext().SpanID()] = true
-		case s.Name() == "vws.storage.v1.VolumeService/GetVolume" && s.SpanKind() == trace.SpanKindClient:
-			clients = append(clients, s)
+	eventually(t, "a storage client span under an ended CreateInstance span", func() bool {
+		servers := map[trace.SpanID]bool{}
+		clients = nil
+		for _, s := range spans.Ended() {
+			switch {
+			case s.Name() == "vws.compute.v1.InstanceService/CreateInstance" && s.SpanKind() == trace.SpanKindServer:
+				servers[s.SpanContext().SpanID()] = true
+			case s.Name() == "vws.storage.v1.VolumeService/GetVolume" && s.SpanKind() == trace.SpanKindClient:
+				clients = append(clients, s)
+			}
 		}
-	}
-	if len(servers) == 0 || len(clients) == 0 {
-		t.Fatalf("recorded %d CreateInstance server spans and %d storage client spans, want both", len(servers), len(clients))
-	}
+		for _, c := range clients {
+			if !servers[c.Parent().SpanID()] {
+				return false
+			}
+		}
+		return len(clients) > 0
+	})
 	for _, c := range clients {
-		if !servers[c.Parent().SpanID()] || c.SpanContext().TraceID() != wantTrace {
-			t.Errorf("storage client span parent %s trace %s, want a CreateInstance span in trace %s",
-				c.Parent().SpanID(), c.SpanContext().TraceID(), wantTrace)
+		if c.SpanContext().TraceID() != wantTrace {
+			t.Errorf("storage client span trace %s, want the caller's %s", c.SpanContext().TraceID(), wantTrace)
 		}
 	}
 }
