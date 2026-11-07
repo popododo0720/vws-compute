@@ -109,7 +109,7 @@ func run(ctx context.Context, cfg config) error {
 	if err != nil {
 		return err
 	}
-	opts := []grpcapi.Option{grpcapi.WithPublicImages(cfg.publicImages)}
+	opts := []grpcapi.Option{grpcapi.WithPublicImages(cfg.publicImages), grpcapi.WithZones(cfg.zones)}
 	var lookup grpcapi.Storage
 	if storage != "" {
 		// The connection is lazy: the storage service may come up after this

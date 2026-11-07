@@ -112,6 +112,8 @@ type config struct {
 	legacyImageScope compute.ImageScope
 	// publicImages are readable by every project in their region.
 	publicImages compute.PublicImages
+	// zones places each availability zone in its region.
+	zones compute.Zones
 	// leaseName is the Lease that replicas sharing -namespace elect the
 	// leader on. leaseDuration, renewDeadline, and retryPeriod time it.
 	leaseName                                 string
@@ -148,6 +150,9 @@ func parseConfig(args []string, getenv func(string) string, errOut io.Writer) (c
 			"ReadWriteOncePod), env VWS_IMAGE_ACCESS_MODE")
 	legacyScope := fs.String("legacy-image-scope", env("VWS_LEGACY_IMAGE_SCOPE", ""), "projects/{project}/regions/{region} that owns images stored without one (pre-#92 records, seed images); empty leaves them in no project, invisible to every caller (env VWS_LEGACY_IMAGE_SCOPE)")
 	publicIDs := fs.String("public-images", env("VWS_PUBLIC_IMAGES", ""), "comma-separated image ids readable by every project in the image's region, such as seed images; changing or deleting them stays with the owner (env VWS_PUBLIC_IMAGES)")
+	zones := fs.String("zones", env("VWS_ZONES", compute.DefaultZones().String()),
+		"comma-separated zone=region pairs, the zone catalog CreateImage places a volume source in a region with; "+
+			"list every zone vws-storage admits (its -zones), Local and Wavelength Zones included (env VWS_ZONES)")
 	fs.StringVar(&c.leaseName, "lease-name", env("VWS_LEASE_NAME", defaultLeaseName),
 		"coordination.k8s.io Lease in -namespace that replicas elect the leader on (env VWS_LEASE_NAME)")
 	fs.DurationVar(&c.leaseDuration, "lease-duration", defaultLeaseDuration,
@@ -184,6 +189,9 @@ func parseConfig(args []string, getenv func(string) string, errOut io.Writer) (c
 		return config{}, fmt.Errorf("-public-images: %w", err)
 	}
 	c.publicImages = pub
+	if c.zones, err = compute.ParseZones(*zones); err != nil {
+		return config{}, fmt.Errorf("-zones: %w", err)
+	}
 	switch c.hypervisor {
 	case hypervisorFake:
 	case hypervisorKubeVirt:

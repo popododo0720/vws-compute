@@ -67,7 +67,7 @@ func (s *server) CreateImage(ctx context.Context, r *computev1.CreateImageReques
 		return nil, err
 	}
 	name := imageResourceName(project, region, r.GetImageId())
-	in, err := copyImageIntent(project, region, r.GetImageId(), r.GetImage(), s.sharedSnapshot(ctx, project))
+	in, err := copyImageIntent(project, region, r.GetImageId(), r.GetImage(), s.zones, s.sharedSnapshot(ctx, project))
 	if err != nil {
 		return nil, err
 	}
@@ -83,9 +83,10 @@ func (s *server) CreateImage(ctx context.Context, r *computev1.CreateImageReques
 
 // copyImageIntent parses a CreateImage request into an intent. It does not
 // read the store, so validate_only and the submitting call fail on the same
-// inputs and neither can see another project's image. shared decides a
-// snapshot of another project in the caller's region.
-func copyImageIntent(project, region, imageID string, body *computev1.Image,
+// inputs and neither can see another project's image. zones places a volume
+// source's zone in a region, and shared decides a snapshot of another project
+// in the caller's region.
+func copyImageIntent(project, region, imageID string, body *computev1.Image, zones compute.Zones,
 	shared func(compute.SnapshotRef) error,
 ) (compute.Intent, error) {
 	if err := validateResourceID(imageID); err != nil {
@@ -99,7 +100,7 @@ func copyImageIntent(project, region, imageID string, body *computev1.Image,
 	if err != nil {
 		return nil, toStatus(err)
 	}
-	if err := checkSourceScope(project, region, src, shared); err != nil {
+	if err := checkSourceScope(project, region, src, zones, shared); err != nil {
 		return nil, err
 	}
 	labels, err := compute.ParseLabels(body.GetLabels())
@@ -135,18 +136,21 @@ func copySource(spec *computev1.ImageSpec) (compute.CopySource, error) {
 }
 
 // checkSourceScope fails a copy source the caller cannot see as NOT_FOUND:
-// a volume or snapshot of another project, a volume whose zone is not in the
-// caller's region, or a snapshot of another region. A snapshot of another
+// a volume or snapshot of another project, a volume whose zone zones does not
+// place in the caller's region (an unknown zone included), or a snapshot of
+// another region. A snapshot of another
 // project in the caller's region is left to shared, which passes one whose
 // owner granted the caller createVolumePermission.
 // AWS answers InvalidVolume.NotFound and InvalidSnapshot.NotFound for such a
 // source. The answer depends on the names and the grant alone, so it is the
 // same whether or not an unshared source exists and says nothing about
 // another project.
-func checkSourceScope(project, region string, src compute.CopySource, shared func(compute.SnapshotRef) error) error {
+func checkSourceScope(project, region string, src compute.CopySource, zones compute.Zones,
+	shared func(compute.SnapshotRef) error,
+) error {
 	switch s := src.(type) {
 	case compute.FromVolume:
-		if s.Ref.Project() != project || !compute.ZoneInRegion(s.Ref.Zone(), region) {
+		if s.Ref.Project() != project || !zones.InRegion(s.Ref.Zone(), region) {
 			return notFound("volume " + s.Ref.String() + " not found")
 		}
 	case compute.FromSnapshot:
