@@ -2,6 +2,7 @@ package main
 
 import (
 	"io"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -198,6 +199,9 @@ func TestParseConfigLeaseTiming(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if c.leaseName != "compute" {
+		t.Fatalf("lease name = %q, want the chart's service key compute", c.leaseName)
+	}
 	if c.leaseDuration != 15*time.Second || c.renewDeadline != 10*time.Second || c.retryPeriod != 2*time.Second {
 		t.Fatalf("lease defaults = %s/%s/%s, want the client-go 15s/10s/2s", c.leaseDuration, c.renewDeadline, c.retryPeriod)
 	}
@@ -214,10 +218,25 @@ func TestParseConfigLeaseTiming(t *testing.T) {
 		},
 		"renew under 1.2 retry": {"-lease-renew-deadline", "2s"},
 		"zero retry":            {"-lease-retry-period", "0s"},
+		"bad name":              {"-lease-name", "Not_A_Name"},
+		"empty name":            {"-lease-name", ""},
 		"negative retry":        {"-lease-retry-period", "-1s"},
 	} {
-		if _, err := parseConfig(args, envOf(nil), io.Discard); err == nil || !strings.Contains(err.Error(), "lease timing") {
+		if _, err := parseConfig(args, envOf(nil), io.Discard); err == nil || !strings.Contains(err.Error(), "lease") {
 			t.Errorf("%s: err = %v, want a lease timing error", name, err)
 		}
+	}
+}
+
+// TestLeaseRoleNamesTheDefaultLease keeps the default Lease name and the
+// Role that grants get and update on it in step: a Lease the Role does not
+// name answers Forbidden, so no replica would ever lead.
+func TestLeaseRoleNamesTheDefaultLease(t *testing.T) {
+	role, err := os.ReadFile("../../deploy/rbac/configmap-role.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `resourceNames: ["` + defaultLeaseName + `"]`; !strings.Contains(string(role), want) {
+		t.Fatalf("deploy/rbac/configmap-role.yaml has no %s for the default Lease", want)
 	}
 }

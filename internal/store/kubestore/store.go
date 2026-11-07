@@ -48,10 +48,10 @@ type Store struct {
 }
 
 // New returns a store over namespace ns. It does not touch the cluster.
-// A single writer calls Repair once before serving. Replicas call Lead,
-// which repairs while it holds the Lease.
+// A single writer calls Repair once before serving. Replicas call WithLease
+// and Lead, which repairs while it holds the Lease.
 func New(c client.Client, ns string) *Store {
-	return &Store{c: c, ns: ns, lease: lease{DefaultLeaseDuration, DefaultRenewDeadline, DefaultRetryPeriod}}
+	return &Store{c: c, ns: ns}
 }
 
 // WithLegacyImageScope sets the scope read for image records that carry none.

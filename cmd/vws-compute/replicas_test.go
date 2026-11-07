@@ -42,7 +42,7 @@ type testReplica struct {
 
 func startReplica(t *testing.T, c client.Client, ns, id string, cluster hypervisor.Agent) *testReplica {
 	t.Helper()
-	repo := kubestore.New(c, ns).WithLease(2*time.Second, time.Second, 250*time.Millisecond)
+	repo := kubestore.New(c, ns).WithLease("compute", 2*time.Second, time.Second, 250*time.Millisecond)
 	agent := &countingAgent{Agent: cluster}
 	rec := reconciler.New(repo, agent, reconciler.WithInterval(50*time.Millisecond))
 	ctx, cancel := context.WithCancel(context.Background())

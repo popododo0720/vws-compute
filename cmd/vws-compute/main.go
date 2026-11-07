@@ -274,7 +274,7 @@ func open(ctx context.Context, cfg config) (store.Repository, error) {
 		return nil, err
 	}
 	slog.InfoContext(ctx, "opened store", slog.String("namespace", cfg.namespace))
-	return repo.WithLease(cfg.leaseDuration, cfg.renewDeadline, cfg.retryPeriod), nil
+	return repo.WithLease(cfg.leaseName, cfg.leaseDuration, cfg.renewDeadline, cfg.retryPeriod), nil
 }
 
 // leader is a repository that several replicas share. Only the replica that

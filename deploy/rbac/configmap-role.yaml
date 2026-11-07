@@ -22,11 +22,16 @@ rules:
       - delete
   - apiGroups: ["coordination.k8s.io"]
     resources: ["leases"]
-    # lead.go: replicas elect the leader on Lease vws-compute.
-    # get: the elector reads the holder on every acquire and renew.
-    # create: the first replica to campaign creates the Lease.
-    # update: acquire, renew, and the release on shutdown.
-    verbs: ["get", "create", "update"]
+    # lead.go: the first replica to campaign creates the Lease (-lease-name).
+    # resourceNames cannot narrow create.
+    verbs: ["create"]
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    # lead.go: get reads the holder on every acquire and renew; update
+    # acquires, renews, and releases on shutdown. Only Lease compute, the
+    # -lease-name default and the vws-deploy chart's service key.
+    resourceNames: ["compute"]
+    verbs: ["get", "update"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

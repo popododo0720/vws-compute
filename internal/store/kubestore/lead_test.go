@@ -23,6 +23,7 @@ import (
 // Short timings keep the tests fast. leaseDuration > renewDeadline +
 // retryPeriod, so a deposed leader stops before a follower may take over.
 const (
+	testLease     = "compute"
 	leaseDuration = 2 * time.Second
 	renewDeadline = time.Second
 	retryPeriod   = 250 * time.Millisecond
@@ -87,7 +88,7 @@ func replica(t *testing.T, c client.Client, ns, id string, term func(context.Con
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	s := kubestore.New(c, ns).WithLease(leaseDuration, renewDeadline, retryPeriod)
+	s := kubestore.New(c, ns).WithLease(testLease, leaseDuration, renewDeadline, retryPeriod)
 	go func() { done <- s.Lead(ctx, id, term) }()
 	var once sync.Once
 	stop = func() {
@@ -129,7 +130,7 @@ func TestOneReplicaLeadsAndAFollowerTakesOver(t *testing.T) {
 	}
 
 	var l coordinationv1.Lease
-	if err := c.Get(context.Background(), client.ObjectKey{Namespace: ns, Name: kubestore.LeaseName}, &l); err != nil {
+	if err := c.Get(context.Background(), client.ObjectKey{Namespace: ns, Name: testLease}, &l); err != nil {
 		t.Fatal(err)
 	}
 	if h := l.Spec.HolderIdentity; h == nil || *h != "b" {
@@ -230,7 +231,7 @@ func TestTermErrorEndsLead(t *testing.T) {
 	c, ns := kubetest.Namespace(t)
 	boom := errors.New("reconciler failed")
 	done := make(chan error, 1)
-	s := kubestore.New(c, ns).WithLease(leaseDuration, renewDeadline, retryPeriod)
+	s := kubestore.New(c, ns).WithLease(testLease, leaseDuration, renewDeadline, retryPeriod)
 	go func() { done <- s.Lead(context.Background(), "a", func(context.Context) error { return boom }) }()
 	select {
 	case err := <-done:

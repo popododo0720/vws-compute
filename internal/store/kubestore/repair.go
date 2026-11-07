@@ -53,7 +53,9 @@ func writtenBefore(cm *corev1.ConfigMap, cutoff time.Time) bool {
 
 // repair is Repair that leaves every index and claim written at or after
 // cutoff: another replica may be committing it right now, and an index or a
-// claim is written before the resource that holds it.
+// claim is written before the resource that holds it. The written time is
+// the writer's clock and cutoff the leader's, so the grace assumes replica
+// clocks agree to well within it, as NTP keeps cluster nodes.
 func (s *Store) repair(ctx context.Context, cutoff time.Time) (Repaired, error) {
 	var r Repaired
 	var all []*entry

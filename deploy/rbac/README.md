@@ -34,11 +34,11 @@ after the VM. The Role cannot narrow these to compute's own Secrets
 (`resourceNames` cannot limit `create`), so compute touches only Secrets that
 carry its managed label. Keep no other Secrets in the VM namespace.
 
-Granted in the store namespace: `get`, `create`, `update` on
-`coordination.k8s.io` Leases, because `lead.go` elects the replica that runs
-Repair and the reconciler on Lease `vws-compute`. `create` cannot be narrowed
-by `resourceNames`, so the Role grants all three on every Lease of the
-namespace.
+Granted in the store namespace: `create` on `coordination.k8s.io` Leases, and
+`get` and `update` on Lease `compute` only, because `lead.go` elects the
+replica that runs Repair and the reconciler on that Lease (`-lease-name`, the
+vws-deploy chart's service key). `create` cannot be narrowed by
+`resourceNames`. A different `-lease-name` needs the same name here.
 
 Not granted, because no code calls it: network-attachment-definitions,
 `virtualmachines/addvolume` (hotplug), and `create`, `list`, `delete` on PVCs.

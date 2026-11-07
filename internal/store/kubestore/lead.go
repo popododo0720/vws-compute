@@ -16,19 +16,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-// LeaseName is the coordination.k8s.io Lease in the store namespace that the
-// replicas of one deployment campaign for.
-const LeaseName = "vws-compute"
-
-// The client-go defaults. A leader that cannot renew for RenewDeadline stops
-// its term. A follower takes over LeaseDuration after the last renew it
-// observed, at most one RetryPeriod later, or at once after a release.
-const (
-	DefaultLeaseDuration = 15 * time.Second
-	DefaultRenewDeadline = 10 * time.Second
-	DefaultRetryPeriod   = 2 * time.Second
-)
-
 // While leading, Repair runs at the start of each term and every
 // repairInterval after. It leaves an index or claim written less than
 // repairGrace ago: followers keep committing, and such a write may be a
@@ -38,14 +25,21 @@ const (
 	repairGrace    = 2 * time.Minute
 )
 
+// lease is the coordination.k8s.io Lease in the store namespace that the
+// replicas of one deployment campaign for, and its timing. A leader that
+// cannot renew for renewDeadline stops its term. A follower takes over
+// duration after the last renew it observed, at most one retryPeriod later,
+// or at its next retry after a release.
 type lease struct {
+	name                                 string
 	duration, renewDeadline, retryPeriod time.Duration
 }
 
-// WithLease sets the leader election timings Lead uses. client-go requires
-// duration > renewDeadline > 1.2 * retryPeriod > 0.
-func (s *Store) WithLease(duration, renewDeadline, retryPeriod time.Duration) *Store {
-	s.lease = lease{duration, renewDeadline, retryPeriod}
+// WithLease sets the Lease Lead campaigns for and its timing. client-go
+// requires duration > renewDeadline > 1.2 * retryPeriod > 0. Lead fails
+// until it is called.
+func (s *Store) WithLease(name string, duration, renewDeadline, retryPeriod time.Duration) *Store {
+	s.lease = lease{name, duration, renewDeadline, retryPeriod}
 	return s
 }
 
@@ -56,8 +50,8 @@ func (s *Store) WithLease(duration, renewDeadline, retryPeriod time.Duration) *S
 // over without waiting out the Lease. A term error other than its context
 // ending stops Lead with that error.
 func (s *Store) Lead(ctx context.Context, identity string, term func(context.Context) error) error {
-	if identity == "" {
-		return errors.New("leader election: empty identity")
+	if identity == "" || s.lease.name == "" {
+		return errors.New("leader election: empty identity or Lease name")
 	}
 	for {
 		err := s.leadOnce(ctx, identity, term)
@@ -71,7 +65,7 @@ func (s *Store) Lead(ctx context.Context, identity string, term func(context.Con
 }
 
 func (s *Store) leadOnce(ctx context.Context, identity string, term func(context.Context) error) error {
-	lock := &leaseLock{c: s.c, key: client.ObjectKey{Namespace: s.ns, Name: LeaseName}, identity: identity}
+	lock := &leaseLock{c: s.c, key: client.ObjectKey{Namespace: s.ns, Name: s.lease.name}, identity: identity}
 	// The elector runs on its own context, so a shutdown first ends the
 	// term and only then stops renewing.
 	elect, stopElect := context.WithCancel(context.WithoutCancel(ctx))
@@ -79,7 +73,7 @@ func (s *Store) leadOnce(ctx context.Context, identity string, term func(context
 	acquired := make(chan context.Context, 1)
 	le, err := leaderelection.NewLeaderElector(leaderelection.LeaderElectionConfig{
 		Lock:          lock,
-		Name:          LeaseName,
+		Name:          s.lease.name,
 		LeaseDuration: s.lease.duration,
 		RenewDeadline: s.lease.renewDeadline,
 		RetryPeriod:   s.lease.retryPeriod,
@@ -101,10 +95,16 @@ func (s *Store) leadOnce(ctx context.Context, identity string, term func(context
 	case <-ctx.Done():
 		stopElect()
 		<-ran
+		select {
+		case <-acquired:
+			// Acquired as the shutdown began: give it back, as below.
+			s.releaseOnShutdown(ctx, lock)
+		default:
+		}
 		return ctx.Err()
 	case held = <-acquired:
 	}
-	slog.InfoContext(ctx, "leading", slog.String("lease", LeaseName), slog.String("identity", identity))
+	slog.InfoContext(ctx, "leading", slog.String("lease", s.lease.name), slog.String("identity", identity))
 	termCtx, cancel := context.WithCancel(held)
 	stop := context.AfterFunc(ctx, cancel)
 	// The term ends with the Lease, which held tracks, and with ctx through
@@ -115,14 +115,20 @@ func (s *Store) leadOnce(ctx context.Context, identity string, term func(context
 	stopElect()
 	<-ran
 	if ctx.Err() != nil {
-		rctx, rcancel := context.WithTimeout(context.WithoutCancel(ctx), s.lease.renewDeadline)
-		defer rcancel()
-		if rerr := lock.release(rctx); rerr != nil {
-			slog.WarnContext(ctx, "release lease", slog.String("lease", LeaseName), slog.String("err", rerr.Error()))
-		}
+		s.releaseOnShutdown(ctx, lock)
 	}
-	slog.InfoContext(ctx, "stopped leading", slog.String("lease", LeaseName), slog.String("identity", identity))
+	slog.InfoContext(ctx, "stopped leading", slog.String("lease", s.lease.name), slog.String("identity", identity))
 	return err
+}
+
+// releaseOnShutdown releases the Lease within one renew deadline, so a
+// follower takes over at its next retry instead of after the Lease expires.
+func (s *Store) releaseOnShutdown(ctx context.Context, lock *leaseLock) {
+	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), s.lease.renewDeadline)
+	defer cancel()
+	if err := lock.release(rctx); err != nil {
+		slog.WarnContext(ctx, "release lease", slog.String("lease", s.lease.name), slog.String("err", err.Error()))
+	}
 }
 
 // term runs Repair, then term, and Repair again every repairInterval until
