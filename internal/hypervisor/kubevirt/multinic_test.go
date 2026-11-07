@@ -12,6 +12,7 @@ import (
 	computev1 "github.com/popododo0720/vws-proto/gen/go/vws/compute/v1"
 
 	"github.com/popododo0720/vws-compute/internal/hypervisor"
+	"github.com/popododo0720/vws-compute/internal/reconciler"
 )
 
 func templateList(t *testing.T, vm *unstructured.Unstructured, path ...string) []any {
@@ -136,5 +137,81 @@ func TestCreateInstanceDirectNICReachesMultus(t *testing.T) {
 	}
 	if got := templateAnnotations(t, vm)[AnnotationLogicalSwitch]; got != "subnet-r40" {
 		t.Fatalf("logical_switch = %q, want subnet-r40", got)
+	}
+}
+
+// TestSecondOverlayInterfaceReachesTheVirtualMachine drives CreateInstance
+// with overlay interfaces in two subnets, nic1 listed before nic0, through
+// the gRPC API and the reconciler. The VirtualMachine puts nic0 on the pod
+// network and nic1 on the Multus network <nad namespace>/subnet-r41 with its
+// Kube-OVN logical switch. A restarted agent with the same spec writes
+// nothing, and the VirtualMachine is made once.
+func TestSecondOverlayInterfaceReachesTheVirtualMachine(t *testing.T) {
+	ctx := context.Background()
+	c, ns, w := newClient(t)
+	claim(t, c, ns, "pvc-root-1", corev1.ReadWriteOnce)
+	const vpc = "projects/demo/regions/vws-1/vpcs/vpc-1/subnets/"
+	cfg := Config{Namespace: ns, ImageNamespace: ns, SubnetNADNamespace: "vws-nad"}
+	repo, rec := createUnreconciled(t, New(c, cfg), "vws.small", "pvc-root-1",
+		&computev1.NetworkInterface{DeviceName: "nic1", Subnet: vpc + "subnet-r41"},
+		&computev1.NetworkInterface{DeviceName: "nic0", Subnet: vpc + "subnet-r40"})
+	if err := rec.Sweep(ctx); err != nil {
+		t.Fatal(err)
+	}
+	vm, err := get(t, c, "VirtualMachine", ns, "web-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	devs := templateList(t, vm, "spec", "template", "spec", "domain", "devices", "interfaces")
+	nets := templateList(t, vm, "spec", "template", "spec", "networks")
+	if got := names(devs); !reflect.DeepEqual(got, []string{"nic0", "nic1"}) {
+		t.Fatalf("interfaces = %v, want nic0, nic1", got)
+	}
+	if _, ok := nets[0].(map[string]any)["pod"]; !ok || names(nets)[0] != "nic0" {
+		t.Fatalf("networks[0] = %v, want nic0 on the pod network", nets[0])
+	}
+	if got := multusName(nets[1]); got != "vws-nad/subnet-r41" {
+		t.Fatalf("networks[1] = %v, want multus vws-nad/subnet-r41", nets[1])
+	}
+	ann := templateAnnotations(t, vm)
+	if ann[AnnotationLogicalSwitch] != "subnet-r40" ||
+		ann["subnet-r41.vws-nad.ovn.kubernetes.io/logical_switch"] != "subnet-r41" {
+		t.Fatalf("annotations = %v", ann)
+	}
+
+	before := w.n.Load()
+	restarted := reconciler.New(repo, New(c, cfg), reconciler.WithReports(repo))
+	if err := restarted.Sweep(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := w.n.Load() - before; got != 0 {
+		t.Fatalf("restarted agent: %d writes, want 0", got)
+	}
+	if n := count(t, c, ns); n != 1 {
+		t.Fatalf("%d VirtualMachines, want 1", n)
+	}
+}
+
+// TestSecondOverlayInterfaceIsRefusedWithoutANADNamespace: with no subnet
+// NetworkAttachmentDefinition namespace, or with one subnet on two
+// interfaces, a second overlay interface is a permanent error and nothing is
+// created.
+func TestSecondOverlayInterfaceIsRefusedWithoutANADNamespace(t *testing.T) {
+	c, ns, _ := newClient(t)
+	standardImage(t, c, ns)
+	s := spec("i-0123456789abcdef0", hypervisor.PowerOn)
+	s.Interfaces = []hypervisor.Interface{{Name: "nic0", Subnet: "subnet-a"}, {Name: "nic1", Subnet: "subnet-b"}}
+	err := New(c, Config{Namespace: ns}).ConvergeMachine(context.Background(), s)
+	if !hypervisor.IsPermanent(err) ||
+		!strings.Contains(err.Error(), "needs the subnet NetworkAttachmentDefinition namespace") {
+		t.Fatalf("err = %v, want permanent missing NAD namespace", err)
+	}
+	s.Interfaces[1].Subnet = "subnet-a"
+	err = New(c, Config{Namespace: ns, SubnetNADNamespace: "vws-nad"}).ConvergeMachine(context.Background(), s)
+	if !hypervisor.IsPermanent(err) || !strings.Contains(err.Error(), "attached twice") {
+		t.Fatalf("err = %v, want permanent subnet attached twice", err)
+	}
+	if n := count(t, c, ns); n != 0 {
+		t.Fatalf("%d VirtualMachines, want 0", n)
 	}
 }

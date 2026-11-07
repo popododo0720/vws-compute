@@ -26,7 +26,7 @@ func TestParseConfigDefaults(t *testing.T) {
 func TestParseConfigEnvAndFlagPrecedence(t *testing.T) {
 	env := envOf(map[string]string{
 		"VWS_HYPERVISOR": "kubevirt", "VWS_STORE_NAMESPACE": "store", "VWS_VM_NAMESPACE": "vms-env", "VWS_IMAGE_NAMESPACE": "img-env",
-		"VWS_IMAGE_STORAGE_CLASS": "fast.block", "VWS_IMAGE_ACCESS_MODE": "ReadWriteMany",
+		"VWS_IMAGE_STORAGE_CLASS": "fast.block", "VWS_IMAGE_ACCESS_MODE": "ReadWriteMany", "VWS_NAD_NAMESPACE": "nad-env",
 	})
 	c, err := parseConfig(nil, env, io.Discard)
 	if err != nil {
@@ -35,17 +35,19 @@ func TestParseConfigEnvAndFlagPrecedence(t *testing.T) {
 	if c.hypervisor != "kubevirt" || c.namespace != "store" || c.vmNamespace != "vms-env" || c.imageNamespace != "img-env" {
 		t.Fatalf("env = %+v", c)
 	}
-	if c.imageStorageClass != "fast.block" || c.imageAccessMode != "ReadWriteMany" {
-		t.Fatalf("image storage env = %q, %q", c.imageStorageClass, c.imageAccessMode)
+	if c.imageStorageClass != "fast.block" || c.imageAccessMode != "ReadWriteMany" ||
+		c.nadNamespace != "nad-env" {
+		t.Fatalf("image storage and nad env = %q, %q, %q", c.imageStorageClass, c.imageAccessMode, c.nadNamespace)
 	}
 	c, err = parseConfig([]string{
-		"-vm-namespace", "vms-flag", "-hypervisor", "fake",
+		"-vm-namespace", "vms-flag", "-hypervisor", "fake", "-nad-namespace", "nad-flag",
 		"-image-storage-class", "slow", "-image-access-mode", "ReadOnlyMany",
 	}, env, io.Discard)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.vmNamespace != "vms-flag" || c.hypervisor != "fake" || c.imageNamespace != "img-env" {
+	if c.vmNamespace != "vms-flag" || c.hypervisor != "fake" || c.imageNamespace != "img-env" ||
+		c.nadNamespace != "nad-flag" {
 		t.Fatalf("flag did not win: %+v", c)
 	}
 	if c.imageStorageClass != "slow" || c.imageAccessMode != "ReadOnlyMany" {
@@ -106,6 +108,8 @@ func TestParseConfigRejectsMalformedValues(t *testing.T) {
 		"storage class long":    {args: []string{"-image-storage-class", strings.Repeat("a", 254)}},
 		"access mode unknown":   {args: []string{"-image-access-mode", "ReadWrite"}},
 		"access mode empty":     {args: []string{"-image-access-mode", ""}},
+		"nad ns slash":          {args: []string{"-nad-namespace", "vws-nad/x"}},
+		"nad ns from env":       {env: map[string]string{"VWS_NAD_NAMESPACE": "VWS-NAD"}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			getenv := func(k string) string { return tc.env[k] }
