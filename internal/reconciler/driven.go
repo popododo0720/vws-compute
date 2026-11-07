@@ -43,15 +43,12 @@ func (r *Reconciler) sweepDriven(ctx context.Context) error {
 
 func (r *Reconciler) convergeDriven(ctx context.Context, inst compute.Instance) error {
 	spec := inst.Spec
-	machine, agentErr := r.machine(ctx, spec)
-	reached := agentErr == nil
-	if reached {
-		agentErr = r.agent.ConvergeMachine(ctx, machine)
-	}
+	prevVolumes := inst.Status.Report.Volumes
+	out := r.convergeAttaching(ctx, spec, inst.Status.Report)
+	reached, agentErr := out.reached, out.err
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
-	prevVolumes := inst.Status.Report.Volumes
 	rep := compute.InstanceReport{Generation: spec.Generation, Power: spec.Power}
 	switch {
 	case agentErr == nil && spec.Power == compute.PowerTerminated:
@@ -76,7 +73,9 @@ func (r *Reconciler) convergeDriven(ctx context.Context, inst compute.Instance) 
 		// Reconciling records the failure and leaves the generation open,
 		// so the next sweep tries again.
 		rep.State, rep.Message = compute.ReportReconciling, agentErr.Error()
-		if spec.Power != compute.PowerTerminated {
+		if out.unchecked {
+			rep.Volumes = prevVolumes
+		} else if spec.Power != compute.PowerTerminated {
 			rep.Volumes = r.observeVolumes(ctx, spec, prevVolumes,
 				attempt{retrying: reached && !hypervisor.IsNotReady(agentErr)})
 		}
