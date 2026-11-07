@@ -17,7 +17,8 @@ import (
 // volume or snapshot sits in another project, a volume in a zone outside the
 // caller's region, or a snapshot in another region, fails as NOT_FOUND, as
 // AWS answers InvalidVolume.NotFound and InvalidSnapshot.NotFound for a
-// resource the caller cannot see. The answer
+// resource the caller cannot see, with that code in ErrorInfo metadata
+// aws_code. The answer
 // does not depend on whether the foreign source exists, validate_only
 // answers the same, a retry answers the same, and nothing is stored.
 func TestCreateImageOfAnotherProjectsSourceIsNotFound(t *testing.T) {
@@ -54,48 +55,49 @@ func createImageOfAnotherProjectsSourceIsNotFound(t *testing.T, h *harness) {
 		name          string
 		source, other *computev1.ImageSpec
 		wantNamed     string
+		wantAWSCode   string
 		requestID     string
 	}{
 		{
 			name:      "snapshot of another project",
 			source:    snapSpec(ownSnap),
 			other:     snapSpec(owner + "/regions/vws-1/snapshots/absent"),
-			wantNamed: "snapshot",
+			wantNamed: "snapshot", wantAWSCode: "InvalidSnapshot.NotFound",
 			requestID: "20202020-2020-4020-8020-202020202020",
 		},
 		{
 			name:      "snapshot in another region",
 			source:    snapSpec("projects/a222222222222/regions/vws-2/snapshots/held"),
 			other:     snapSpec("projects/a222222222222/regions/vws-2/snapshots/absent"),
-			wantNamed: "snapshot",
+			wantNamed: "snapshot", wantAWSCode: "InvalidSnapshot.NotFound",
 			requestID: "30303030-3030-4030-8030-303030303030",
 		},
 		{
 			name:      "volume of another project",
 			source:    volSpec(owner + "/zones/vws-1a/volumes/held"),
 			other:     volSpec(owner + "/zones/vws-1a/volumes/absent"),
-			wantNamed: "volume",
+			wantNamed: "volume", wantAWSCode: "InvalidVolume.NotFound",
 			requestID: "40404040-4040-4040-8040-404040404040",
 		},
 		{
 			name:      "volume in a zone of another region",
 			source:    volSpec("projects/a222222222222/zones/vws-2a/volumes/held"),
 			other:     volSpec("projects/a222222222222/zones/vws-2a/volumes/absent"),
-			wantNamed: "volume",
+			wantNamed: "volume", wantAWSCode: "InvalidVolume.NotFound",
 			requestID: "50505050-5050-4050-8050-505050505050",
 		},
 		{
 			name:      "volume in a zone that only starts with the region",
 			source:    volSpec("projects/a222222222222/zones/vws-10a/volumes/held"),
 			other:     volSpec("projects/a222222222222/zones/vws-10a/volumes/absent"),
-			wantNamed: "volume",
+			wantNamed: "volume", wantAWSCode: "InvalidVolume.NotFound",
 			requestID: "60606060-6060-4060-8060-606060606060",
 		},
 		{
 			name:      "volume named by the region, not a zone",
 			source:    volSpec("projects/a222222222222/zones/vws-1/volumes/held"),
 			other:     volSpec("projects/a222222222222/zones/vws-1/volumes/absent"),
-			wantNamed: "volume",
+			wantNamed: "volume", wantAWSCode: "InvalidVolume.NotFound",
 			requestID: "70707070-7070-4070-8070-707070707070",
 		},
 	} {
@@ -108,19 +110,23 @@ func createImageOfAnotherProjectsSourceIsNotFound(t *testing.T, h *harness) {
 				_, err := h.img.CreateImage(ctx, req)
 				wantCode(t, err, codes.NotFound)
 				wantReason(t, err, "RESOURCE_NOT_FOUND")
+				if got := awsCode(t, err); got != tc.wantAWSCode {
+					t.Fatalf("aws_code = %q, want %q", got, tc.wantAWSCode)
+				}
 				msg := status.Convert(err).Message()
 				if !strings.HasPrefix(msg, tc.wantNamed+" ") {
 					t.Fatalf("message %q does not name the %s", msg, tc.wantNamed)
 				}
 				// A retry with the same request id answers the same.
 				_, again := h.img.CreateImage(ctx, req)
-				if status.Code(again) != codes.NotFound || status.Convert(again).Message() != msg {
+				if status.Code(again) != codes.NotFound || awsCode(t, again) != tc.wantAWSCode ||
+					status.Convert(again).Message() != msg {
 					t.Fatalf("retry = %v, first %v", again, err)
 				}
 				// A foreign source nobody holds gets the same answer.
 				req.Image = &computev1.Image{Spec: tc.other}
 				_, absent := h.img.CreateImage(ctx, req)
-				if status.Code(absent) != codes.NotFound ||
+				if status.Code(absent) != codes.NotFound || awsCode(t, absent) != tc.wantAWSCode ||
 					strings.ReplaceAll(status.Convert(absent).Message(), "/absent", "/held") != msg {
 					t.Fatalf("absent source %v, held source %v", absent, err)
 				}
