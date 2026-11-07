@@ -69,7 +69,7 @@ func (s *Store) CommitDesired(ctx context.Context, c store.DesiredChange) (compu
 	if err != nil {
 		// Give the claim back. A failed release is harmless: Repair, or the
 		// next attempt with this request id, takes over a stale index.
-		_ = s.releaseIndex(ctx, c.Op.Request, c.Op.ID) //nolint:errcheck // best effort: Repair, or the next attempt with this request id, takes over what is left
+		_, _ = s.releaseIndex(ctx, c.Op.Request, c.Op.ID) //nolint:errcheck // best effort
 		return compute.Operation{}, err
 	}
 	if op.ID != c.Op.ID {
@@ -232,11 +232,15 @@ func (s *Store) apply(ctx context.Context, c store.DesiredChange, ref compute.Re
 		return true, nil
 	})
 	if err == nil && wrote {
+		s.m.prunedOperations(ctx, len(pruned))
 		// The resource no longer holds these operations, so their request
 		// ids are forgotten. A failed delete is harmless: Repair removes an
 		// index whose operation the resource does not hold.
 		for _, op := range pruned {
-			_ = s.releaseIndex(ctx, op.Request, op.ID) //nolint:errcheck // best effort: Repair removes what is left
+			deleted, _ := s.releaseIndex(ctx, op.Request, op.ID) //nolint:errcheck // best effort: Repair removes what is left
+			if deleted {
+				s.m.releasedIndex(ctx)
+			}
 		}
 	}
 	return out, wrote, err
