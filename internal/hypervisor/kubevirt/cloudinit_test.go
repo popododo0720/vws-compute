@@ -29,6 +29,8 @@ import (
 const (
 	testKey    = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl deploy@vws"
 	testScript = "#!/bin/sh\necho vws-user-data > /var/tmp/vws-user-data\n"
+	// testRaw is InstanceSpec.user_data_raw that is not UTF-8 (vws-compute#148).
+	testRaw = "\xff\xfe#!/bin/sh\x00\x80echo vws-user-data\n"
 )
 
 func TestRenderUserData(t *testing.T) {
@@ -46,6 +48,8 @@ func TestRenderUserData(t *testing.T) {
 		{"key and script: script unchanged", []string{testKey}, testScript, testScript},
 		{"key and cloud-config: unchanged", []string{testKey}, "#cloud-config\nruncmd: [true]\n", "#cloud-config\nruncmd: [true]\n"},
 		{"key and MIME user data: unchanged, no longer refused", []string{testKey}, mimeUser, mimeUser},
+		{"raw user data that is not UTF-8: unchanged", nil, testRaw, testRaw},
+		{"key and raw user data: unchanged", []string{testKey}, testRaw, testRaw},
 	} {
 		got, err := renderUserData(tc.keys, tc.user)
 		if err != nil || got != tc.want {
@@ -147,11 +151,14 @@ func TestKeyAndUserDataReachCloudInit(t *testing.T) {
 		name     string
 		key      bool
 		user     string
+		raw      string
 		wantUser string
 	}{
-		{"key pair only", true, "", "#cloud-config\nssh_authorized_keys: [\"" + keyBlob + "\"]\n"},
-		{"user data only", false, testScript, testScript},
-		{"key pair and user data", true, testScript, testScript},
+		{"key pair only", true, "", "", "#cloud-config\nssh_authorized_keys: [\"" + keyBlob + "\"]\n"},
+		{"user data only", false, testScript, "", testScript},
+		{"key pair and user data", true, testScript, "", testScript},
+		{"raw user data only", false, "", testRaw, testRaw},
+		{"key pair and raw user data", true, "", testRaw, testRaw},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
@@ -175,8 +182,10 @@ func TestKeyAndUserDataReachCloudInit(t *testing.T) {
 
 			spec := &computev1.InstanceSpec{
 				MachineType: "vws.small", Power: computev1.InstancePower_INSTANCE_POWER_RUNNING,
-				UserData: tc.user,
-				Volumes:  []*computev1.VolumeAttachment{{Volume: "projects/demo/zones/z1/volumes/root-1", DeviceName: "vda", Boot: true}},
+				UserData: tc.user, UserDataRaw: []byte(tc.raw),
+				Volumes: []*computev1.VolumeAttachment{{
+					Volume: "projects/demo/zones/z1/volumes/root-1", DeviceName: "vda", Boot: true,
+				}},
 			}
 			if tc.key {
 				if _, err := computev1.NewKeyPairServiceClient(cc).CreateKeyPair(ctx, &computev1.CreateKeyPairRequest{
