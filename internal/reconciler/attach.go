@@ -17,9 +17,9 @@ type attachOutcome struct {
 	// err is the agent result, with every volume refused along the way
 	// joined in as an attachment error.
 	err error
-	// unchecked is a storage lookup that failed after a patch: a volume the
-	// patch added may be one storage is deleting, so it must not be
-	// reported attached until a later converge checks it.
+	// unchecked is a storage lookup that failed: a volume an earlier or
+	// this converge patched may be one storage is deleting, so nothing new
+	// is reported attached until a later converge checks it.
 	unchecked bool
 }
 
@@ -40,7 +40,7 @@ func (r *Reconciler) convergeAttaching(
 	fresh := unattached(spec, prev)
 	var refused refusals
 	if err := r.refuseGone(ctx, fresh, &refused); err != nil {
-		return attachOutcome{err: err}
+		return attachOutcome{err: err, unchecked: true}
 	}
 	var out attachOutcome
 	for {

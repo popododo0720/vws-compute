@@ -143,8 +143,9 @@ func TestAttachRacingAStorageDeleteDetaches(t *testing.T) {
 }
 
 // TestAttachWhoseCheckFailsAfterThePatchIsNotReportedAttached: storage cannot
-// answer the check after the patch, so the patched volume may be one it is
-// deleting. It is not reported attached and the attach stays pending; the
+// answer the check after the patch, nor the one before the retry, so the
+// patched volume may be one it is deleting. It is not reported attached and
+// the attach stays pending; the
 // next converge, after a restart here, asks again and detaches it when
 // storage says it is deleting.
 func TestAttachWhoseCheckFailsAfterThePatchIsNotReportedAttached(t *testing.T) {
@@ -163,6 +164,15 @@ func TestAttachWhoseCheckFailsAfterThePatchIsNotReportedAttached(t *testing.T) {
 		attach := h.submit("attach", updateVolumes(bootEntry, dataEntry))
 		if err := h.rec.Sweep(context.Background()); err == nil {
 			h.t.Fatal("sweep with storage down after the patch = nil, want the lookup error")
+		}
+		h.wantStates(compute.OperationPending, attach)
+		h.wantVolumes("web", bootAttached)
+
+		// Storage still down: the check before the next patch fails too,
+		// and the volume the first patch added stays unreported.
+		h.clock.Advance(reconciler.MaxBackoff)
+		if err := h.rec.Sweep(context.Background()); err == nil {
+			h.t.Fatal("sweep with storage still down = nil, want the lookup error")
 		}
 		h.wantStates(compute.OperationPending, attach)
 		h.wantVolumes("web", bootAttached)
