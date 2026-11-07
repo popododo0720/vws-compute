@@ -198,6 +198,30 @@ func TestParseConfigPublicImages(t *testing.T) {
 	}
 }
 
+func TestParseConfigZones(t *testing.T) {
+	c, err := parseConfig(nil, envOf(nil), io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.zones.String() != "vws-1a=vws-1" {
+		t.Fatalf("default zones = %q, want vws-storage's default zone vws-1a in vws-1", c.zones.String())
+	}
+	c, err = parseConfig(nil, envOf(map[string]string{"VWS_ZONES": "vws-1a=vws-1,vws-1-lax-1a=vws-1"}), io.Discard)
+	if err != nil || !c.zones.InRegion("vws-1-lax-1a", "vws-1") {
+		t.Fatalf("env zones = %v, %v", c.zones, err)
+	}
+	flagArgs := []string{"-zones", "vws-2-wl1-bos-wlz-1=vws-2"}
+	c, err = parseConfig(flagArgs, envOf(map[string]string{"VWS_ZONES": "vws-1a=vws-1"}), io.Discard)
+	if err != nil || c.zones.String() != "vws-2-wl1-bos-wlz-1=vws-2" {
+		t.Fatalf("flag zones = %v, %v", c.zones, err)
+	}
+	for _, bad := range []string{"", "vws-1a", "vws-1a=vws-1,vws-1a=vws-2"} {
+		if _, err := parseConfig([]string{"-zones", bad}, envOf(nil), io.Discard); err == nil {
+			t.Fatalf("-zones %q accepted", bad)
+		}
+	}
+}
+
 func TestParseConfigLeaseTiming(t *testing.T) {
 	c, err := parseConfig(nil, envOf(nil), io.Discard)
 	if err != nil {

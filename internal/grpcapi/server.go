@@ -67,6 +67,10 @@ func WithSnapshotPermissions(p SnapshotPermissions) Option {
 // image's region. Changing or deleting them stays with their owner.
 func WithPublicImages(p compute.PublicImages) Option { return func(s *server) { s.public = p } }
 
+// WithZones sets the zone catalog CreateImage places a volume source's zone
+// in a region with. Without it, the server uses compute.DefaultZones.
+func WithZones(z compute.Zones) Option { return func(s *server) { s.zones = z } }
+
 // WithClock sets the time source for the LookupOperation request-id window.
 // Without it, the server uses time.Now.
 func WithClock(now func() time.Time) Option { return func(s *server) { s.clock = now } }
@@ -76,7 +80,7 @@ func WithClock(now func() time.Time) Option { return func(s *server) { s.clock =
 // write path, r the read path, and r's report method the only write path for
 // controller-reported instance status.
 func Register(s grpc.ServiceRegistrar, ctl *controller.Controller, r store.ReportStore, opts ...Option) {
-	srv := &server{ctl: ctl, read: r, reports: r, clock: time.Now}
+	srv := &server{ctl: ctl, read: r, reports: r, clock: time.Now, zones: compute.DefaultZones()}
 	for _, o := range opts {
 		o(srv)
 	}
@@ -104,6 +108,7 @@ type server struct {
 	volumes   VolumeLookup
 	snapshots SnapshotPermissions
 	public    compute.PublicImages
+	zones     compute.Zones
 }
 
 func (s *server) GetOperation(ctx context.Context, r *longrunningpb.GetOperationRequest) (*longrunningpb.Operation, error) {

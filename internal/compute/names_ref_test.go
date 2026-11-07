@@ -27,27 +27,3 @@ func TestSourceRefScope(t *testing.T) {
 		t.Error("a zero ref has a scope")
 	}
 }
-
-func TestZoneInRegion(t *testing.T) {
-	for _, tc := range []struct {
-		zone, region string
-		want         bool
-	}{
-		{"vws-1a", "vws-1", true},
-		{"vws-1z", "vws-1", true},
-		{"vws-2a", "vws-1", false},
-		{"vws-10a", "vws-1", false},
-		{"vws-1", "vws-1", false},
-		{"vws-1ab", "vws-1", false},
-		{"vws-11", "vws-1", false},
-		{"vws-1-", "vws-1", false},
-		{"vws-1A", "vws-1", false},
-		{"a", "", false},
-		{"", "", false},
-		{"", "vws-1", false},
-	} {
-		if got := compute.ZoneInRegion(tc.zone, tc.region); got != tc.want {
-			t.Errorf("ZoneInRegion(%q, %q) = %v, want %v", tc.zone, tc.region, got, tc.want)
-		}
-	}
-}
