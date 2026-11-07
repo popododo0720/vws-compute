@@ -43,7 +43,10 @@ func (c config) validate() error {
 		return fmt.Errorf("-listen %q: %w", c.listen, err)
 	}
 	for _, ns := range []struct{ flag, v string }{
-		{"-namespace", c.namespace}, {"-vm-namespace", c.vmNamespace}, {"-image-namespace", c.imageNamespace},
+		{"-namespace", c.namespace},
+		{"-vm-namespace", c.vmNamespace},
+		{"-image-namespace", c.imageNamespace},
+		{"-nad-namespace", c.nadNamespace},
 	} {
 		if ns.v != "" && !dnsLabel.MatchString(ns.v) {
 			return fmt.Errorf("%s %q is not a valid namespace name", ns.flag, ns.v)
@@ -98,6 +101,8 @@ type config struct {
 	hypervisor     string
 	vmNamespace    string
 	imageNamespace string
+	// nadNamespace holds vws-network's per-subnet NetworkAttachmentDefinitions.
+	nadNamespace string
 	// imageStorageClass and imageAccessMode select the target claim of image
 	// DataVolumes.
 	imageStorageClass string
@@ -130,6 +135,9 @@ func parseConfig(args []string, getenv func(string) string, errOut io.Writer) (c
 	fs.StringVar(&c.storage, "storage", "", "vws-storage gRPC address CreateInstance verifies volumes against; empty makes CreateInstance answer DEPENDENCY_MISSING")
 	fs.StringVar(&c.hypervisor, "hypervisor", env("VWS_HYPERVISOR", hypervisorFake), "fake or kubevirt (env VWS_HYPERVISOR)")
 	fs.StringVar(&c.vmNamespace, "vm-namespace", env("VWS_VM_NAMESPACE", "vws-vms"), "namespace of VirtualMachines, VirtualMachineInstances, and volume PVCs (env VWS_VM_NAMESPACE)")
+	fs.StringVar(&c.nadNamespace, "nad-namespace", env("VWS_NAD_NAMESPACE", ""),
+		"namespace of the NetworkAttachmentDefinition vws-network makes per VPC subnet (its -kube-nad-namespace); "+
+			"an instance's second and later overlay interfaces attach through it; empty refuses them (env VWS_NAD_NAMESPACE)")
 	fs.StringVar(&c.imageNamespace, "image-namespace", env("VWS_IMAGE_NAMESPACE", "vws-images"), "namespace of CDI DataVolumes and DataSources (env VWS_IMAGE_NAMESPACE)")
 	fs.StringVar(&c.imageStorageClass, "image-storage-class",
 		env("VWS_IMAGE_STORAGE_CLASS", kubevirt.DefaultImageStorageClass),

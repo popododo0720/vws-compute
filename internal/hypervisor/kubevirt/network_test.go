@@ -15,7 +15,7 @@ import (
 // the overlay logical switch plus each direct provider's logical switch and
 // the fixed address under <provider>.kubernetes.io/ip_address.
 func TestNetworksFollowDeviceIndexOrder(t *testing.T) {
-	devs, nets, ann, err := networks("i-1", "vws-vms", []hypervisor.Interface{
+	devs, nets, ann, err := networks("i-1", "vws-vms", "", []hypervisor.Interface{
 		{Name: "nic0", Direct: "prod"},
 		{Name: "nic1", Subnet: "subnet-a"},
 		{Name: "nic2", Direct: "lab", Mode: hypervisor.ModeBridge, IPv4: "192.168.200.30"},
@@ -50,10 +50,46 @@ func TestNetworksFollowDeviceIndexOrder(t *testing.T) {
 	}
 }
 
+// TestNetworksSecondOverlayAttachesThroughTheSubnetNAD: the first overlay
+// interface is the pod network; each later one is the Multus network
+// <nad namespace>/<subnet>, the NetworkAttachmentDefinition vws-network makes
+// per VPC subnet, on its subnet's logical switch under the provider
+// <subnet>.<nad namespace>.ovn that vws-network sets on the Subnet. A direct
+// interface between them keeps its place.
+func TestNetworksSecondOverlayAttachesThroughTheSubnetNAD(t *testing.T) {
+	_, nets, ann, err := networks("i-1", "vws-vms", "vws-nad", []hypervisor.Interface{
+		{Name: "nic0", Subnet: "subnet-a"},
+		{Name: "nic1", Direct: "prod"},
+		{Name: "nic2", Subnet: "subnet-b"},
+		{Name: "nic3", Subnet: "subnet-c"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantNets := []any{
+		map[string]any{"name": "nic0", "pod": map[string]any{}},
+		map[string]any{"name": "nic1", "multus": map[string]any{"networkName": "vws-direct-prod"}},
+		map[string]any{"name": "nic2", "multus": map[string]any{"networkName": "vws-nad/subnet-b"}},
+		map[string]any{"name": "nic3", "multus": map[string]any{"networkName": "vws-nad/subnet-c"}},
+	}
+	wantAnn := map[string]any{
+		"ovn.kubernetes.io/logical_switch":                         "subnet-a",
+		"vws-direct-prod.vws-vms.ovn.kubernetes.io/logical_switch": "vws-direct-prod",
+		"subnet-b.vws-nad.ovn.kubernetes.io/logical_switch":        "subnet-b",
+		"subnet-c.vws-nad.ovn.kubernetes.io/logical_switch":        "subnet-c",
+	}
+	if !reflect.DeepEqual(nets, wantNets) {
+		t.Errorf("networks = %v, want %v", nets, wantNets)
+	}
+	if !reflect.DeepEqual(ann, wantAnn) {
+		t.Errorf("annotations = %v, want %v", ann, wantAnn)
+	}
+}
+
 // TestNetworksWithoutOverlay: a machine whose only interface is direct has no
 // pod network and no overlay logical switch.
 func TestNetworksWithoutOverlay(t *testing.T) {
-	_, nets, ann, err := networks("i-1", "ns", []hypervisor.Interface{{Name: "nic0", Direct: "prod"}})
+	_, nets, ann, err := networks("i-1", "ns", "", []hypervisor.Interface{{Name: "nic0", Direct: "prod"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -69,7 +105,7 @@ func TestNetworksWithoutOverlay(t *testing.T) {
 // TestNetworksEmptyRendersNothing: no interface list leaves KubeVirt's
 // default pod interface alone.
 func TestNetworksEmptyRendersNothing(t *testing.T) {
-	devs, nets, ann, err := networks("i-1", "ns", nil)
+	devs, nets, ann, err := networks("i-1", "ns", "", nil)
 	if err != nil || devs != nil || nets != nil || ann != nil {
 		t.Fatalf("networks(nil) = %v, %v, %v, %v; want all nil", devs, nets, ann, err)
 	}
@@ -84,25 +120,83 @@ func TestNetworksRefuseInvalidInterfaces(t *testing.T) {
 	cases := []struct {
 		name   string
 		ifaces []iface
+		nadNS  string
 		want   string
 	}{
-		{"sriov", []iface{{Name: "nic0", Direct: "prod", Mode: "sriov"}}, `direct mode "sriov" is not supported`},
-		{"macvtap", []iface{{Name: "nic0", Direct: "prod", Mode: "macvtap"}}, `direct mode "macvtap" is not supported`},
-		{"two overlays", []iface{{Name: "nic0", Subnet: "a"}, {Name: "nic1", Subnet: "b"}}, "more than one overlay"},
-		{"repeated name", []iface{{Name: "nic0", Direct: "a"}, {Name: "nic0", Direct: "b"}}, "not a unique DNS-1123 label"},
-		{"bad name", []iface{{Name: "Nic_0", Direct: "a"}}, "not a unique DNS-1123 label"},
-		{"subnet and direct", []iface{{Name: "nic0", Subnet: "a", Direct: "b"}}, "exactly one of"},
-		{"neither", []iface{{Name: "nic0"}}, "exactly one of"},
-		{"bad direct name", []iface{{Name: "nic0", Direct: "Prod"}}, `direct network "Prod" is not a valid name`},
-		{"direct twice", []iface{{Name: "nic0", Direct: "a"}, {Name: "nic1", Direct: "a"}}, "attached twice"},
-		{"bad subnet", []iface{{Name: "nic0", Subnet: "Subnet_A"}}, "not a valid Kube-OVN Subnet name"},
-		{"overlay fixed address", []iface{{Name: "nic0", Subnet: "a", IPv4: "10.0.0.5"}}, "takes no mode or fixed address"},
-		{"not an address", []iface{{Name: "nic0", Direct: "a", IPv4: "10.0.0"}}, "is not an IPv4 address"},
-		{"IPv6 address", []iface{{Name: "nic0", Direct: "a", IPv4: "fd00::5"}}, "is not an IPv4 address"},
+		{
+			"sriov",
+			[]iface{{Name: "nic0", Direct: "prod", Mode: "sriov"}},
+			"", `direct mode "sriov" is not supported`,
+		},
+		{
+			"macvtap",
+			[]iface{{Name: "nic0", Direct: "prod", Mode: "macvtap"}},
+			"", `direct mode "macvtap" is not supported`,
+		},
+		{
+			"second overlay without a NAD namespace",
+			[]iface{{Name: "nic0", Subnet: "a"}, {Name: "nic1", Subnet: "b"}},
+			"", "needs the subnet NetworkAttachmentDefinition namespace",
+		},
+		{
+			"subnet twice",
+			[]iface{{Name: "nic0", Subnet: "a"}, {Name: "nic1", Subnet: "a"}},
+			"vws-nad", "subnet a is attached twice",
+		},
+		{
+			"repeated name",
+			[]iface{{Name: "nic0", Direct: "a"}, {Name: "nic0", Direct: "b"}},
+			"", "not a unique DNS-1123 label",
+		},
+		{
+			"bad name",
+			[]iface{{Name: "Nic_0", Direct: "a"}},
+			"", "not a unique DNS-1123 label",
+		},
+		{
+			"subnet and direct",
+			[]iface{{Name: "nic0", Subnet: "a", Direct: "b"}},
+			"", "exactly one of",
+		},
+		{
+			"neither",
+			[]iface{{Name: "nic0"}},
+			"", "exactly one of",
+		},
+		{
+			"bad direct name",
+			[]iface{{Name: "nic0", Direct: "Prod"}},
+			"", `direct network "Prod" is not a valid name`,
+		},
+		{
+			"direct twice",
+			[]iface{{Name: "nic0", Direct: "a"}, {Name: "nic1", Direct: "a"}},
+			"", "attached twice",
+		},
+		{
+			"bad subnet",
+			[]iface{{Name: "nic0", Subnet: "Subnet_A"}},
+			"", "not a valid Kube-OVN Subnet name",
+		},
+		{
+			"overlay fixed address",
+			[]iface{{Name: "nic0", Subnet: "a", IPv4: "10.0.0.5"}},
+			"", "takes no mode or fixed address",
+		},
+		{
+			"not an address",
+			[]iface{{Name: "nic0", Direct: "a", IPv4: "10.0.0"}},
+			"", "is not an IPv4 address",
+		},
+		{
+			"IPv6 address",
+			[]iface{{Name: "nic0", Direct: "a", IPv4: "fd00::5"}},
+			"", "is not an IPv4 address",
+		},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			_, _, _, err := networks("i-1", "ns", c.ifaces)
+			_, _, _, err := networks("i-1", "ns", c.nadNS, c.ifaces)
 			if !hypervisor.IsPermanent(err) || !strings.Contains(err.Error(), c.want) {
 				t.Fatalf("err = %v, want permanent %q", err, c.want)
 			}

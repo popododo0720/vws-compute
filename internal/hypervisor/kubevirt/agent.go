@@ -72,6 +72,10 @@ type Config struct {
 	// ImageAccessMode is the access mode of an image DataVolume. Empty uses
 	// DefaultImageAccessMode.
 	ImageAccessMode string
+	// SubnetNADNamespace holds the NetworkAttachmentDefinition vws-network
+	// makes per VPC subnet (its -kube-nad-namespace). A machine's second and
+	// later overlay interfaces attach through it. Empty refuses them.
+	SubnetNADNamespace string
 }
 
 const (
@@ -232,7 +236,7 @@ func (a *Agent) create(ctx context.Context, spec hypervisor.MachineSpec) error {
 	if err := validateVolumes(spec.Name, spec.Volumes); err != nil {
 		return err
 	}
-	ifaceDevs, nets, netAnnotations, err := networks(spec.Name, a.cfg.Namespace, spec.Interfaces)
+	ifaceDevs, nets, netAnnotations, err := networks(spec.Name, a.cfg.Namespace, a.cfg.SubnetNADNamespace, spec.Interfaces)
 	if err != nil {
 		return err
 	}

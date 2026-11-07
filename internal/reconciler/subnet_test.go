@@ -8,8 +8,8 @@ import (
 
 // TestDrivenMachineJoinsFirstNICSubnet: the agent gets the subnet ID of the
 // instance's first network interface, the name vws-network gives the Kube-OVN
-// Subnet. A second interface is not wired yet (vws-compute#55), and an
-// instance without interfaces gets no subnet.
+// Subnet, and an instance without interfaces gets no subnet. Two interfaces
+// are wired as a list (TestDrivenMachineWiresDirectInterfaces).
 func TestDrivenMachineJoinsFirstNICSubnet(t *testing.T) {
 	const vpc = "projects/p/regions/r/vpcs/vpc-1/subnets/"
 	eachStore(t, func(h *harness) {
@@ -21,12 +21,9 @@ func TestDrivenMachineJoinsFirstNICSubnet(t *testing.T) {
 			}))
 		}
 		h.submit("one", withNICs("one", compute.NetworkInterface{DeviceName: "nic0", Subnet: vpc + "subnet-a"}))
-		h.submit("two", withNICs("two",
-			compute.NetworkInterface{DeviceName: "nic0", Subnet: vpc + "subnet-b"},
-			compute.NetworkInterface{DeviceName: "nic1", Subnet: vpc + "subnet-c"}))
 		h.submit("none", withNICs("none"))
 		h.sweep()
-		for name, want := range map[string]string{"one": "subnet-a", "two": "subnet-b", "none": ""} {
+		for name, want := range map[string]string{"one": "subnet-a", "none": ""} {
 			m, found := h.agent.Machine(name)
 			if !found || m.Subnet != want {
 				h.t.Fatalf("machine %s = %+v, %v; want subnet %q", name, m, found, want)

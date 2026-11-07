@@ -32,17 +32,23 @@ func DirectNAD(name string) string { return directPrefix + name }
 
 // DirectProvider is the Kube-OVN provider of direct network name's
 // attachment in namespace ns.
-func DirectProvider(name, ns string) string { return DirectNAD(name) + "." + ns + ".ovn" }
+func DirectProvider(name, ns string) string { return ovnProvider(DirectNAD(name), ns) }
+
+func ovnProvider(nad, ns string) string { return nad + "." + ns + ".ovn" }
 
 // networks renders a machine's interfaces as KubeVirt
 // spec.template.spec.domain.devices.interfaces and spec.template.spec.networks
 // in device index order, with the pod annotations Kube-OVN reads. Every
-// interface uses bridge binding. The one overlay interface is the pod
-// network on its logical switch; a direct interface is the Multus network
-// vws-direct-<name> in namespace ns. An empty list renders nothing, so
-// KubeVirt keeps its default pod interface. Any invalid or unsupported
-// interface is a permanent error.
-func networks(machine, ns string, ifaces []hypervisor.Interface) (devs, nets []any, ann map[string]any, err error) {
+// interface uses bridge binding. The first overlay interface is the pod
+// network on its logical switch. Each later overlay interface is the Multus
+// network <subnetNADNS>/<subnet>, the NetworkAttachmentDefinition
+// vws-network made for its subnet; with no subnetNADNS it is refused. A
+// direct interface is the Multus network vws-direct-<name> in namespace ns.
+// An empty list renders nothing, so KubeVirt keeps its default pod
+// interface. Any invalid or unsupported interface is a permanent error.
+func networks(
+	machine, ns, subnetNADNS string, ifaces []hypervisor.Interface,
+) (devs, nets []any, ann map[string]any, err error) {
 	if len(ifaces) == 0 {
 		return nil, nil, nil, nil
 	}
@@ -52,7 +58,7 @@ func networks(machine, ns string, ifaces []hypervisor.Interface) (devs, nets []a
 	ann = map[string]any{}
 	names := map[string]bool{}
 	directs := map[string]bool{}
-	overlay := false
+	subnets := map[string]bool{}
 	for _, n := range ifaces {
 		if errs := validation.IsDNS1123Label(n.Name); len(errs) > 0 || names[n.Name] {
 			return nil, nil, nil, bad("interface name %q is not a unique DNS-1123 label", n.Name)
@@ -63,18 +69,32 @@ func networks(machine, ns string, ifaces []hypervisor.Interface) (devs, nets []a
 		}
 		devs = append(devs, map[string]any{"name": n.Name, "bridge": map[string]any{}})
 		if n.Subnet != "" {
-			if overlay {
-				return nil, nil, nil, bad("interface %s: more than one overlay interface is not supported", n.Name)
-			}
 			if errs := validation.IsDNS1123Subdomain(n.Subnet); len(errs) > 0 {
 				return nil, nil, nil, bad("subnet %q is not a valid Kube-OVN Subnet name", n.Subnet)
 			}
 			if n.Mode != "" || n.IPv4 != "" {
 				return nil, nil, nil, bad("interface %s: an overlay interface takes no mode or fixed address", n.Name)
 			}
-			overlay = true
-			ann[AnnotationLogicalSwitch] = n.Subnet
-			nets = append(nets, map[string]any{"name": n.Name, "pod": map[string]any{}})
+			if subnets[n.Subnet] {
+				return nil, nil, nil, bad("subnet %s is attached twice", n.Subnet)
+			}
+			first := len(subnets) == 0
+			subnets[n.Subnet] = true
+			if first {
+				ann[AnnotationLogicalSwitch] = n.Subnet
+				nets = append(nets, map[string]any{"name": n.Name, "pod": map[string]any{}})
+				continue
+			}
+			if subnetNADNS == "" {
+				return nil, nil, nil, bad(
+					"interface %s: a second overlay interface needs the subnet NetworkAttachmentDefinition namespace", n.Name)
+			}
+			// vws-network names a VPC subnet's NAD after the subnet, in its
+			// -kube-nad-namespace, and sets that NAD's provider on the
+			// Subnet (vws-network#12).
+			ann[ovnProvider(n.Subnet, subnetNADNS)+annotationLogicalSwitch] = n.Subnet
+			multus := map[string]any{"networkName": subnetNADNS + "/" + n.Subnet}
+			nets = append(nets, map[string]any{"name": n.Name, "multus": multus})
 			continue
 		}
 		if !directName.MatchString(n.Direct) {

@@ -27,9 +27,10 @@ func deviceIndex(device string, pos int) int {
 }
 
 // machineNetwork is the agent's view of an instance's interfaces. An
-// instance without a direct interface keeps the single-overlay form: subnet
-// is its first interface's subnet ID and ifaces is nil. An instance with a
-// direct interface gets every interface in device index order and no subnet.
+// instance with one overlay interface keeps the single-overlay form: subnet
+// is its subnet ID and ifaces is nil. An instance with a direct interface or
+// more than one interface gets every interface in device index order and no
+// subnet.
 func machineNetwork(nics []compute.NetworkInterface) (subnet string, ifaces []hypervisor.Interface) {
 	type indexed struct {
 		index int
@@ -43,7 +44,7 @@ func machineNetwork(nics []compute.NetworkInterface) (subnet string, ifaces []hy
 			direct = true
 		}
 	}
-	if !direct {
+	if !direct && len(nics) < 2 {
 		if len(nics) > 0 {
 			subnet = subnetID(nics[0].Subnet)
 		}

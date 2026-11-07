@@ -258,10 +258,11 @@ func newAgent(cfg config) (hypervisor.Agent, error) {
 		return fakeagent.New(), nil
 	}
 	return kubevirt.Open(cfg.kubeconfig, kubevirt.Config{
-		Namespace:         cfg.vmNamespace,
-		ImageNamespace:    cfg.imageNamespace,
-		ImageStorageClass: cfg.imageStorageClass,
-		ImageAccessMode:   cfg.imageAccessMode,
+		Namespace:          cfg.vmNamespace,
+		ImageNamespace:     cfg.imageNamespace,
+		ImageStorageClass:  cfg.imageStorageClass,
+		ImageAccessMode:    cfg.imageAccessMode,
+		SubnetNADNamespace: cfg.nadNamespace,
 	})
 }
 
