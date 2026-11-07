@@ -20,6 +20,13 @@ rules:
       - update
       # delete: claim.go release, index.go drop, repair.go orphan cleanup.
       - delete
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    # lead.go: replicas elect the leader on Lease vws-compute.
+    # get: the elector reads the holder on every acquire and renew.
+    # create: the first replica to campaign creates the Lease.
+    # update: acquire, renew, and the release on shutdown.
+    verbs: ["get", "create", "update"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

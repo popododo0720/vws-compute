@@ -4,6 +4,7 @@ import (
 	"io"
 	"strings"
 	"testing"
+	"time"
 )
 
 func envOf(m map[string]string) func(string) string { return func(k string) string { return m[k] } }
@@ -189,5 +190,31 @@ func TestParseConfigPublicImages(t *testing.T) {
 	}
 	if _, err := parseConfig([]string{"-public-images", "not an id"}, envOf(nil), io.Discard); err == nil {
 		t.Fatal("bad id accepted")
+	}
+}
+
+func TestParseConfigLeaseTiming(t *testing.T) {
+	c, err := parseConfig(nil, envOf(nil), io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.leaseDuration != 15*time.Second || c.renewDeadline != 10*time.Second || c.retryPeriod != 2*time.Second {
+		t.Fatalf("lease defaults = %s/%s/%s, want the client-go 15s/10s/2s", c.leaseDuration, c.renewDeadline, c.retryPeriod)
+	}
+	args := []string{"-lease-duration", "4s", "-lease-renew-deadline", "2s", "-lease-retry-period", "500ms"}
+	c, err = parseConfig(args, envOf(nil), io.Discard)
+	if err != nil || c.leaseDuration != 4*time.Second || c.renewDeadline != 2*time.Second ||
+		c.retryPeriod != 500*time.Millisecond {
+		t.Fatalf("lease flags = %s/%s/%s, %v", c.leaseDuration, c.renewDeadline, c.retryPeriod, err)
+	}
+	for name, args := range map[string][]string{
+		"overlapping terms":     {"-lease-duration", "12s"},
+		"renew under 1.2 retry": {"-lease-renew-deadline", "2s"},
+		"zero retry":            {"-lease-retry-period", "0s"},
+		"negative retry":        {"-lease-retry-period", "-1s"},
+	} {
+		if _, err := parseConfig(args, envOf(nil), io.Discard); err == nil || !strings.Contains(err.Error(), "lease timing") {
+			t.Errorf("%s: err = %v, want a lease timing error", name, err)
+		}
 	}
 }

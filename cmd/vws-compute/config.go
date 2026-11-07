@@ -8,9 +8,11 @@ import (
 	"net"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/popododo0720/vws-compute/internal/compute"
 	"github.com/popododo0720/vws-compute/internal/hypervisor/kubevirt"
+	"github.com/popododo0720/vws-compute/internal/store/kubestore"
 )
 
 // dnsLabel is a Kubernetes namespace name (RFC 1123 label, at most 63).
@@ -54,6 +56,16 @@ func (c config) validate() error {
 	if !imageAccessModes[c.imageAccessMode] {
 		return fmt.Errorf("-image-access-mode %q is not a known access mode", c.imageAccessMode)
 	}
+	// client-go's leaderelection needs renewDeadline > 1.2 * retryPeriod. A
+	// deposed leader stops at most renewDeadline + retryPeriod after its last
+	// renew, and a follower takes over no sooner than leaseDuration after
+	// it, so leaseDuration must exceed that sum for terms never to overlap.
+	if c.retryPeriod <= 0 || c.renewDeadline <= time.Duration(1.2*float64(c.retryPeriod)) ||
+		c.leaseDuration <= c.renewDeadline+c.retryPeriod {
+		return fmt.Errorf("lease timing %s/%s/%s: want -lease-duration > -lease-renew-deadline + -lease-retry-period "+
+			"and -lease-renew-deadline > 1.2 * -lease-retry-period > 0",
+			c.leaseDuration, c.renewDeadline, c.retryPeriod)
+	}
 	return nil
 }
 
@@ -82,6 +94,9 @@ type config struct {
 	legacyImageScope compute.ImageScope
 	// publicImages are readable by every project in their region.
 	publicImages compute.PublicImages
+	// leaseDuration, renewDeadline, and retryPeriod time the leader election
+	// of replicas that share -namespace.
+	leaseDuration, renewDeadline, retryPeriod time.Duration
 }
 
 func parseConfig(args []string, getenv func(string) string, errOut io.Writer) (config, error) {
@@ -111,6 +126,12 @@ func parseConfig(args []string, getenv func(string) string, errOut io.Writer) (c
 			"ReadWriteOncePod), env VWS_IMAGE_ACCESS_MODE")
 	legacyScope := fs.String("legacy-image-scope", env("VWS_LEGACY_IMAGE_SCOPE", ""), "projects/{project}/regions/{region} that owns images stored without one (pre-#92 records, seed images); empty leaves them in no project, invisible to every caller (env VWS_LEGACY_IMAGE_SCOPE)")
 	publicIDs := fs.String("public-images", env("VWS_PUBLIC_IMAGES", ""), "comma-separated image ids readable by every project in the image's region, such as seed images; changing or deleting them stays with the owner (env VWS_PUBLIC_IMAGES)")
+	fs.DurationVar(&c.leaseDuration, "lease-duration", kubestore.DefaultLeaseDuration,
+		"how long a follower waits after the leader's last renew before it takes the Lease")
+	fs.DurationVar(&c.renewDeadline, "lease-renew-deadline", kubestore.DefaultRenewDeadline,
+		"how long the leader retries a renew before it stops the reconciler and repair")
+	fs.DurationVar(&c.retryPeriod, "lease-retry-period", kubestore.DefaultRetryPeriod,
+		"interval between Lease acquire and renew attempts")
 	if err := fs.Parse(args); err != nil {
 		return config{}, fmt.Errorf("flags: %w", err)
 	}

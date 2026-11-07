@@ -15,8 +15,8 @@ import (
 // A claim is a ConfigMap that gives a subject (a key name or a volume) to one
 // holder. Taking one is a create, or a CAS update when the current holder no
 // longer qualifies. A missing holder qualifies: it may be a commit that has
-// claimed and not yet written its resource, so only Repair, which runs
-// before serving, removes such a claim.
+// claimed and not yet written its resource, so only Repair removes such a
+// claim, and only once it is older than any commit in flight.
 
 type claim struct {
 	kind    string
@@ -31,7 +31,7 @@ func (c claim) name() string {
 func (c claim) configMap(ns, rv string) *corev1.ConfigMap {
 	return &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{Name: c.name(), Namespace: ns, ResourceVersion: rv, Labels: map[string]string{labelKind: c.kind}},
-		Data:       map[string]string{"subject": c.subject, "holder": c.holder},
+		Data:       map[string]string{"subject": c.subject, "holder": c.holder, dataWritten: writtenNow()},
 	}
 }
 
