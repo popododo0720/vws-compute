@@ -27,17 +27,17 @@ type attachOutcome struct {
 // between an attach and a storage DeleteVolume. Storage admits a delete only
 // while no VirtualMachine spec holds the claim, and re-reads the attachments
 // after it commits Deleting. The agent patches the VirtualMachine after the
-// attach was accepted, so this side writes, then checks: each data volume not
-// yet reported attached is looked up in storage before the patch, and again
-// after it. One storage reports missing, deleting, or failed is left out of
+// attach was accepted, so this side writes, then checks: each data volume
+// not yet checked after its patch is looked up in storage before the patch,
+// and again after it. One storage reports missing, deleting, or failed is left out of
 // the machine and refused as an attachment, so the attach fails and the
 // VirtualMachine keeps no claim of it, as EC2 leaves no attachment behind.
 // Either storage's re-read sees the patch and waits for the detach, or the
 // check here sees Deleting and detaches.
 func (r *Reconciler) convergeAttaching(
-	ctx context.Context, spec compute.InstanceSpec, prev []compute.ObservedVolume,
+	ctx context.Context, spec compute.InstanceSpec, prev compute.Report,
 ) attachOutcome {
-	fresh := unattached(spec, prev)
+	fresh := unchecked(spec, prev)
 	var refused refusals
 	if err := r.refuseGone(ctx, fresh, &refused); err != nil {
 		return attachOutcome{err: err, unchecked: true}
@@ -101,23 +101,24 @@ func (f *refusals) add(vols []compute.VolumeRef, err error) {
 	}
 }
 
-// unattached are the data volumes of spec that prev does not report
-// attached. A volume reported attached passed the storage check after its
-// patch, so storage now sees it held and refuses to delete it. A terminated
-// machine attaches nothing.
-func unattached(spec compute.InstanceSpec, prev []compute.ObservedVolume) []compute.VolumeAttachment {
+// unchecked are the data volumes of spec that have not passed a storage
+// check after the patch that added them. Storage sees such a volume held
+// and refuses to delete it. One is checked when prev reports it attached, or
+// attaching in a READY report: a READY report is written only after every
+// check after the patch answered. A terminated machine attaches nothing.
+func unchecked(spec compute.InstanceSpec, prev compute.Report) []compute.VolumeAttachment {
 	if spec.Power == compute.PowerTerminated {
 		return nil
 	}
-	attached := map[compute.VolumeRef]bool{}
-	for _, v := range prev {
-		if v.State == compute.AttachAttached {
-			attached[v.Volume] = true
+	checked := map[compute.VolumeRef]bool{}
+	for _, v := range prev.Volumes {
+		if v.State == compute.AttachAttached || v.State == compute.AttachAttaching && prev.State == compute.ReportReady {
+			checked[v.Volume] = true
 		}
 	}
 	var out []compute.VolumeAttachment
 	for _, v := range spec.Volumes {
-		if !v.Boot && !attached[v.Volume] {
+		if !v.Boot && !checked[v.Volume] {
 			out = append(out, v)
 		}
 	}

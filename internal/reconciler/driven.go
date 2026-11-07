@@ -44,7 +44,7 @@ func (r *Reconciler) sweepDriven(ctx context.Context) error {
 func (r *Reconciler) convergeDriven(ctx context.Context, inst compute.Instance) error {
 	spec := inst.Spec
 	prevVolumes := inst.Status.Report.Volumes
-	out := r.convergeAttaching(ctx, spec, prevVolumes)
+	out := r.convergeAttaching(ctx, spec, inst.Status.Report)
 	reached, agentErr := out.reached, out.err
 	if ctx.Err() != nil {
 		return ctx.Err()

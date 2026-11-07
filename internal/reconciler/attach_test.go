@@ -210,3 +210,28 @@ func TestAttachedVolumeCostsNoStorageLookup(t *testing.T) {
 		}
 	})
 }
+
+// TestStopWithAnAttachingVolumeNeedsNoStorage: a volume whose hot-plug is
+// still running passed its check after the patch, so a stop while storage
+// is down asks storage nothing and succeeds.
+func TestStopWithAnAttachingVolumeNeedsNoStorage(t *testing.T) {
+	eachStore(t, func(h *harness) {
+		h, s := storageHarness(h)
+		h.submit("create", createInstance("web"))
+		h.sweep()
+		h.agent.SetVolumePhase("web", "vdb", hypervisor.VolumePlugging)
+		attach := h.submit("attach", updateVolumes(bootEntry, dataEntry))
+		h.sweep()
+		h.wantStates(compute.OperationSucceeded, attach)
+		h.wantVolumes("web", bootAttached, wantVolume{dataVolume, compute.AttachAttaching, t0})
+
+		s.set(dataVolume, "down")
+		lookups := s.lookups(dataVolume)
+		stop := h.submit("stop", ok(compute.NewSetPower("web", compute.PowerStopped, compute.MetadataPatch{})))
+		h.sweep()
+		h.wantStates(compute.OperationSucceeded, stop)
+		if got := s.lookups(dataVolume) - lookups; got != 0 {
+			h.t.Fatalf("storage lookups for the attaching volume = %d, want 0", got)
+		}
+	})
+}
