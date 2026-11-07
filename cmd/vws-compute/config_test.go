@@ -208,7 +208,10 @@ func TestParseConfigLeaseTiming(t *testing.T) {
 		t.Fatalf("lease flags = %s/%s/%s, %v", c.leaseDuration, c.renewDeadline, c.retryPeriod, err)
 	}
 	for name, args := range map[string][]string{
-		"overlapping terms":     {"-lease-duration", "12s"},
+		"overlapping terms": {"-lease-duration", "12s"},
+		"fractional seconds": {
+			"-lease-duration", "900ms", "-lease-renew-deadline", "500ms", "-lease-retry-period", "100ms",
+		},
 		"renew under 1.2 retry": {"-lease-renew-deadline", "2s"},
 		"zero retry":            {"-lease-retry-period", "0s"},
 		"negative retry":        {"-lease-retry-period", "-1s"},

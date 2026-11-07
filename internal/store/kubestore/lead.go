@@ -128,8 +128,11 @@ func (s *Store) leadOnce(ctx context.Context, identity string, term func(context
 // term runs Repair, then term, and Repair again every repairInterval until
 // term returns.
 func (s *Store) term(ctx context.Context, term func(context.Context) error) error {
+	repairCtx, stopRepair := context.WithCancel(ctx)
+	defer stopRepair()
 	repaired := make(chan struct{})
 	go func() {
+		ctx := repairCtx
 		defer close(repaired)
 		tick := time.NewTicker(repairInterval)
 		defer tick.Stop()
@@ -151,6 +154,7 @@ func (s *Store) term(ctx context.Context, term func(context.Context) error) erro
 		}
 	}()
 	err := term(ctx)
+	stopRepair()
 	<-repaired
 	return err
 }

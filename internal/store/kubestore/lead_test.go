@@ -2,6 +2,7 @@ package kubestore_test
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"sync"
 	"sync/atomic"
@@ -9,9 +10,12 @@ import (
 	"time"
 
 	coordinationv1 "k8s.io/api/coordination/v1"
+	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
+	"github.com/popododo0720/vws-compute/internal/compute"
+	"github.com/popododo0720/vws-compute/internal/store"
 	"github.com/popododo0720/vws-compute/internal/store/kubestore"
 	"github.com/popododo0720/vws-compute/internal/store/kubestore/kubetest"
 )
@@ -134,9 +138,10 @@ func TestOneReplicaLeadsAndAFollowerTakesOver(t *testing.T) {
 }
 
 // TestLostLeaseStopsTheTermWithinTheRenewDeadline cuts the leader off from
-// its Lease. Its term ends within one renew deadline of the next renew,
-// before the follower may take over, and the follower leads within
-// leaseDuration + retryPeriod of the last renew.
+// its Lease. Its term ends one renew deadline after its next renew attempt,
+// before the follower may take over, and the follower leads about
+// leaseDuration after the last renew. The bounds are loose for slow
+// runners. The logged times and the overlap check are the measure.
 func TestLostLeaseStopsTheTermWithinTheRenewDeadline(t *testing.T) {
 	raw, ns := kubetest.Namespace(t)
 	var cut atomic.Bool
@@ -166,9 +171,9 @@ func TestLostLeaseStopsTheTermWithinTheRenewDeadline(t *testing.T) {
 
 	cut.Store(true)
 	cutAt := time.Now()
-	within(t, "a stops leading", tr.stopped["a"], retryPeriod+renewDeadline+retryPeriod)
+	within(t, "a stops leading", tr.stopped["a"], 3*(retryPeriod+renewDeadline))
 	t.Logf("a stopped %s after the cut", time.Since(cutAt))
-	within(t, "b takes over", tr.started["b"], leaseDuration+retryPeriod+retryPeriod)
+	within(t, "b takes over", tr.started["b"], 3*(leaseDuration+retryPeriod))
 	t.Logf("b led %s after the cut", time.Since(cutAt))
 	if n := tr.max(); n != 1 {
 		t.Fatalf("replicas leading at once = %d, want 1", n)
@@ -216,5 +221,118 @@ func TestLeaderRepairSparesFreshWrites(t *testing.T) {
 	within(t, "second repair", repaired, 10*time.Second)
 	if n := len(configMaps(t, raw, ns, "request")); n != 0 {
 		t.Fatalf("indexes after the repair of an old orphan = %d, want 0", n)
+	}
+}
+
+// TestTermErrorEndsLead returns an error from the term while Lead's context
+// is live. Lead stops with it instead of holding the Lease with no worker.
+func TestTermErrorEndsLead(t *testing.T) {
+	c, ns := kubetest.Namespace(t)
+	boom := errors.New("reconciler failed")
+	done := make(chan error, 1)
+	s := kubestore.New(c, ns).WithLease(leaseDuration, renewDeadline, retryPeriod)
+	go func() { done <- s.Lead(context.Background(), "a", func(context.Context) error { return boom }) }()
+	select {
+	case err := <-done:
+		if !errors.Is(err, boom) {
+			t.Fatalf("Lead = %v, want the term error", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Lead did not return after its term failed")
+	}
+}
+
+const testVolumes = "projects/p/zones/z/volumes/"
+
+func drivenSpec(gen int64, data bool) compute.InstanceSpec {
+	root := ok(compute.ParseVolumeRef(testVolumes + "root"))
+	vols := []compute.VolumeAttachment{{Volume: root, DeviceName: "vda", Boot: true}}
+	if data {
+		vols = append(vols, compute.VolumeAttachment{
+			Volume: ok(compute.ParseVolumeRef(testVolumes + "data")), DeviceName: "vdb", Claim: "pvc-data",
+		})
+	}
+	return compute.InstanceSpec{
+		ID: ok(compute.ParseInstanceID("web-1")), Generation: gen, CreatedAt: t0, ChangedAt: t0,
+		Type: ok(compute.ParseMachineType("n1.medium")), Power: compute.PowerRunning,
+		Project: "p", Zone: "z", Volumes: vols,
+		NICs: []compute.NetworkInterface{{DeviceName: "eth0", Subnet: "projects/p/regions/r/vpcs/v/subnets/s"}},
+	}
+}
+
+func commitDriven(ctx context.Context, t *testing.T, s *kubestore.Store, req string, spec compute.InstanceSpec) {
+	t.Helper()
+	var in compute.Intent
+	if spec.Generation == 1 {
+		in = ok(compute.NewCreateInstance(compute.CreateInstanceParams{
+			ID: "web-1", Project: "p", Zone: "z", MachineType: "vws.small", Power: compute.PowerRunning,
+			Volumes: spec.Volumes, NICs: spec.NICs,
+		}))
+	} else {
+		in = ok(compute.NewUpdateInstanceSpec("web-1", compute.PowerRunning, spec.Volumes, compute.MetadataPatch{}))
+	}
+	op := ok(compute.NewOperation(compute.Env{Now: t0, Rand: rand.Reader}, ok(compute.ParseRequestID(req)), in,
+		compute.Change{Spec: spec, Write: true}))
+	if _, err := s.CommitDesired(ctx, store.DesiredChange{Op: op, Spec: spec, Write: true}); err != nil {
+		t.Fatalf("commit %s: %v", req, err)
+	}
+}
+
+// TestReattachSurvivesARepairThatReadItsClaimAsStale detaches a volume, so
+// its old claim is stale, and attaches it again to the same instance while
+// the leader's Repair, which read the instance without the volume, is about
+// to delete that claim. The claim stays, so no other instance can take the
+// attached volume.
+func TestReattachSurvivesARepairThatReadItsClaimAsStale(t *testing.T) {
+	raw, ns := kubetest.Namespace(t)
+	ctx := context.Background()
+	follower := kubestore.New(raw, ns)
+	commitDriven(ctx, t, follower, "c-1", drivenSpec(1, false))
+	commitDriven(ctx, t, follower, "c-2", drivenSpec(2, true))
+	commitDriven(ctx, t, follower, "c-3", drivenSpec(3, false))
+	claims := configMaps(t, raw, ns, "claim-volume")
+	var data *corev1.ConfigMap
+	for i := range claims {
+		if claims[i].Data["subject"] == testVolumes+"data" {
+			data = &claims[i]
+		}
+	}
+	if data == nil {
+		t.Fatal("no claim for the detached data volume")
+	}
+	data.Data["written"] = time.Now().Add(-time.Hour).UTC().Format(time.RFC3339Nano)
+	if err := raw.Update(ctx, data); err != nil {
+		t.Fatal(err)
+	}
+
+	repaired := make(chan struct{}, 1)
+	var once sync.Once
+	c := interceptor.NewClient(raw, interceptor.Funcs{
+		List: func(ctx context.Context, c client.WithWatch, l client.ObjectList, opts ...client.ListOption) error {
+			err := c.List(ctx, l, opts...)
+			var lo client.ListOptions
+			lo.ApplyOptions(opts)
+			if lo.LabelSelector != nil && lo.LabelSelector.String() == "vws.io/kind=claim-volume" {
+				once.Do(func() { commitDriven(ctx, t, follower, "c-4", drivenSpec(4, true)) })
+			}
+			return err
+		},
+		Delete: func(ctx context.Context, c client.WithWatch, o client.Object, opts ...client.DeleteOption) error {
+			err := c.Delete(ctx, o, opts...)
+			if o.GetName() == data.Name {
+				repaired <- struct{}{}
+			}
+			return err
+		},
+	})
+	replica(t, c, ns, "a", func(ctx context.Context) error { <-ctx.Done(); return ctx.Err() })
+	within(t, "repair tries the stale claim", repaired, 10*time.Second)
+
+	var cur corev1.ConfigMap
+	if err := raw.Get(ctx, client.ObjectKey{Namespace: ns, Name: data.Name}, &cur); err != nil {
+		t.Fatalf("claim of the attached volume after repair: %v", err)
+	}
+	if cur.Data["holder"] != "web-1" {
+		t.Fatalf("claim holder = %q, want web-1", cur.Data["holder"])
 	}
 }

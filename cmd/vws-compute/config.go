@@ -60,10 +60,11 @@ func (c config) validate() error {
 	// deposed leader stops at most renewDeadline + retryPeriod after its last
 	// renew, and a follower takes over no sooner than leaseDuration after
 	// it, so leaseDuration must exceed that sum for terms never to overlap.
+	// The Lease stores whole seconds, so a fraction would be truncated.
 	if c.retryPeriod <= 0 || c.renewDeadline <= time.Duration(1.2*float64(c.retryPeriod)) ||
-		c.leaseDuration <= c.renewDeadline+c.retryPeriod {
-		return fmt.Errorf("lease timing %s/%s/%s: want -lease-duration > -lease-renew-deadline + -lease-retry-period "+
-			"and -lease-renew-deadline > 1.2 * -lease-retry-period > 0",
+		c.leaseDuration%time.Second != 0 || c.leaseDuration <= c.renewDeadline+c.retryPeriod {
+		return fmt.Errorf("lease timing %s/%s/%s: want whole seconds of -lease-duration > "+
+			"-lease-renew-deadline + -lease-retry-period, and -lease-renew-deadline > 1.2 * -lease-retry-period > 0",
 			c.leaseDuration, c.renewDeadline, c.retryPeriod)
 	}
 	return nil

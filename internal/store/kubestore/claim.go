@@ -46,6 +46,18 @@ func (s *Store) acquire(ctx context.Context, c claim, qualifies func(holder stri
 			err = casErr(s.c.Create(ctx, c.configMap(s.ns, "")))
 		case err != nil:
 			return false, false, err
+		case cur.Data["holder"] == c.holder && c.kind == kindClaimVolume:
+			// A volume attached again to the instance that held it before:
+			// the leader's Repair may have read this claim as stale while
+			// the instance did not hold the volume. Rewriting it moves its
+			// resourceVersion, so that Repair's delete fails.
+			err = casErr(s.c.Update(ctx, c.configMap(s.ns, cur.ResourceVersion)))
+			if err == nil {
+				return false, false, nil
+			}
+			if apierrors.IsNotFound(err) {
+				continue
+			}
 		case cur.Data["holder"] == c.holder:
 			return false, false, nil
 		default:
