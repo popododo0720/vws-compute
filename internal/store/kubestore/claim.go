@@ -15,8 +15,8 @@ import (
 // A claim is a ConfigMap that gives a subject (a key name or a volume) to one
 // holder. Taking one is a create, or a CAS update when the current holder no
 // longer qualifies. A missing holder qualifies: it may be a commit that has
-// claimed and not yet written its resource, so only Repair, which runs
-// before serving, removes such a claim.
+// claimed and not yet written its resource, so only Repair removes such a
+// claim, and only once it is older than any commit in flight.
 
 type claim struct {
 	kind    string
@@ -31,7 +31,7 @@ func (c claim) name() string {
 func (c claim) configMap(ns, rv string) *corev1.ConfigMap {
 	return &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{Name: c.name(), Namespace: ns, ResourceVersion: rv, Labels: map[string]string{labelKind: c.kind}},
-		Data:       map[string]string{"subject": c.subject, "holder": c.holder},
+		Data:       map[string]string{"subject": c.subject, "holder": c.holder, dataWritten: writtenNow()},
 	}
 }
 
@@ -46,6 +46,18 @@ func (s *Store) acquire(ctx context.Context, c claim, qualifies func(holder stri
 			err = casErr(s.c.Create(ctx, c.configMap(s.ns, "")))
 		case err != nil:
 			return false, false, err
+		case cur.Data["holder"] == c.holder && c.kind == kindClaimVolume:
+			// A volume attached again to the instance that held it before:
+			// the leader's Repair may have read this claim as stale while
+			// the instance did not hold the volume. Rewriting it moves its
+			// resourceVersion, so that Repair's delete fails.
+			err = casErr(s.c.Update(ctx, c.configMap(s.ns, cur.ResourceVersion)))
+			if err == nil {
+				return false, false, nil
+			}
+			if apierrors.IsNotFound(err) {
+				continue
+			}
 		case cur.Data["holder"] == c.holder:
 			return false, false, nil
 		default:

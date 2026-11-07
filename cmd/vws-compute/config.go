@@ -8,6 +8,7 @@ import (
 	"net"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/popododo0720/vws-compute/internal/compute"
 	"github.com/popododo0720/vws-compute/internal/hypervisor/kubevirt"
@@ -54,8 +55,32 @@ func (c config) validate() error {
 	if !imageAccessModes[c.imageAccessMode] {
 		return fmt.Errorf("-image-access-mode %q is not a known access mode", c.imageAccessMode)
 	}
+	if !dnsSubdomain.MatchString(c.leaseName) || len(c.leaseName) > 253 {
+		return fmt.Errorf("-lease-name %q is not a valid Lease name", c.leaseName)
+	}
+	// client-go's leaderelection needs renewDeadline > 1.2 * retryPeriod. A
+	// deposed leader stops at most renewDeadline + retryPeriod after its last
+	// renew, and a follower takes over no sooner than leaseDuration after
+	// it, so leaseDuration must exceed that sum for terms never to overlap.
+	// The Lease stores whole seconds, so a fraction would be truncated.
+	if c.retryPeriod <= 0 || c.renewDeadline <= time.Duration(1.2*float64(c.retryPeriod)) ||
+		c.leaseDuration%time.Second != 0 || c.leaseDuration <= c.renewDeadline+c.retryPeriod {
+		return fmt.Errorf("lease timing %s/%s/%s: want whole seconds of -lease-duration > "+
+			"-lease-renew-deadline + -lease-retry-period, and -lease-renew-deadline > 1.2 * -lease-retry-period > 0",
+			c.leaseDuration, c.renewDeadline, c.retryPeriod)
+	}
 	return nil
 }
+
+// The Lease defaults. The name is the vws-deploy chart's service key, whose
+// leader Role grants get and update on that Lease only. The timing is the
+// client-go default.
+const (
+	defaultLeaseName     = "compute"
+	defaultLeaseDuration = 15 * time.Second
+	defaultRenewDeadline = 10 * time.Second
+	defaultRetryPeriod   = 2 * time.Second
+)
 
 const (
 	hypervisorFake     = "fake"
@@ -82,6 +107,10 @@ type config struct {
 	legacyImageScope compute.ImageScope
 	// publicImages are readable by every project in their region.
 	publicImages compute.PublicImages
+	// leaseName is the Lease that replicas sharing -namespace elect the
+	// leader on. leaseDuration, renewDeadline, and retryPeriod time it.
+	leaseName                                 string
+	leaseDuration, renewDeadline, retryPeriod time.Duration
 }
 
 func parseConfig(args []string, getenv func(string) string, errOut io.Writer) (config, error) {
@@ -111,6 +140,14 @@ func parseConfig(args []string, getenv func(string) string, errOut io.Writer) (c
 			"ReadWriteOncePod), env VWS_IMAGE_ACCESS_MODE")
 	legacyScope := fs.String("legacy-image-scope", env("VWS_LEGACY_IMAGE_SCOPE", ""), "projects/{project}/regions/{region} that owns images stored without one (pre-#92 records, seed images); empty leaves them in no project, invisible to every caller (env VWS_LEGACY_IMAGE_SCOPE)")
 	publicIDs := fs.String("public-images", env("VWS_PUBLIC_IMAGES", ""), "comma-separated image ids readable by every project in the image's region, such as seed images; changing or deleting them stays with the owner (env VWS_PUBLIC_IMAGES)")
+	fs.StringVar(&c.leaseName, "lease-name", env("VWS_LEASE_NAME", defaultLeaseName),
+		"coordination.k8s.io Lease in -namespace that replicas elect the leader on (env VWS_LEASE_NAME)")
+	fs.DurationVar(&c.leaseDuration, "lease-duration", defaultLeaseDuration,
+		"how long a follower waits after the leader's last renew before it takes the Lease")
+	fs.DurationVar(&c.renewDeadline, "lease-renew-deadline", defaultRenewDeadline,
+		"how long the leader retries a renew before it stops the reconciler and repair")
+	fs.DurationVar(&c.retryPeriod, "lease-retry-period", defaultRetryPeriod,
+		"interval between Lease acquire and renew attempts")
 	if err := fs.Parse(args); err != nil {
 		return config{}, fmt.Errorf("flags: %w", err)
 	}

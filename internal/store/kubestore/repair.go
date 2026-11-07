@@ -3,6 +3,7 @@ package kubestore
 import (
 	"context"
 	"fmt"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -27,9 +28,35 @@ type Repaired struct {
 }
 
 // Repair converges the two-write gaps a crash can leave. It is idempotent.
-// Run it once at startup, before serving. It is not safe against a second
-// process that is committing at the same moment.
+// It removes every orphaned index and stale claim, so run it only while no
+// other process commits: once at startup of a single writer. Replicas
+// repair through Lead instead.
 func (s *Store) Repair(ctx context.Context) (Repaired, error) {
+	return s.repair(ctx, time.Now().Add(time.Hour))
+}
+
+// dataWritten is the ConfigMap data key that holds when a request index or a
+// claim was last written, RFC 3339 UTC.
+const dataWritten = "written"
+
+func writtenNow() string { return time.Now().UTC().Format(time.RFC3339Nano) }
+
+// writtenBefore reports whether cm was last written before cutoff. A
+// ConfigMap written before the key existed falls back to its creation time.
+func writtenBefore(cm *corev1.ConfigMap, cutoff time.Time) bool {
+	at := cm.CreationTimestamp.Time
+	if t, err := time.Parse(time.RFC3339Nano, cm.Data[dataWritten]); err == nil {
+		at = t
+	}
+	return at.Before(cutoff)
+}
+
+// repair is Repair that leaves every index and claim written at or after
+// cutoff: another replica may be committing it right now, and an index or a
+// claim is written before the resource that holds it. The written time is
+// the writer's clock and cutoff the leader's, so the grace assumes replica
+// clocks agree to well within it, as NTP keeps cluster nodes.
+func (s *Store) repair(ctx context.Context, cutoff time.Time) (Repaired, error) {
 	var r Repaired
 	var all []*entry
 	for _, k := range []compute.Kind{compute.KindInstance, compute.KindImage, compute.KindKeyPair} {
@@ -60,11 +87,13 @@ func (s *Store) Repair(ctx context.Context) (Repaired, error) {
 		if e := byRef[x.target]; e != nil {
 			_, holds = e.op(func(o compute.Operation) bool { return o.Request == x.request })
 		}
-		if holds {
+		if holds || !writtenBefore(&idxs.Items[i], cutoff) {
 			continue
 		}
-		if err := s.c.Delete(ctx, &idxs.Items[i]); err != nil && !apierrors.IsNotFound(err) {
-			return r, fmt.Errorf("delete orphaned index %s: %w", idxs.Items[i].Name, err)
+		if gone, err := s.deleteUnchanged(ctx, &idxs.Items[i]); err != nil {
+			return r, fmt.Errorf("orphaned index: %w", err)
+		} else if !gone {
+			continue
 		}
 		r.OrphanIndexes++
 	}
@@ -103,16 +132,34 @@ func (s *Store) Repair(ctx context.Context) (Repaired, error) {
 				e := byRef[compute.Ref{Kind: compute.KindInstance, ID: holder}]
 				live = e != nil && e.inst.Spec.Power != compute.PowerTerminated && holdsVolume(e.inst.Spec, subject)
 			}
-			if live {
+			if live || !writtenBefore(cm, cutoff) {
 				continue
 			}
-			if err := s.c.Delete(ctx, cm); err != nil && !apierrors.IsNotFound(err) {
-				return r, fmt.Errorf("delete stale claim %s: %w", cm.Name, err)
+			if gone, err := s.deleteUnchanged(ctx, cm); err != nil {
+				return r, fmt.Errorf("stale claim: %w", err)
+			} else if !gone {
+				continue
 			}
 			r.StaleClaims++
 		}
 	}
 	return r, nil
+}
+
+// deleteUnchanged deletes cm only at the resourceVersion Repair read, so an
+// index another replica repointed or a claim it took over since stays. It
+// reports whether this call removed cm.
+func (s *Store) deleteUnchanged(ctx context.Context, cm *corev1.ConfigMap) (bool, error) {
+	rv := cm.ResourceVersion
+	err := s.c.Delete(ctx, cm, client.Preconditions{ResourceVersion: &rv})
+	switch {
+	case err == nil:
+		return true, nil
+	case apierrors.IsNotFound(err), apierrors.IsConflict(err):
+		return false, nil
+	default:
+		return false, fmt.Errorf("delete %s: %w", cm.Name, err)
+	}
 }
 
 func holdsVolume(spec compute.InstanceSpec, volume string) bool {

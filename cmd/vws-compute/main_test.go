@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/popododo0720/vws-compute/internal/compute"
 	"github.com/popododo0720/vws-compute/internal/store"
 	"github.com/popododo0720/vws-compute/internal/store/kubestore/kubetest"
 )
@@ -30,16 +29,14 @@ func TestReadyzIsNotReadyBeforeGRPCServes(t *testing.T) {
 	release := make(chan struct{})
 	var once sync.Once
 	unblock := func() { once.Do(func() { close(release) }) }
-	openStore = func(
-		ctx context.Context, namespace, kubeconfig string, scope compute.ImageScope,
-	) (store.Repository, error) {
+	openStore = func(ctx context.Context, cfg config) (store.Repository, error) {
 		close(blocked)
 		select {
 		case <-release:
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		}
-		return oldOpen(ctx, namespace, kubeconfig, scope)
+		return oldOpen(ctx, cfg)
 	}
 	t.Cleanup(func() {
 		unblock()

@@ -41,6 +41,7 @@ func (x *requestIndex) configMap(ns string) *corev1.ConfigMap {
 			"op":          x.op.String(),
 			"target-kind": strconv.Itoa(int(x.target.Kind)),
 			"target-id":   x.target.ID,
+			dataWritten:   writtenNow(),
 		},
 	}
 }

@@ -43,11 +43,16 @@ type Store struct {
 	// legacyImageScope is the scope of an image record written without one
 	// (before #92, or a seed image). Zero leaves such images in no project.
 	legacyImageScope compute.ImageScope
+	// lease is the leader election timing of Lead.
+	lease lease
 }
 
 // New returns a store over namespace ns. It does not touch the cluster.
-// Call Repair once before serving.
-func New(c client.Client, ns string) *Store { return &Store{c: c, ns: ns} }
+// A single writer calls Repair once before serving. Replicas call WithLease
+// and Lead, which repairs while it holds the Lease.
+func New(c client.Client, ns string) *Store {
+	return &Store{c: c, ns: ns}
+}
 
 // WithLegacyImageScope sets the scope read for image records that carry none.
 // The record is rewritten with it the next time its image changes.
