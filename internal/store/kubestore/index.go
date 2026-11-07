@@ -103,18 +103,23 @@ func (s *Store) repoint(ctx context.Context, x *requestIndex) error {
 	return casErr(s.c.Update(ctx, x.configMap(s.ns)))
 }
 
-// releaseIndex deletes the index, only if it still names op.
-func (s *Store) releaseIndex(ctx context.Context, req compute.RequestID, op compute.OperationID) error {
+// releaseIndex deletes the index, only if it still names op, and reports
+// whether this call deleted it.
+func (s *Store) releaseIndex(ctx context.Context, req compute.RequestID, op compute.OperationID) (bool, error) {
 	x, err := s.index(ctx, req)
 	if err != nil || x == nil || x.op != op {
-		return err
+		return false, err
 	}
 	rv := x.rv
 	err = s.c.Delete(ctx, x.configMap(s.ns), client.Preconditions{ResourceVersion: &rv})
-	if apierrors.IsNotFound(err) || apierrors.IsConflict(err) {
-		return nil
+	switch {
+	case err == nil:
+		return true, nil
+	case apierrors.IsNotFound(err) || apierrors.IsConflict(err):
+		return false, nil
+	default:
+		return false, fmt.Errorf("delete request index %s: %w", indexName(req), err)
 	}
-	return fmt.Errorf("delete request index %s: %w", indexName(req), err)
 }
 
 var errBadIndex = errors.New("bad index fields")
