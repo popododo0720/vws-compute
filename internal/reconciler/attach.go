@@ -42,6 +42,25 @@ func (r *Reconciler) convergeAttaching(
 	if err := r.refuseGone(ctx, fresh, &refused); err != nil {
 		return attachOutcome{err: err, unchecked: true}
 	}
+	out := r.convergeRefusing(ctx, spec, fresh, &refused)
+	if out.err == nil {
+		out.err = errors.Join(refused.errs...)
+	} else if len(refused.volumes) > 0 && !out.unchecked {
+		// A refused volume may still be on the machine: the converge
+		// that would remove it failed. Reporting the full spec would show
+		// it attached and exempt it from every later check.
+		out.unchecked = true
+	}
+	return out
+}
+
+// convergeRefusing converges spec without the refused volumes until no
+// converge or check refuses another one. A nil err means every refusal is in
+// refused; any other err is the last failure, and refused may hold volumes
+// the machine still lists.
+func (r *Reconciler) convergeRefusing(
+	ctx context.Context, spec compute.InstanceSpec, fresh []compute.VolumeAttachment, refused *refusals,
+) attachOutcome {
 	var out attachOutcome
 	for {
 		before := len(refused.volumes)
@@ -58,7 +77,7 @@ func (r *Reconciler) convergeAttaching(
 		} else {
 			out.err = agentErr
 		}
-		if err := r.refuseGone(ctx, fresh, &refused); err != nil {
+		if err := r.refuseGone(ctx, fresh, refused); err != nil {
 			out.unchecked = true
 			if out.err == nil {
 				out.err = err
@@ -66,13 +85,9 @@ func (r *Reconciler) convergeAttaching(
 			return out
 		}
 		if len(refused.volumes) == before {
-			break
+			return out
 		}
 	}
-	if out.err == nil {
-		out.err = errors.Join(refused.errs...)
-	}
-	return out
 }
 
 func isAttachment(err error) bool {
@@ -86,19 +101,15 @@ type refusals struct {
 	errs    []error
 }
 
-// add records err and those of vols not refused yet. An err that names no
-// new volume is dropped, so a repeated refusal is reported once.
+// add records err and those of vols not refused yet. err is kept even when
+// it names no volume of the spec, so an agent refusal is never lost.
 func (f *refusals) add(vols []compute.VolumeRef, err error) {
-	added := false
 	for _, v := range vols {
 		if !slices.Contains(f.volumes, v) {
 			f.volumes = append(f.volumes, v)
-			added = true
 		}
 	}
-	if added {
-		f.errs = append(f.errs, err)
-	}
+	f.errs = append(f.errs, err)
 }
 
 // unchecked are the data volumes of spec that have not passed a storage

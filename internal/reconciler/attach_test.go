@@ -235,3 +235,52 @@ func TestStopWithAnAttachingVolumeNeedsNoStorage(t *testing.T) {
 		}
 	})
 }
+
+// TestRefusedVolumeWhoseDetachFailsIsNotReportedAttached: the check after
+// the patch finds the volume deleting, and the converge that would take it
+// off the machine fails transiently. The volume may still be on the machine,
+// so it is not reported attached, and the next sweep checks it again and
+// detaches it.
+func TestRefusedVolumeWhoseDetachFailsIsNotReportedAttached(t *testing.T) {
+	eachStore(t, func(h *harness) {
+		h, s := storageHarness(h)
+		h.submit("create", createInstance("web"))
+		h.sweep()
+		s.held = func(claim string) bool {
+			m, _ := h.agent.Machine("web")
+			if !slices.Contains(m.Volumes, hypervisor.Volume{Name: "vdb", Claim: claim}) {
+				return false
+			}
+			h.agent.Fail("web", errors.New("conflict: the object has been modified"))
+			return true
+		}
+		s.deleteOnceHeld[dataVolume] = "pvc-data"
+		attach := h.submit("attach", updateVolumes(bootEntry, dataEntry))
+		if err := h.rec.Sweep(context.Background()); err == nil {
+			h.t.Fatal("sweep whose detach failed = nil, want the agent error")
+		}
+		h.wantStates(compute.OperationPending, attach)
+		h.wantVolumes("web", bootAttached)
+
+		delete(s.deleteOnceHeld, dataVolume)
+		h.clock.Advance(reconciler.MaxBackoff)
+		h.sweep()
+		h.wantDetached(attach)
+	})
+}
+
+// TestAgentRefusalNamingNoSpecVolumeFailsTheAttach: an attachment refusal
+// whose volume matches no disk of the spec still fails the attach instead
+// of being dropped.
+func TestAgentRefusalNamingNoSpecVolumeFailsTheAttach(t *testing.T) {
+	eachStore(t, func(h *harness) {
+		h, _ = storageHarness(h)
+		h.submit("create", createInstance("web"))
+		h.sweep()
+		h.agent.Fail("web", hypervisor.Attachment(
+			hypervisor.Volume{Name: "vdz", Claim: "pvc-other"}, errors.New("claim is not Block")))
+		attach := h.submit("attach", updateVolumes(bootEntry, dataEntry))
+		h.sweep()
+		h.wantStates(compute.OperationFailed, attach)
+	})
+}
