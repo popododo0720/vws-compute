@@ -7,6 +7,7 @@ import (
 	"slices"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/popododo0720/vws-compute/internal/compute"
 	"github.com/popododo0720/vws-compute/internal/controller"
@@ -282,5 +283,61 @@ func TestAgentRefusalNamingNoSpecVolumeFailsTheAttach(t *testing.T) {
 		attach := h.submit("attach", updateVolumes(bootEntry, dataEntry))
 		h.sweep()
 		h.wantStates(compute.OperationFailed, attach)
+	})
+}
+
+// TestLaunchWithAVolumeStorageIsRemovingFails: a data volume storage reports
+// deleting when the instance first converges fails the launch, as EC2
+// terminates an instance whose launch-time block device fails. The create
+// operation fails, the instance is in error, and the machine is halted
+// without the volume. A restarted reconciler leaves it there, and a start
+// runs the instance without the refused volume.
+func TestLaunchWithAVolumeStorageIsRemovingFails(t *testing.T) {
+	eachStore(t, func(h *harness) {
+		h, s := storageHarness(h)
+		s.set(dataVolume, "deleting")
+		create := h.submit("create", ok(compute.NewCreateInstance(compute.CreateInstanceParams{
+			ID: "web", Project: "p", Zone: "z", MachineType: "vws.small", Power: compute.PowerRunning,
+			Volumes: []compute.VolumeAttachment{bootEntry, dataEntry},
+		})))
+		h.sweep()
+		h.wantStates(compute.OperationFailed, create)
+		if f := ok(h.repo.Operation(context.Background(), create.ID)).Failure(); f.Code != compute.CodeFailedPrecondition {
+			t.Fatalf("create failure = %+v, want FailedPrecondition", f)
+		}
+		id := ok(compute.ParseInstanceID("web"))
+		failed := h.instance(id)
+		if lc := failed.Lifecycle(); lc != compute.InstanceError {
+			t.Fatalf("lifecycle = %d, want error", lc)
+		}
+		if !failed.Status.Observed.AttachmentFailure.Refused(dataEntry.Volume) {
+			t.Fatalf("attachment failure = %+v, want the data volume refused", failed.Status.Observed.AttachmentFailure)
+		}
+		if m, _ := h.agent.Machine("web"); m.Power != hypervisor.PowerOff || len(m.Volumes) != 0 {
+			t.Fatalf("machine = %+v, want halted without the data volume", m)
+		}
+		h.rec = reconciler.New(h.repo, h.agent, reconciler.WithClock(h.clock.Now), reconciler.WithReports(h.repo),
+			reconciler.WithClaims(s.claim))
+		h.clock.Advance(time.Minute)
+		h.sweep()
+		if got := h.instance(id).Status; !got.UpdatedAt.Equal(failed.Status.UpdatedAt) {
+			t.Fatalf("a restarted sweep rewrote the failed launch: %+v", got)
+		}
+		if n := h.agent.Creations("web"); n != 1 {
+			t.Fatalf("machine created %d times, want 1", n)
+		}
+		start := h.submit("start", ok(compute.NewSetPower("web", compute.PowerRunning, compute.MetadataPatch{})))
+		h.sweep()
+		h.wantStates(compute.OperationSucceeded, start)
+		inst := h.instance(id)
+		if lc := inst.Lifecycle(); lc != compute.InstanceRunning {
+			t.Fatalf("lifecycle after start = %d, want running", lc)
+		}
+		if !slices.Equal(inst.Spec.Volumes, []compute.VolumeAttachment{bootEntry}) {
+			t.Fatalf("volumes after start = %+v, want the boot volume only", inst.Spec.Volumes)
+		}
+		if m, _ := h.agent.Machine("web"); m.Power != hypervisor.PowerOn || len(m.Volumes) != 0 {
+			t.Fatalf("machine after start = %+v, want running without the data volume", m)
+		}
 	})
 }

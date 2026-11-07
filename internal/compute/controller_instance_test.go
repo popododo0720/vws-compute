@@ -72,6 +72,28 @@ func TestApplyReport(t *testing.T) {
 			t.Fatalf("lifecycle = %d, want running", got)
 		}
 	})
+	t.Run("error keeps the attachment failure that failed a launch", func(t *testing.T) {
+		volume, err := compute.ParseVolumeRef("projects/p/zones/z/volumes/data")
+		if err != nil {
+			t.Fatal(err)
+		}
+		refused := &compute.AttachmentFailure{
+			Failure: compute.Failure{Code: compute.CodeFailedPrecondition, Message: "not Block"},
+			Volumes: []compute.VolumeRef{volume},
+		}
+		st, _, err := compute.ApplyReport(controllerDriven(compute.PowerRunning), compute.InstanceReport{
+			Node: node, Generation: 2, State: compute.ReportError, Message: "not Block",
+			Code: compute.CodeFailedPrecondition, AttachmentFailure: refused,
+		}, now)
+		if err != nil || !st.Observed.Parked(2) || !st.Observed.AttachmentFailure.Refused(volume) {
+			t.Fatalf("%+v %v", st, err)
+		}
+		inst := controllerDriven(compute.PowerRunning)
+		inst.Status = st
+		if got := inst.Lifecycle(); got != compute.InstanceError {
+			t.Fatalf("lifecycle = %d, want error", got)
+		}
+	})
 	t.Run("terminated converges only on DELETING", func(t *testing.T) {
 		inst := controllerDriven(compute.PowerTerminated)
 		st, _, _ := compute.ApplyReport(inst, compute.InstanceReport{Node: node, Generation: 2, State: compute.ReportReady}, now)

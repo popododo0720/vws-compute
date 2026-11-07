@@ -57,7 +57,19 @@ func (r *Reconciler) convergeDriven(ctx context.Context, inst compute.Instance) 
 		rep.State = compute.ReportReady
 		rep.Interfaces = r.interfaces(ctx, spec)
 		rep.Volumes = r.observeVolumes(ctx, spec, prevVolumes, attempt{converged: true})
-	case hypervisor.IsPermanent(agentErr) && hypervisor.CauseOf(agentErr) == hypervisor.CauseAttachment:
+	case isAttachment(agentErr) && inst.Status.Observed.Generation == 0:
+		refused := attachmentFailure(agentErr, spec)
+		if err := r.haltLaunch(ctx, spec, refused.Volumes); err != nil {
+			agentErr = fmt.Errorf("halt %s after its launch failed: %w", spec.ID, err)
+			rep.State, rep.Message = compute.ReportReconciling, agentErr.Error()
+			rep.Volumes = prevVolumes
+			break
+		}
+		rep.State, rep.Message, rep.Code, rep.Reason = compute.ReportError, refused.Message, refused.Code, refused.Reason
+		rep.Power = compute.PowerStopped
+		rep.AttachmentFailure = refused
+		rep.Volumes = r.observeVolumes(ctx, spec, prevVolumes, attempt{converged: true, refused: refused.Volumes})
+	case isAttachment(agentErr):
 		// The machine is healthy; only the attachment failed. As on EC2,
 		// the instance keeps its state and the attachment operation fails.
 		rep.State = compute.ReportReady
@@ -92,6 +104,22 @@ func (r *Reconciler) convergeDriven(ctx context.Context, inst compute.Instance) 
 		return fmt.Errorf("converge %s: %w", spec.ID, agentErr)
 	}
 	return nil
+}
+
+// haltLaunch halts the machine of a launch whose data volume was refused,
+// without the refused volumes. EC2 terminates an instance whose launch-time
+// block device fails, so the launch fails instead of leaving the instance
+// running without the volume: the instance parks in ERROR and its create
+// operation fails. The refusal stays with the parked generation, so the next
+// intent drops the refused volumes, as it does after a failed attach.
+func (r *Reconciler) haltLaunch(ctx context.Context, spec compute.InstanceSpec, refused []compute.VolumeRef) error {
+	halted := withoutRefused(spec, refused)
+	halted.Power = compute.PowerStopped
+	machine, err := r.machine(ctx, halted)
+	if err != nil {
+		return err
+	}
+	return r.agent.ConvergeMachine(ctx, machine)
 }
 
 // attachmentFailure names every volume the agent refused, so the next plan
