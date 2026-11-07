@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"github.com/popododo0720/vws-compute/internal/compute"
 	"github.com/popododo0720/vws-compute/internal/controller"
 	"github.com/popododo0720/vws-compute/internal/hypervisor"
+	"github.com/popododo0720/vws-compute/internal/hypervisor/fakeagent"
 	"github.com/popododo0720/vws-compute/internal/reconciler"
 )
 
@@ -338,6 +340,69 @@ func TestLaunchWithAVolumeStorageIsRemovingFails(t *testing.T) {
 		}
 		if m, _ := h.agent.Machine("web"); m.Power != hypervisor.PowerOn || len(m.Volumes) != 0 {
 			t.Fatalf("machine after start = %+v, want running without the data volume", m)
+		}
+	})
+}
+
+// TestAttachBeforeTheFirstConvergeFailsOnlyTheAttach: a volume attached by a
+// later generation was not a launch-time device, so storage refusing it
+// before the first converge fails the attach and the instance runs. The
+// boot volume reads attached once the next sweep refreshes the report.
+func TestAttachBeforeTheFirstConvergeFailsOnlyTheAttach(t *testing.T) {
+	eachStore(t, func(h *harness) {
+		h, s := storageHarness(h)
+		s.set(dataVolume, "deleting")
+		create := h.submit("create", createInstance("web"))
+		attach := h.submit("attach", updateVolumes(bootEntry, dataEntry))
+		h.sweep()
+		h.wantStates(compute.OperationSuperseded, create)
+		h.wantStates(compute.OperationFailed, attach)
+		h.sweep()
+		h.wantDetached(attach)
+		if m, _ := h.agent.Machine("web"); m.Power != hypervisor.PowerOn {
+			t.Fatalf("machine = %+v, want running", m)
+		}
+	})
+}
+
+// haltRefused is an agent that refuses every halt for good.
+type haltRefused struct{ *fakeagent.Agent }
+
+func (a haltRefused) ConvergeMachine(ctx context.Context, m hypervisor.MachineSpec) error {
+	if m.Power == hypervisor.PowerOff {
+		return hypervisor.Permanent(errors.New("admission denied"))
+	}
+	return a.Agent.ConvergeMachine(ctx, m)
+}
+
+// TestLaunchWhoseHaltIsRefusedStillFails: a halt the agent refuses for good
+// does not keep the launch pending. The create fails with both refusals
+// named, the instance is in error, and later sweeps write nothing.
+func TestLaunchWhoseHaltIsRefusedStillFails(t *testing.T) {
+	eachStore(t, func(h *harness) {
+		h, s := storageHarness(h)
+		h.rec = reconciler.New(h.repo, haltRefused{h.agent}, reconciler.WithClock(h.clock.Now),
+			reconciler.WithReports(h.repo), reconciler.WithClaims(s.claim))
+		s.set(dataVolume, "deleting")
+		create := h.submit("create", ok(compute.NewCreateInstance(compute.CreateInstanceParams{
+			ID: "web", Project: "p", Zone: "z", MachineType: "vws.small", Power: compute.PowerRunning,
+			Volumes: []compute.VolumeAttachment{bootEntry, dataEntry},
+		})))
+		h.sweep()
+		h.wantStates(compute.OperationFailed, create)
+		f := ok(h.repo.Operation(context.Background(), create.ID)).Failure()
+		if !strings.Contains(f.Message, "being deleted") || !strings.Contains(f.Message, "admission denied") {
+			t.Fatalf("create failure = %q, want the refusal and the refused halt", f.Message)
+		}
+		id := ok(compute.ParseInstanceID("web"))
+		failed := h.instance(id)
+		if lc := failed.Lifecycle(); lc != compute.InstanceError {
+			t.Fatalf("lifecycle = %d, want error", lc)
+		}
+		h.clock.Advance(time.Hour)
+		h.sweep()
+		if got := h.instance(id).Status; !got.UpdatedAt.Equal(failed.Status.UpdatedAt) {
+			t.Fatalf("a later sweep rewrote the failed launch: %+v", got)
 		}
 	})
 }

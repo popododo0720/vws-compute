@@ -57,16 +57,23 @@ func (r *Reconciler) convergeDriven(ctx context.Context, inst compute.Instance) 
 		rep.State = compute.ReportReady
 		rep.Interfaces = r.interfaces(ctx, spec)
 		rep.Volumes = r.observeVolumes(ctx, spec, prevVolumes, attempt{converged: true})
-	case isAttachment(agentErr) && inst.Status.Observed.Generation == 0:
+	case isAttachment(agentErr) && launching(inst):
 		refused := attachmentFailure(agentErr, spec)
-		if err := r.haltLaunch(ctx, spec, refused.Volumes); err != nil {
-			agentErr = fmt.Errorf("halt %s after its launch failed: %w", spec.ID, err)
+		haltErr := r.haltLaunch(ctx, spec, refused.Volumes)
+		if haltErr != nil && !hypervisor.IsPermanent(haltErr) {
+			agentErr = fmt.Errorf("halt %s after its launch failed: %w", spec.ID, haltErr)
 			rep.State, rep.Message = compute.ReportReconciling, agentErr.Error()
 			rep.Volumes = prevVolumes
 			break
 		}
 		rep.State, rep.Message, rep.Code, rep.Reason = compute.ReportError, refused.Message, refused.Code, refused.Reason
 		rep.Power = compute.PowerStopped
+		if haltErr != nil {
+			// Retrying a halt the agent refuses for good would keep the
+			// launch pending forever; it fails with the machine as is.
+			rep.Message = fmt.Sprintf("%s; halt refused: %v", refused.Message, haltErr)
+			rep.Power = spec.Power
+		}
 		rep.AttachmentFailure = refused
 		rep.Volumes = r.observeVolumes(ctx, spec, prevVolumes, attempt{converged: true, refused: refused.Volumes})
 	case isAttachment(agentErr):
@@ -104,6 +111,13 @@ func (r *Reconciler) convergeDriven(ctx context.Context, inst compute.Instance) 
 		return fmt.Errorf("converge %s: %w", spec.ID, agentErr)
 	}
 	return nil
+}
+
+// launching reports whether inst is converging the generation its create
+// wrote for the first time. A refusal then is a launch-time device failing; a
+// volume attached by a later generation fails only its attach.
+func launching(inst compute.Instance) bool {
+	return inst.Spec.Generation == 1 && inst.Status.Observed.Generation == 0
 }
 
 // haltLaunch halts the machine of a launch whose data volume was refused,
