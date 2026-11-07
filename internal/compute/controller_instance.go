@@ -160,7 +160,9 @@ type InstanceReport struct {
 	Reason LaunchReason
 	// AttachmentFailure is a permanent volume attach or detach failure at
 	// Generation. A READY report carries it so the attachment operation
-	// fails while the instance keeps running.
+	// fails while the instance keeps running. An ERROR report carries it
+	// when the refusal failed a launch, so the next intent drops the
+	// refused volumes.
 	AttachmentFailure *AttachmentFailure
 }
 
@@ -176,7 +178,8 @@ type InstanceReport struct {
 //     one, or ERROR, which parks that generation. RECONCILING and PENDING
 //     record the report and leave the generation where it was. A READY report
 //     may carry an AttachmentFailure, which fails the attachment operation
-//     without parking the instance.
+//     without parking the instance. An ERROR report may carry one too: the
+//     refusal that failed a launch.
 //
 // A terminated spec never converges on READY, so a controller cannot keep a
 // deleted instance alive by calling it ready.
@@ -211,7 +214,7 @@ func ApplyReport(inst Instance, rep InstanceReport, now time.Time) (InstanceStat
 		}
 		next.Observed = Observed{Generation: rep.Generation, Failure: &Failure{
 			Code: code, Message: rep.Message, Reason: rep.Reason,
-		}}
+		}, AttachmentFailure: rep.AttachmentFailure}
 	case rep.State == ReportReady && spec.Power != PowerTerminated:
 		next.Observed = Observed{Generation: rep.Generation, AttachmentFailure: rep.AttachmentFailure}
 	case rep.State == ReportDeleting && spec.Power == PowerTerminated:

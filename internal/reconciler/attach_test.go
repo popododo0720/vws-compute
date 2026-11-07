@@ -5,12 +5,15 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/popododo0720/vws-compute/internal/compute"
 	"github.com/popododo0720/vws-compute/internal/controller"
 	"github.com/popododo0720/vws-compute/internal/hypervisor"
+	"github.com/popododo0720/vws-compute/internal/hypervisor/fakeagent"
 	"github.com/popododo0720/vws-compute/internal/reconciler"
 )
 
@@ -282,5 +285,124 @@ func TestAgentRefusalNamingNoSpecVolumeFailsTheAttach(t *testing.T) {
 		attach := h.submit("attach", updateVolumes(bootEntry, dataEntry))
 		h.sweep()
 		h.wantStates(compute.OperationFailed, attach)
+	})
+}
+
+// TestLaunchWithAVolumeStorageIsRemovingFails: a data volume storage reports
+// deleting when the instance first converges fails the launch, as EC2
+// terminates an instance whose launch-time block device fails. The create
+// operation fails, the instance is in error, and the machine is halted
+// without the volume. A restarted reconciler leaves it there, and a start
+// runs the instance without the refused volume.
+func TestLaunchWithAVolumeStorageIsRemovingFails(t *testing.T) {
+	eachStore(t, func(h *harness) {
+		h, s := storageHarness(h)
+		s.set(dataVolume, "deleting")
+		create := h.submit("create", ok(compute.NewCreateInstance(compute.CreateInstanceParams{
+			ID: "web", Project: "p", Zone: "z", MachineType: "vws.small", Power: compute.PowerRunning,
+			Volumes: []compute.VolumeAttachment{bootEntry, dataEntry},
+		})))
+		h.sweep()
+		h.wantStates(compute.OperationFailed, create)
+		if f := ok(h.repo.Operation(context.Background(), create.ID)).Failure(); f.Code != compute.CodeFailedPrecondition {
+			t.Fatalf("create failure = %+v, want FailedPrecondition", f)
+		}
+		id := ok(compute.ParseInstanceID("web"))
+		failed := h.instance(id)
+		if lc := failed.Lifecycle(); lc != compute.InstanceError {
+			t.Fatalf("lifecycle = %d, want error", lc)
+		}
+		if !failed.Status.Observed.AttachmentFailure.Refused(dataEntry.Volume) {
+			t.Fatalf("attachment failure = %+v, want the data volume refused", failed.Status.Observed.AttachmentFailure)
+		}
+		if m, _ := h.agent.Machine("web"); m.Power != hypervisor.PowerOff || len(m.Volumes) != 0 {
+			t.Fatalf("machine = %+v, want halted without the data volume", m)
+		}
+		h.rec = reconciler.New(h.repo, h.agent, reconciler.WithClock(h.clock.Now), reconciler.WithReports(h.repo),
+			reconciler.WithClaims(s.claim))
+		h.clock.Advance(time.Minute)
+		h.sweep()
+		if got := h.instance(id).Status; !got.UpdatedAt.Equal(failed.Status.UpdatedAt) {
+			t.Fatalf("a restarted sweep rewrote the failed launch: %+v", got)
+		}
+		if n := h.agent.Creations("web"); n != 1 {
+			t.Fatalf("machine created %d times, want 1", n)
+		}
+		start := h.submit("start", ok(compute.NewSetPower("web", compute.PowerRunning, compute.MetadataPatch{})))
+		h.sweep()
+		h.wantStates(compute.OperationSucceeded, start)
+		inst := h.instance(id)
+		if lc := inst.Lifecycle(); lc != compute.InstanceRunning {
+			t.Fatalf("lifecycle after start = %d, want running", lc)
+		}
+		if !slices.Equal(inst.Spec.Volumes, []compute.VolumeAttachment{bootEntry}) {
+			t.Fatalf("volumes after start = %+v, want the boot volume only", inst.Spec.Volumes)
+		}
+		if m, _ := h.agent.Machine("web"); m.Power != hypervisor.PowerOn || len(m.Volumes) != 0 {
+			t.Fatalf("machine after start = %+v, want running without the data volume", m)
+		}
+	})
+}
+
+// TestAttachBeforeTheFirstConvergeFailsOnlyTheAttach: a volume attached by a
+// later generation was not a launch-time device, so storage refusing it
+// before the first converge fails the attach and the instance runs. The
+// boot volume reads attached once the next sweep refreshes the report.
+func TestAttachBeforeTheFirstConvergeFailsOnlyTheAttach(t *testing.T) {
+	eachStore(t, func(h *harness) {
+		h, s := storageHarness(h)
+		s.set(dataVolume, "deleting")
+		create := h.submit("create", createInstance("web"))
+		attach := h.submit("attach", updateVolumes(bootEntry, dataEntry))
+		h.sweep()
+		h.wantStates(compute.OperationSuperseded, create)
+		h.wantStates(compute.OperationFailed, attach)
+		h.sweep()
+		h.wantDetached(attach)
+		if m, _ := h.agent.Machine("web"); m.Power != hypervisor.PowerOn {
+			t.Fatalf("machine = %+v, want running", m)
+		}
+	})
+}
+
+// haltRefused is an agent that refuses every halt for good.
+type haltRefused struct{ *fakeagent.Agent }
+
+func (a haltRefused) ConvergeMachine(ctx context.Context, m hypervisor.MachineSpec) error {
+	if m.Power == hypervisor.PowerOff {
+		return hypervisor.Permanent(errors.New("admission denied"))
+	}
+	return a.Agent.ConvergeMachine(ctx, m)
+}
+
+// TestLaunchWhoseHaltIsRefusedStillFails: a halt the agent refuses for good
+// does not keep the launch pending. The create fails with both refusals
+// named, the instance is in error, and later sweeps write nothing.
+func TestLaunchWhoseHaltIsRefusedStillFails(t *testing.T) {
+	eachStore(t, func(h *harness) {
+		h, s := storageHarness(h)
+		h.rec = reconciler.New(h.repo, haltRefused{h.agent}, reconciler.WithClock(h.clock.Now),
+			reconciler.WithReports(h.repo), reconciler.WithClaims(s.claim))
+		s.set(dataVolume, "deleting")
+		create := h.submit("create", ok(compute.NewCreateInstance(compute.CreateInstanceParams{
+			ID: "web", Project: "p", Zone: "z", MachineType: "vws.small", Power: compute.PowerRunning,
+			Volumes: []compute.VolumeAttachment{bootEntry, dataEntry},
+		})))
+		h.sweep()
+		h.wantStates(compute.OperationFailed, create)
+		f := ok(h.repo.Operation(context.Background(), create.ID)).Failure()
+		if !strings.Contains(f.Message, "being deleted") || !strings.Contains(f.Message, "admission denied") {
+			t.Fatalf("create failure = %q, want the refusal and the refused halt", f.Message)
+		}
+		id := ok(compute.ParseInstanceID("web"))
+		failed := h.instance(id)
+		if lc := failed.Lifecycle(); lc != compute.InstanceError {
+			t.Fatalf("lifecycle = %d, want error", lc)
+		}
+		h.clock.Advance(time.Hour)
+		h.sweep()
+		if got := h.instance(id).Status; !got.UpdatedAt.Equal(failed.Status.UpdatedAt) {
+			t.Fatalf("a later sweep rewrote the failed launch: %+v", got)
+		}
 	})
 }
