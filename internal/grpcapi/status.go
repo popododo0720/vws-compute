@@ -150,13 +150,12 @@ func randomResourceID() (string, error) {
 	return "n-" + hex.EncodeToString(b[:]), nil
 }
 
-// submit admits in. fresh runs only when requestID has no stored operation,
-// which is where an etag is checked: a retry of a request that already
-// moved the resource returns the original operation instead of ETAG_MISMATCH.
-// fresh runs only for a request id the store has not seen. A non-nil intent
-// it returns replaces in: CreateInstance and UpdateInstance fill in volume
-// claims from the storage service there. The replacement must have in's
-// fingerprint.
+// submit admits in. fresh runs, through controller.SubmitFresh, only when
+// requestID has no stored operation, which is where an etag is checked: a
+// retry of a request that already moved the resource returns the original
+// operation instead of ETAG_MISMATCH. A non-nil intent it returns replaces
+// in: CreateInstance and UpdateInstance fill in volume claims from the
+// storage service there. The replacement must have in's fingerprint.
 func (s *server) submit(ctx context.Context, requestID string, in compute.Intent, inErr error, fresh func() (compute.Intent, error)) (controller.Receipt, error) {
 	if err := checkRequestID(requestID); err != nil {
 		return controller.Receipt{}, err
@@ -175,22 +174,7 @@ func (s *server) submit(ctx context.Context, requestID string, in compute.Intent
 	if inErr != nil {
 		return controller.Receipt{}, toStatus(inErr)
 	}
-	if fresh != nil {
-		_, err := s.read.OperationByRequest(ctx, req)
-		switch {
-		case compute.CodeOf(err) == compute.CodeNotFound:
-			next, err := fresh()
-			if err != nil {
-				return controller.Receipt{}, err
-			}
-			if next != nil {
-				in = next
-			}
-		case err != nil:
-			return controller.Receipt{}, toStatus(err)
-		}
-	}
-	rc, err := s.ctl.Submit(ctx, req, in)
+	rc, err := s.ctl.SubmitFresh(ctx, req, in, fresh)
 	if err != nil {
 		return controller.Receipt{}, toStatus(err)
 	}

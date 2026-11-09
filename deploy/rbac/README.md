@@ -16,9 +16,15 @@ Granted in the VM namespace: `get` on PVCs, because `volumes.go`
 creates the volume PVCs; vws-compute only reads them.
 
 `CreateImage` from a volume or a machine clones a PVC in `vws-vms` into an
-image DataVolume in `vws-images`. CDI checks that the DataVolume's creator may
-create `datavolumes/source` in the source PVC's namespace, so the VM Role
-grants exactly that to `vws-compute`.
+image DataVolume in `vws-images`, and `CreateImage` from a snapshot clones a
+VolumeSnapshot in `vws-vms` the same way. vws-storage keeps every claim and
+VolumeSnapshot of every project in `vws-vms` (its `-namespace`, which must equal
+`-vm-namespace`) under a name derived from the full resource name, so a
+snapshot shared from another project is the owner's object there. CDI checks
+that the DataVolume's creator may create `datavolumes/source` in the source
+PVC's or VolumeSnapshot's namespace, so the VM Role grants exactly that to
+`vws-compute`. Compute never reads a VolumeSnapshot: it clones the name
+vws-storage reported.
 
 Cross-namespace clone: VMs clone from a DataSource in `vws-images`, so the VM
 namespace `default` service account gets `create` on `datavolumes/source` in
@@ -34,5 +40,12 @@ after the VM. The Role cannot narrow these to compute's own Secrets
 (`resourceNames` cannot limit `create`), so compute touches only Secrets that
 carry its managed label. Keep no other Secrets in the VM namespace.
 
+Granted in the store namespace: `create` on `coordination.k8s.io` Leases, and
+`get` and `update` on Lease `compute` only, because `lead.go` elects the
+replica that runs Repair and the reconciler on that Lease (`-lease-name`, the
+vws-deploy chart's service key). `create` cannot be narrowed by
+`resourceNames`. A different `-lease-name` needs the same name here.
+
 Not granted, because no code calls it: network-attachment-definitions,
-`virtualmachines/addvolume` (hotplug), and `create`, `list`, `delete` on PVCs.
+`virtualmachines/addvolume` (hotplug), `create`, `list`, `delete` on PVCs, and
+any verb on `volumesnapshots`.

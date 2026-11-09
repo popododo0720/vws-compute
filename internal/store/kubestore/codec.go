@@ -70,7 +70,8 @@ type volumeJSON struct {
 	Claim  string `json:"claim,omitempty"`
 	// DeleteOnTermination is absent on rows written before it existed,
 	// which keeps their volumes.
-	DeleteOnTermination bool `json:"delete_on_termination,omitempty"`
+	DeleteOnTermination bool  `json:"delete_on_termination,omitempty"`
+	AttachTime          int64 `json:"attach_time,omitempty"`
 }
 
 type nicJSON struct {
@@ -88,10 +89,11 @@ type observedNICJSON struct {
 }
 
 type observedVolumeJSON struct {
-	Volume    string `json:"volume"`
-	Device    string `json:"device"`
-	State     uint8  `json:"state"`
-	StateTime int64  `json:"state_time,omitempty"`
+	Volume     string `json:"volume"`
+	Device     string `json:"device"`
+	State      uint8  `json:"state"`
+	StateTime  int64  `json:"state_time,omitempty"`
+	AttachTime int64  `json:"attach_time,omitempty"`
 }
 
 type reportJSON struct {
@@ -118,6 +120,9 @@ type instanceJSON struct {
 	Project     string `json:"project,omitempty"`
 	Zone        string `json:"zone,omitempty"`
 	UserData    string `json:"user_data,omitempty"`
+	// UserDataRaw is base64 in JSON, so non-UTF-8 bytes survive. Rows
+	// written before user_data_raw lack it and decode as unset.
+	UserDataRaw []byte `json:"user_data_raw,omitempty"`
 
 	Volumes []volumeJSON `json:"volumes,omitempty"`
 	NICs    []nicJSON    `json:"nics,omitempty"`
@@ -342,8 +347,14 @@ func instanceTo(in compute.Instance) *instanceJSON {
 	if s.Key != nil {
 		j.KeyName, j.KeyPublic = s.Key.Name.String(), s.Key.PublicKey.AuthorizedKey()
 	}
+	if s.UserDataRaw != "" {
+		j.UserDataRaw = []byte(s.UserDataRaw)
+	}
 	for _, v := range s.Volumes {
-		j.Volumes = append(j.Volumes, volumeJSON{Volume: v.Volume.String(), Device: v.DeviceName, Boot: v.Boot, Claim: v.Claim, DeleteOnTermination: v.DeleteOnTermination})
+		j.Volumes = append(j.Volumes, volumeJSON{
+			Volume: v.Volume.String(), Device: v.DeviceName, Boot: v.Boot, Claim: v.Claim,
+			DeleteOnTermination: v.DeleteOnTermination, AttachTime: nanos(v.AttachTime),
+		})
 	}
 	for _, n := range s.NICs {
 		j.NICs = append(j.NICs, nicJSON{Device: n.DeviceName, Subnet: n.Subnet, PrivateIPv4: n.PrivateIPv4, SecurityGroups: n.SecurityGroups})
@@ -354,6 +365,7 @@ func instanceTo(in compute.Instance) *instanceJSON {
 	for _, v := range st.Report.Volumes {
 		j.Report.Volumes = append(j.Report.Volumes, observedVolumeJSON{
 			Volume: v.Volume.String(), Device: v.DeviceName, State: uint8(v.State), StateTime: nanos(v.StateTime),
+			AttachTime: nanos(v.AttachTime),
 		})
 	}
 	return j
@@ -383,7 +395,10 @@ func instanceFrom(j *instanceJSON) (compute.Instance, error) {
 	for _, v := range j.Volumes {
 		ref, err := compute.ParseVolumeRef(v.Volume)
 		errs = append(errs, err)
-		vols = append(vols, compute.VolumeAttachment{Volume: ref, DeviceName: v.Device, Boot: v.Boot, Claim: v.Claim, DeleteOnTermination: v.DeleteOnTermination})
+		vols = append(vols, compute.VolumeAttachment{
+			Volume: ref, DeviceName: v.Device, Boot: v.Boot, Claim: v.Claim,
+			DeleteOnTermination: v.DeleteOnTermination, AttachTime: fromNanos(v.AttachTime),
+		})
 	}
 	var nics []compute.NetworkInterface
 	for _, n := range j.NICs {
@@ -398,6 +413,7 @@ func instanceFrom(j *instanceJSON) (compute.Instance, error) {
 			inRange("volume attach state", int64(v.State), int64(compute.AttachAttaching), int64(compute.AttachBusy)))
 		observedVols = append(observedVols, compute.ObservedVolume{
 			Volume: ref, DeviceName: v.Device, State: compute.AttachState(v.State), StateTime: fromNanos(v.StateTime),
+			AttachTime: fromNanos(v.AttachTime),
 		})
 	}
 	if err := errors.Join(err1, err2, err3, err4, err5, err6, err7, err8, err9, err10, errors.Join(errs...)); err != nil {
@@ -414,7 +430,8 @@ func instanceFrom(j *instanceJSON) (compute.Instance, error) {
 		Spec: compute.InstanceSpec{
 			ID: id, Generation: j.Generation, CreatedAt: fromNanos(j.CreatedAt), ChangedAt: fromNanos(j.ChangedAt),
 			Image: img, Type: typ, Key: key, Power: compute.Power(j.Power), RebootEpoch: j.RebootEpoch,
-			Project: j.Project, Zone: j.Zone, UserData: j.UserData, Volumes: vols, NICs: nics,
+			Project: j.Project, Zone: j.Zone, UserData: j.UserData, UserDataRaw: string(j.UserDataRaw),
+			Volumes: vols, NICs: nics,
 		},
 		Status: compute.InstanceStatus{
 			Observed: obs, Machine: compute.MachineState(j.Machine), RebootEpoch: j.AppliedEpoch,

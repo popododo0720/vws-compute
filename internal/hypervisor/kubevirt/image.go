@@ -125,6 +125,11 @@ func (a *Agent) imageSource(ctx context.Context, spec hypervisor.ImageSpec) (map
 		}
 		return map[string]any{"pvc": map[string]any{"namespace": ns, "name": spec.SourceClaim}}, nil
 	default:
+		// vws-storage keeps every VolumeSnapshot in the VM namespace and
+		// names it after the snapshot's full resource name (snap-<hash>), so
+		// the object it reported is the owner's whichever project shared it.
+		// CDI authorizes the clone by create on datavolumes/source in this
+		// namespace (deploy/rbac/kubevirt-role.yaml, vws-compute#164).
 		if err := objectName(spec.Name, "VolumeSnapshot", spec.SourceVolumeSnapshot); err != nil {
 			return nil, err
 		}

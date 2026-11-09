@@ -32,7 +32,8 @@ import (
 
 var _ store.Repository = (*Store)(nil)
 
-// Store is safe for concurrent use. It holds no state besides the client.
+// Store is safe for concurrent use. It holds no state besides the client
+// and its metric instruments.
 type Store struct {
 	c  client.Client
 	ns string
@@ -43,11 +44,18 @@ type Store struct {
 	// legacyImageScope is the scope of an image record written without one
 	// (before #92, or a seed image). Zero leaves such images in no project.
 	legacyImageScope compute.ImageScope
+	// lease is the leader election timing of Lead.
+	lease lease
+	m     meters
 }
 
 // New returns a store over namespace ns. It does not touch the cluster.
-// Call Repair once before serving.
-func New(c client.Client, ns string) *Store { return &Store{c: c, ns: ns} }
+// Its metrics go to the meter provider installed when it is called.
+// A single writer calls Repair once before serving. Replicas call WithLease
+// and Lead, which repairs while it holds the Lease.
+func New(c client.Client, ns string) *Store {
+	return &Store{c: c, ns: ns, m: newMeters()}
+}
 
 // WithLegacyImageScope sets the scope read for image records that carry none.
 // The record is rewritten with it the next time its image changes.

@@ -238,3 +238,64 @@ func TestMissingClaimIsTransientAndBadNamesPermanent(t *testing.T) {
 		}
 	}
 }
+
+// TestTerminatingClaimIsRefusedPermanently: a claim storage has started to
+// delete (a finalizer holds it with a deletionTimestamp) is refused as a
+// permanent attachment error on hot-plug and at create, and the machine never
+// lists it. Converging again refuses it again and still writes nothing.
+func TestTerminatingClaimIsRefusedPermanently(t *testing.T) {
+	c, ns, w := newClient(t)
+	standardImage(t, c, ns)
+	ctx := context.Background()
+	a := New(c, Config{Namespace: ns})
+	claim(t, c, ns, "going", corev1.ReadWriteOnce)
+	pvc := &corev1.PersistentVolumeClaim{}
+	if err := c.Get(ctx, client.ObjectKey{Namespace: ns, Name: "going"}, pvc); err != nil {
+		t.Fatal(err)
+	}
+	pvc.Finalizers = append(pvc.Finalizers, "vws.io/test-hold")
+	if err := c.Update(ctx, pvc); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Delete(ctx, pvc); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := c.Get(ctx, client.ObjectKeyFromObject(pvc), pvc); err == nil {
+			pvc.Finalizers = nil
+			_ = c.Update(ctx, pvc) //nolint:errcheck // the namespace goes with the test
+		}
+	})
+
+	running := spec("i-0123456789abcdef0", hypervisor.PowerOn)
+	if err := a.ConvergeMachine(ctx, running); err != nil {
+		t.Fatal(err)
+	}
+	running.Volumes = []hypervisor.Volume{{Name: "data", Claim: "going"}}
+	before := w.n.Load()
+	for range 2 {
+		err := a.ConvergeMachine(ctx, running)
+		if !hypervisor.IsPermanent(err) || hypervisor.CauseOf(err) != hypervisor.CauseAttachment {
+			t.Fatalf("hot-plug of a terminating claim = %v, want a permanent attachment error", err)
+		}
+		if got := hypervisor.AttachmentVolumes(err); len(got) != 1 || got[0] != running.Volumes[0] {
+			t.Fatalf("refused volumes = %v, want %v", got, running.Volumes)
+		}
+	}
+	if got := w.n.Load() - before; got != 0 {
+		t.Fatalf("refused hot-plug wrote %d times, want 0", got)
+	}
+	if vols, _ := diskNames(t, c, ns, running.Name); !equal(vols, []string{"rootdisk"}) {
+		t.Fatalf("refused hot-plug changed the machine: %v", vols)
+	}
+
+	created := spec("i-0123456789abcdef1", hypervisor.PowerOn)
+	created.Volumes = running.Volumes
+	err := a.ConvergeMachine(ctx, created)
+	if !hypervisor.IsPermanent(err) || hypervisor.CauseOf(err) != hypervisor.CauseAttachment {
+		t.Fatalf("create with a terminating claim = %v, want a permanent attachment error", err)
+	}
+	if vols, _ := diskNames(t, c, ns, created.Name); !equal(vols, []string{"rootdisk"}) {
+		t.Fatalf("create kept the terminating claim: %v", vols)
+	}
+}

@@ -373,6 +373,7 @@ func (in setPower) encode(e *encoder) {
 			e.field(a.DeviceName)
 			e.field(fmt.Sprint(a.Boot))
 		}
+		encodeTermination(e, in.volumes)
 	}
 }
 

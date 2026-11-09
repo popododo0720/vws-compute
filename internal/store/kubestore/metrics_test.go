@@ -19,12 +19,12 @@ import (
 	"github.com/popododo0720/vws-compute/internal/store/kubestore/kubetest"
 )
 
-// TestCASConflictIsCounted makes one update lose a resourceVersion race and
-// checks the vws.store.conflicts point a collector would read.
-func TestCASConflictIsCounted(t *testing.T) {
-	ctx := context.Background()
+// collector installs a process meter provider that a test reads with Collect.
+// A store made after it reports there.
+func collector(t *testing.T) *sdkmetric.ManualReader {
+	t.Helper()
 	reader := sdkmetric.NewManualReader()
-	shutdown, err := obs.Setup(ctx, obs.ForService("compute"), obs.WithOverride(func(c *obs.Config) {
+	shutdown, err := obs.Setup(context.Background(), obs.ForService("compute"), obs.WithOverride(func(c *obs.Config) {
 		c.MetricReaders = []sdkmetric.Reader{reader}
 		c.LogOutput = io.Discard
 	}))
@@ -32,6 +32,14 @@ func TestCASConflictIsCounted(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = shutdown(context.Background()) })
+	return reader
+}
+
+// TestCASConflictIsCounted makes one update lose a resourceVersion race and
+// checks the vws.store.conflicts point a collector would read.
+func TestCASConflictIsCounted(t *testing.T) {
+	ctx := context.Background()
+	reader := collector(t)
 
 	raw, ns := kubetest.Namespace(t)
 	spec := runSpec(t, 1, 1)

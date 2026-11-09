@@ -59,6 +59,10 @@ func serve(t *testing.T) *harness {
 	return serveRepo(t, memstore.New().WithLegacyImageScope(demoScope))
 }
 
+// fixtureZones places the zones the fixtures name: vws-1a in vws-1 and demoa
+// in demo.
+var fixtureZones = compute.Zones{"vws-1a": "vws-1", "demoa": "demo"}
+
 func serveRepo(t *testing.T, repo store.Repository, opts ...grpcapi.Option) *harness {
 	t.Helper()
 	return serveRepoServer(t, repo, nil, opts...)
@@ -76,7 +80,7 @@ func serveRepoServer(t *testing.T, repo store.Repository, serverOpts []grpc.Serv
 
 	lis := bufconn.Listen(1 << 20)
 	srv := grpc.NewServer(append(append([]grpc.ServerOption{}, serverOpts...), grpc.WaitForHandlers(true))...)
-	grpcapi.Register(srv, ctl, repo, opts...)
+	grpcapi.Register(srv, ctl, repo, append([]grpcapi.Option{grpcapi.WithZones(fixtureZones)}, opts...)...)
 	ctx, cancel := context.WithCancel(context.Background())
 	stopped := make(chan struct{})
 	go func() {

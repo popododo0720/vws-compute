@@ -39,9 +39,11 @@ rules:
   - apiGroups: ["cdi.kubevirt.io"]
     resources: ["datavolumes/source"]
     # create: CDI checks that the DataVolume's creator may create a clone
-    # source in the source PVC's namespace. image.go ConvergeImage clones a
-    # volume or a machine's root disk from vws-vms into an image in
-    # vws-images (vws-compute#96).
+    # source in the namespace of the source PVC or VolumeSnapshot. image.go
+    # ConvergeImage clones a volume, a machine's root disk, or a snapshot
+    # (shared from another project or not) from vws-vms into an image in
+    # vws-images (vws-compute#96, #164). vws-storage keeps every claim and
+    # VolumeSnapshot in vws-vms.
     verbs: ["create"]
   - apiGroups: [""]
     resources: ["secrets"]

@@ -251,6 +251,9 @@ func (s *Store) write(ctx context.Context, e *entry) error {
 	if apierrors.IsRequestEntityTooLargeError(err) {
 		return tooLarge(e.ref, len(cm.Data[recordKey]))
 	}
+	if err == nil {
+		s.m.recordSize(ctx, len(cm.Data[recordKey]))
+	}
 	return s.cas(ctx, err)
 }
 
@@ -266,7 +269,7 @@ func tooLarge(ref compute.Ref, n int) error {
 func (s *Store) cas(ctx context.Context, err error) error {
 	err = casErr(err)
 	if isCAS(err) {
-		obs.M().StoreConflict(ctx, "kubestore")
+		obs.M().StoreConflict(ctx, storeLabel)
 	}
 	return err
 }

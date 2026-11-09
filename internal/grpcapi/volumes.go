@@ -14,6 +14,8 @@ import (
 	commonv1 "github.com/popododo0720/vws-proto/gen/go/vws/common/v1"
 	storagev1 "github.com/popododo0720/vws-proto/gen/go/vws/storage/v1"
 
+	"github.com/popododo0720/vws-lib/obs/grpcobs"
+
 	"github.com/popododo0720/vws-compute/internal/compute"
 	"github.com/popododo0720/vws-compute/internal/hypervisor"
 )
@@ -99,9 +101,12 @@ type storage struct {
 
 // DialStorage connects lazily to the storage service at addr and returns a
 // lookup over it and a function that closes the connection. The lookup also
-// deletes volumes (see DeleteVolumes).
+// deletes volumes (see DeleteVolumes). Every call carries the caller's trace
+// context and request id, and is a client span and a vws.rpc.client.duration
+// point, through vws-lib grpcobs.
 func DialStorage(addr string) (Storage, func() error, error) {
-	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	opts := append(grpcobs.ClientOptions(ServiceName, "storage"), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	conn, err := grpc.NewClient(addr, opts...)
 	if err != nil {
 		return nil, nil, fmt.Errorf("dial storage %s: %w", addr, err)
 	}

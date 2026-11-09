@@ -136,11 +136,12 @@ func dataVolumeEntries(want []hypervisor.Volume) (volumes, disks []any) {
 }
 
 // checkAttachable fails permanently when a volume that is being attached is a
-// single-writer claim already used by another VirtualMachine, or, with
-// hotplug, a claim whose volumeMode is not Block. A claim that does not exist
-// yet is transient: the storage service may still be creating it. Every
-// permanent hotplug refusal is returned in one joined attachment error, so no
-// refused volume is left out of the report.
+// claim being deleted (it has a deletionTimestamp), a single-writer claim
+// already used by another VirtualMachine, or, with hotplug, a claim whose
+// volumeMode is not Block. A claim that does not exist yet is transient: the
+// storage service may still be creating it. Every permanent hotplug refusal
+// is returned in one joined attachment error, so no refused volume is left
+// out of the report.
 //
 // KubeVirt hot-plugs a Block claim as a raw device but expects a Filesystem
 // claim to hold a disk.img, which a fresh storage volume does not. That fails
@@ -170,6 +171,14 @@ func (a *Agent) checkAttachable(ctx context.Context, machine string, vm *unstruc
 		}
 		if err != nil {
 			return fmt.Errorf("machine %s: get claim %s: %w", machine, v.Claim, err)
+		}
+		if pvc.DeletionTimestamp != nil {
+			err := hypervisor.Permanent(fmt.Errorf("machine %s: volume %s: claim %s is being deleted", machine, v.Name, v.Claim))
+			if !hotplug {
+				return err
+			}
+			refused = append(refused, hypervisor.Attachment(v, err))
+			continue
 		}
 		if hotplug {
 			if err := requireBlock(machine, v, &pvc); err != nil {

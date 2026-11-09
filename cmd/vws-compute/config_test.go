@@ -2,8 +2,10 @@ package main
 
 import (
 	"io"
+	"os"
 	"strings"
 	"testing"
+	"time"
 )
 
 func envOf(m map[string]string) func(string) string { return func(k string) string { return m[k] } }
@@ -24,7 +26,7 @@ func TestParseConfigDefaults(t *testing.T) {
 func TestParseConfigEnvAndFlagPrecedence(t *testing.T) {
 	env := envOf(map[string]string{
 		"VWS_HYPERVISOR": "kubevirt", "VWS_STORE_NAMESPACE": "store", "VWS_VM_NAMESPACE": "vms-env", "VWS_IMAGE_NAMESPACE": "img-env",
-		"VWS_IMAGE_STORAGE_CLASS": "fast.block", "VWS_IMAGE_ACCESS_MODE": "ReadWriteMany",
+		"VWS_IMAGE_STORAGE_CLASS": "fast.block", "VWS_IMAGE_ACCESS_MODE": "ReadWriteMany", "VWS_NAD_NAMESPACE": "nad-env",
 	})
 	c, err := parseConfig(nil, env, io.Discard)
 	if err != nil {
@@ -33,17 +35,19 @@ func TestParseConfigEnvAndFlagPrecedence(t *testing.T) {
 	if c.hypervisor != "kubevirt" || c.namespace != "store" || c.vmNamespace != "vms-env" || c.imageNamespace != "img-env" {
 		t.Fatalf("env = %+v", c)
 	}
-	if c.imageStorageClass != "fast.block" || c.imageAccessMode != "ReadWriteMany" {
-		t.Fatalf("image storage env = %q, %q", c.imageStorageClass, c.imageAccessMode)
+	if c.imageStorageClass != "fast.block" || c.imageAccessMode != "ReadWriteMany" ||
+		c.nadNamespace != "nad-env" {
+		t.Fatalf("image storage and nad env = %q, %q, %q", c.imageStorageClass, c.imageAccessMode, c.nadNamespace)
 	}
 	c, err = parseConfig([]string{
-		"-vm-namespace", "vms-flag", "-hypervisor", "fake",
+		"-vm-namespace", "vms-flag", "-hypervisor", "fake", "-nad-namespace", "nad-flag",
 		"-image-storage-class", "slow", "-image-access-mode", "ReadOnlyMany",
 	}, env, io.Discard)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.vmNamespace != "vms-flag" || c.hypervisor != "fake" || c.imageNamespace != "img-env" {
+	if c.vmNamespace != "vms-flag" || c.hypervisor != "fake" || c.imageNamespace != "img-env" ||
+		c.nadNamespace != "nad-flag" {
 		t.Fatalf("flag did not win: %+v", c)
 	}
 	if c.imageStorageClass != "slow" || c.imageAccessMode != "ReadOnlyMany" {
@@ -104,6 +108,8 @@ func TestParseConfigRejectsMalformedValues(t *testing.T) {
 		"storage class long":    {args: []string{"-image-storage-class", strings.Repeat("a", 254)}},
 		"access mode unknown":   {args: []string{"-image-access-mode", "ReadWrite"}},
 		"access mode empty":     {args: []string{"-image-access-mode", ""}},
+		"nad ns slash":          {args: []string{"-nad-namespace", "vws-nad/x"}},
+		"nad ns from env":       {env: map[string]string{"VWS_NAD_NAMESPACE": "VWS-NAD"}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			getenv := func(k string) string { return tc.env[k] }
@@ -189,5 +195,76 @@ func TestParseConfigPublicImages(t *testing.T) {
 	}
 	if _, err := parseConfig([]string{"-public-images", "not an id"}, envOf(nil), io.Discard); err == nil {
 		t.Fatal("bad id accepted")
+	}
+}
+
+func TestParseConfigZones(t *testing.T) {
+	c, err := parseConfig(nil, envOf(nil), io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.zones.String() != "vws-1a=vws-1" {
+		t.Fatalf("default zones = %q, want vws-storage's default zone vws-1a in vws-1", c.zones.String())
+	}
+	c, err = parseConfig(nil, envOf(map[string]string{"VWS_ZONES": "vws-1a=vws-1,vws-1-lax-1a=vws-1"}), io.Discard)
+	if err != nil || !c.zones.InRegion("vws-1-lax-1a", "vws-1") {
+		t.Fatalf("env zones = %v, %v", c.zones, err)
+	}
+	flagArgs := []string{"-zones", "vws-2-wl1-bos-wlz-1=vws-2"}
+	c, err = parseConfig(flagArgs, envOf(map[string]string{"VWS_ZONES": "vws-1a=vws-1"}), io.Discard)
+	if err != nil || c.zones.String() != "vws-2-wl1-bos-wlz-1=vws-2" {
+		t.Fatalf("flag zones = %v, %v", c.zones, err)
+	}
+	for _, bad := range []string{"", "vws-1a", "vws-1a=vws-1,vws-1a=vws-2"} {
+		if _, err := parseConfig([]string{"-zones", bad}, envOf(nil), io.Discard); err == nil {
+			t.Fatalf("-zones %q accepted", bad)
+		}
+	}
+}
+
+func TestParseConfigLeaseTiming(t *testing.T) {
+	c, err := parseConfig(nil, envOf(nil), io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.leaseName != "compute" {
+		t.Fatalf("lease name = %q, want the chart's service key compute", c.leaseName)
+	}
+	if c.leaseDuration != 15*time.Second || c.renewDeadline != 10*time.Second || c.retryPeriod != 2*time.Second {
+		t.Fatalf("lease defaults = %s/%s/%s, want the client-go 15s/10s/2s", c.leaseDuration, c.renewDeadline, c.retryPeriod)
+	}
+	args := []string{"-lease-duration", "4s", "-lease-renew-deadline", "2s", "-lease-retry-period", "500ms"}
+	c, err = parseConfig(args, envOf(nil), io.Discard)
+	if err != nil || c.leaseDuration != 4*time.Second || c.renewDeadline != 2*time.Second ||
+		c.retryPeriod != 500*time.Millisecond {
+		t.Fatalf("lease flags = %s/%s/%s, %v", c.leaseDuration, c.renewDeadline, c.retryPeriod, err)
+	}
+	for name, args := range map[string][]string{
+		"overlapping terms": {"-lease-duration", "12s"},
+		"fractional seconds": {
+			"-lease-duration", "900ms", "-lease-renew-deadline", "500ms", "-lease-retry-period", "100ms",
+		},
+		"renew under 1.2 retry": {"-lease-renew-deadline", "2s"},
+		"zero retry":            {"-lease-retry-period", "0s"},
+		"bad name":              {"-lease-name", "Not_A_Name"},
+		"empty name":            {"-lease-name", ""},
+		"negative retry":        {"-lease-retry-period", "-1s"},
+	} {
+		if _, err := parseConfig(args, envOf(nil), io.Discard); err == nil || !strings.Contains(err.Error(), "lease") {
+			t.Errorf("%s: err = %v, want a lease timing error", name, err)
+		}
+	}
+}
+
+// TestLeaseRoleNamesTheDefaultLease keeps the default Lease name and the
+// Role that grants get and update on it in step: a Lease the Role does not
+// name answers Forbidden, so no replica would ever lead.
+func TestLeaseRoleNamesTheDefaultLease(t *testing.T) {
+	role, err := os.ReadFile("../../deploy/rbac/configmap-role.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `resourceNames: ["` + defaultLeaseName + `"]`; !strings.Contains(string(role), want) {
+		t.Fatalf("deploy/rbac/configmap-role.yaml has no %s for the default Lease", want)
 	}
 }

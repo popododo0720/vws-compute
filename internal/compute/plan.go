@@ -2,6 +2,7 @@ package compute
 
 import (
 	"io"
+	"slices"
 	"time"
 )
 
@@ -110,7 +111,7 @@ func (in setPower) plan(v View, env Env) (Change, error) {
 	if err != nil {
 		return Change{}, err
 	}
-	volumes, changed, err := in.nextVolumes(cur)
+	volumes, changed, err := in.nextVolumes(cur, env.Now)
 	if err != nil {
 		return Change{}, err
 	}
@@ -151,8 +152,10 @@ func withoutRefused(vols []VolumeAttachment, cur InstanceSpec, obs Observed) []V
 
 // nextVolumes returns the attachments after in and whether they differ from
 // cur's. Only a controller-driven, non-terminated instance takes volumes,
-// and its boot entry is fixed at create.
-func (in setPower) nextVolumes(cur InstanceSpec) ([]VolumeAttachment, bool, error) {
+// and its boot entry is fixed at create. An entry already in cur keeps its
+// AttachTime, even when only its DeleteOnTermination changed; a new one is
+// stamped now.
+func (in setPower) nextVolumes(cur InstanceSpec, now time.Time) ([]VolumeAttachment, bool, error) {
 	if !in.setVolumes {
 		return cur.Volumes, false, nil
 	}
@@ -170,7 +173,7 @@ func (in setPower) nextVolumes(cur InstanceSpec) ([]VolumeAttachment, bool, erro
 	if len(in.volumes) == len(cur.Volumes) {
 		same := true
 		for i := range in.volumes {
-			same = same && sameAttachment(in.volumes[i], cur.Volumes[i])
+			same = same && sameRequestedAttachment(in.volumes[i], cur.Volumes[i])
 		}
 		if same {
 			return cur.Volumes, false, nil
@@ -179,16 +182,19 @@ func (in setPower) nextVolumes(cur InstanceSpec) ([]VolumeAttachment, bool, erro
 	if cur.Power == PowerTerminated {
 		return nil, false, Errorf(CodeFailedPrecondition, "instance %s is terminated", in.instance)
 	}
-	return append([]VolumeAttachment(nil), in.volumes...), true, nil
+	next := make([]VolumeAttachment, len(in.volumes))
+	for i, a := range in.volumes {
+		a.AttachTime = now
+		if j := slices.IndexFunc(cur.Volumes, func(v VolumeAttachment) bool { return sameAttachment(v, a) }); j >= 0 {
+			a.AttachTime = cur.Volumes[j].AttachTime
+		}
+		next[i] = a
+	}
+	return next, true, nil
 }
 
 func hasAttachment(vols []VolumeAttachment, a VolumeAttachment) bool {
-	for _, v := range vols {
-		if sameAttachment(v, a) {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(vols, func(v VolumeAttachment) bool { return sameAttachment(v, a) })
 }
 
 // plan refuses an id that any image already holds, including a tombstone,

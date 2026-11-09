@@ -3,12 +3,16 @@
 // It runs the reconciler against the in-memory fake hypervisor agent, or
 // against KubeVirt and CDI with -hypervisor=kubevirt. With
 // -namespace set, desired state, observed status, and operations persist as
-// ConfigMaps in that Kubernetes namespace. Startup repairs the namespace and
-// re-applies the stored specs, so the fake agent is rebuilt after a restart.
+// ConfigMaps in that Kubernetes namespace, and replicas elect a leader on a
+// Lease there. Every replica serves gRPC. Only the leader repairs the
+// namespace and runs the reconciler, which first re-applies the stored
+// specs, so the fake agent is rebuilt after a restart.
 package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"flag"
 	"fmt"
@@ -26,7 +30,6 @@ import (
 	"github.com/popododo0720/vws-lib/obs"
 	obshealth "github.com/popododo0720/vws-lib/obs/health"
 
-	"github.com/popododo0720/vws-compute/internal/compute"
 	"github.com/popododo0720/vws-compute/internal/controller"
 	"github.com/popododo0720/vws-compute/internal/grpcapi"
 	"github.com/popododo0720/vws-compute/internal/hypervisor"
@@ -87,12 +90,12 @@ func run(ctx context.Context, cfg config) error {
 			slog.WarnContext(ctx, "observability shutdown", slog.String(obs.FieldErr, err.Error()))
 		}
 	}()
-	listen, namespace, kubeconfig, seedImages, storage := cfg.listen, cfg.namespace, cfg.kubeconfig, cfg.seedImages, cfg.storage
+	listen, namespace, seedImages, storage := cfg.listen, cfg.namespace, cfg.seedImages, cfg.storage
 	seed, err := readSeed(seedImages)
 	if err != nil {
 		return err
 	}
-	repo, err := openStore(ctx, namespace, kubeconfig, cfg.legacyImageScope)
+	repo, err := openStore(ctx, cfg)
 	if err != nil {
 		return err
 	}
@@ -106,7 +109,7 @@ func run(ctx context.Context, cfg config) error {
 	if err != nil {
 		return err
 	}
-	opts := []grpcapi.Option{grpcapi.WithPublicImages(cfg.publicImages)}
+	opts := []grpcapi.Option{grpcapi.WithPublicImages(cfg.publicImages), grpcapi.WithZones(cfg.zones)}
 	var lookup grpcapi.Storage
 	if storage != "" {
 		// The connection is lazy: the storage service may come up after this
@@ -136,7 +139,7 @@ func run(ctx context.Context, cfg config) error {
 			reconciler.WithSnapshotObjects(grpcapi.SnapshotObjects(lookup)),
 		)
 		if del := grpcapi.DeleteVolumes(lookup); del != nil {
-			// Root volumes go with their instance (DeleteOnTermination).
+			// Volumes marked DeleteOnTermination go with their instance.
 			recOpts = append(recOpts, reconciler.WithVolumeDeleter(del))
 		}
 	}
@@ -146,7 +149,11 @@ func run(ctx context.Context, cfg config) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	reconciled := make(chan error, 1)
-	go func() { reconciled <- recovered(func() error { return rec.Run(ctx) }) }()
+	identity, err := replicaIdentity()
+	if err != nil {
+		return err
+	}
+	go func() { reconciled <- recovered(func() error { return lead(ctx, repo, identity, rec.Run) }) }()
 	if err := applySeed(ctx, ctl, repo, seed); err != nil {
 		return stopReconciler(cancel, reconciled, err)
 	}
@@ -251,21 +258,55 @@ func newAgent(cfg config) (hypervisor.Agent, error) {
 		return fakeagent.New(), nil
 	}
 	return kubevirt.Open(cfg.kubeconfig, kubevirt.Config{
-		Namespace:         cfg.vmNamespace,
-		ImageNamespace:    cfg.imageNamespace,
-		ImageStorageClass: cfg.imageStorageClass,
-		ImageAccessMode:   cfg.imageAccessMode,
+		Namespace:          cfg.vmNamespace,
+		ImageNamespace:     cfg.imageNamespace,
+		ImageStorageClass:  cfg.imageStorageClass,
+		ImageAccessMode:    cfg.imageAccessMode,
+		SubnetNADNamespace: cfg.nadNamespace,
 	})
 }
 
-func open(ctx context.Context, namespace, kubeconfig string, legacyImageScope compute.ImageScope) (store.Repository, error) {
-	if namespace == "" {
-		return memstore.New().WithLegacyImageScope(legacyImageScope), nil
+func open(ctx context.Context, cfg config) (store.Repository, error) {
+	if cfg.namespace == "" {
+		return memstore.New().WithLegacyImageScope(cfg.legacyImageScope), nil
 	}
-	repo, repaired, err := kubestore.Open(ctx, kubeconfig, namespace, legacyImageScope)
+	repo, err := kubestore.Open(cfg.kubeconfig, cfg.namespace, cfg.legacyImageScope)
 	if err != nil {
 		return nil, err
 	}
-	slog.InfoContext(ctx, "opened store", slog.String("namespace", namespace), slog.Any("repaired", repaired))
-	return repo, nil
+	slog.InfoContext(ctx, "opened store", slog.String("namespace", cfg.namespace))
+	return repo.WithLease(cfg.leaseName, cfg.leaseDuration, cfg.renewDeadline, cfg.retryPeriod), nil
+}
+
+// leader is a repository that several replicas share. Only the replica that
+// holds its Lease runs the leader-only work: Repair and the reconciler.
+type leader interface {
+	Lead(ctx context.Context, identity string, term func(context.Context) error) error
+}
+
+// lead runs term while this replica leads, or always when the repository is
+// this process's own (the memory store).
+func lead(ctx context.Context, repo store.Repository, identity string, term func(context.Context) error) error {
+	if l, ok := repo.(leader); ok {
+		if err := l.Lead(ctx, identity, term); err != nil {
+			return fmt.Errorf("lead: %w", err)
+		}
+		return nil
+	}
+	return term(ctx)
+}
+
+// replicaIdentity is the Lease holder name: the host name, which is the pod
+// name in a cluster, plus a random suffix, so a restarted pod with the same
+// name never mistakes the old holder for itself.
+func replicaIdentity() (string, error) {
+	host, err := os.Hostname()
+	if err != nil {
+		return "", fmt.Errorf("host name: %w", err)
+	}
+	var b [4]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", fmt.Errorf("replica identity: %w", err)
+	}
+	return host + "_" + hex.EncodeToString(b[:]), nil
 }

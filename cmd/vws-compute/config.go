@@ -8,6 +8,7 @@ import (
 	"net"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/popododo0720/vws-compute/internal/compute"
 	"github.com/popododo0720/vws-compute/internal/hypervisor/kubevirt"
@@ -42,7 +43,10 @@ func (c config) validate() error {
 		return fmt.Errorf("-listen %q: %w", c.listen, err)
 	}
 	for _, ns := range []struct{ flag, v string }{
-		{"-namespace", c.namespace}, {"-vm-namespace", c.vmNamespace}, {"-image-namespace", c.imageNamespace},
+		{"-namespace", c.namespace},
+		{"-vm-namespace", c.vmNamespace},
+		{"-image-namespace", c.imageNamespace},
+		{"-nad-namespace", c.nadNamespace},
 	} {
 		if ns.v != "" && !dnsLabel.MatchString(ns.v) {
 			return fmt.Errorf("%s %q is not a valid namespace name", ns.flag, ns.v)
@@ -54,8 +58,32 @@ func (c config) validate() error {
 	if !imageAccessModes[c.imageAccessMode] {
 		return fmt.Errorf("-image-access-mode %q is not a known access mode", c.imageAccessMode)
 	}
+	if !dnsSubdomain.MatchString(c.leaseName) || len(c.leaseName) > 253 {
+		return fmt.Errorf("-lease-name %q is not a valid Lease name", c.leaseName)
+	}
+	// client-go's leaderelection needs renewDeadline > 1.2 * retryPeriod. A
+	// deposed leader stops at most renewDeadline + retryPeriod after its last
+	// renew, and a follower takes over no sooner than leaseDuration after
+	// it, so leaseDuration must exceed that sum for terms never to overlap.
+	// The Lease stores whole seconds, so a fraction would be truncated.
+	if c.retryPeriod <= 0 || c.renewDeadline <= time.Duration(1.2*float64(c.retryPeriod)) ||
+		c.leaseDuration%time.Second != 0 || c.leaseDuration <= c.renewDeadline+c.retryPeriod {
+		return fmt.Errorf("lease timing %s/%s/%s: want whole seconds of -lease-duration > "+
+			"-lease-renew-deadline + -lease-retry-period, and -lease-renew-deadline > 1.2 * -lease-retry-period > 0",
+			c.leaseDuration, c.renewDeadline, c.retryPeriod)
+	}
 	return nil
 }
+
+// The Lease defaults. The name is the vws-deploy chart's service key, whose
+// leader Role grants get and update on that Lease only. The timing is the
+// client-go default.
+const (
+	defaultLeaseName     = "compute"
+	defaultLeaseDuration = 15 * time.Second
+	defaultRenewDeadline = 10 * time.Second
+	defaultRetryPeriod   = 2 * time.Second
+)
 
 const (
 	hypervisorFake     = "fake"
@@ -73,6 +101,8 @@ type config struct {
 	hypervisor     string
 	vmNamespace    string
 	imageNamespace string
+	// nadNamespace holds vws-network's per-subnet NetworkAttachmentDefinitions.
+	nadNamespace string
 	// imageStorageClass and imageAccessMode select the target claim of image
 	// DataVolumes.
 	imageStorageClass string
@@ -82,6 +112,12 @@ type config struct {
 	legacyImageScope compute.ImageScope
 	// publicImages are readable by every project in their region.
 	publicImages compute.PublicImages
+	// zones places each availability zone in its region.
+	zones compute.Zones
+	// leaseName is the Lease that replicas sharing -namespace elect the
+	// leader on. leaseDuration, renewDeadline, and retryPeriod time it.
+	leaseName                                 string
+	leaseDuration, renewDeadline, retryPeriod time.Duration
 }
 
 func parseConfig(args []string, getenv func(string) string, errOut io.Writer) (config, error) {
@@ -101,6 +137,9 @@ func parseConfig(args []string, getenv func(string) string, errOut io.Writer) (c
 	fs.StringVar(&c.storage, "storage", "", "vws-storage gRPC address CreateInstance verifies volumes against; empty makes CreateInstance answer DEPENDENCY_MISSING")
 	fs.StringVar(&c.hypervisor, "hypervisor", env("VWS_HYPERVISOR", hypervisorFake), "fake or kubevirt (env VWS_HYPERVISOR)")
 	fs.StringVar(&c.vmNamespace, "vm-namespace", env("VWS_VM_NAMESPACE", "vws-vms"), "namespace of VirtualMachines, VirtualMachineInstances, and volume PVCs (env VWS_VM_NAMESPACE)")
+	fs.StringVar(&c.nadNamespace, "nad-namespace", env("VWS_NAD_NAMESPACE", ""),
+		"namespace of the NetworkAttachmentDefinition vws-network makes per VPC subnet (its -kube-nad-namespace); "+
+			"an instance's second and later overlay interfaces attach through it; empty refuses them (env VWS_NAD_NAMESPACE)")
 	fs.StringVar(&c.imageNamespace, "image-namespace", env("VWS_IMAGE_NAMESPACE", "vws-images"), "namespace of CDI DataVolumes and DataSources (env VWS_IMAGE_NAMESPACE)")
 	fs.StringVar(&c.imageStorageClass, "image-storage-class",
 		env("VWS_IMAGE_STORAGE_CLASS", kubevirt.DefaultImageStorageClass),
@@ -111,6 +150,17 @@ func parseConfig(args []string, getenv func(string) string, errOut io.Writer) (c
 			"ReadWriteOncePod), env VWS_IMAGE_ACCESS_MODE")
 	legacyScope := fs.String("legacy-image-scope", env("VWS_LEGACY_IMAGE_SCOPE", ""), "projects/{project}/regions/{region} that owns images stored without one (pre-#92 records, seed images); empty leaves them in no project, invisible to every caller (env VWS_LEGACY_IMAGE_SCOPE)")
 	publicIDs := fs.String("public-images", env("VWS_PUBLIC_IMAGES", ""), "comma-separated image ids readable by every project in the image's region, such as seed images; changing or deleting them stays with the owner (env VWS_PUBLIC_IMAGES)")
+	zones := fs.String("zones", env("VWS_ZONES", compute.DefaultZones().String()),
+		"comma-separated zone=region pairs, the zone catalog CreateImage places a volume source in a region with; "+
+			"list every zone vws-storage admits (its -zones), Local and Wavelength Zones included (env VWS_ZONES)")
+	fs.StringVar(&c.leaseName, "lease-name", env("VWS_LEASE_NAME", defaultLeaseName),
+		"coordination.k8s.io Lease in -namespace that replicas elect the leader on (env VWS_LEASE_NAME)")
+	fs.DurationVar(&c.leaseDuration, "lease-duration", defaultLeaseDuration,
+		"how long a follower waits after the leader's last renew before it takes the Lease")
+	fs.DurationVar(&c.renewDeadline, "lease-renew-deadline", defaultRenewDeadline,
+		"how long the leader retries a renew before it stops the reconciler and repair")
+	fs.DurationVar(&c.retryPeriod, "lease-retry-period", defaultRetryPeriod,
+		"interval between Lease acquire and renew attempts")
 	if err := fs.Parse(args); err != nil {
 		return config{}, fmt.Errorf("flags: %w", err)
 	}
@@ -139,6 +189,9 @@ func parseConfig(args []string, getenv func(string) string, errOut io.Writer) (c
 		return config{}, fmt.Errorf("-public-images: %w", err)
 	}
 	c.publicImages = pub
+	if c.zones, err = compute.ParseZones(*zones); err != nil {
+		return config{}, fmt.Errorf("-zones: %w", err)
+	}
 	switch c.hypervisor {
 	case hypervisorFake:
 	case hypervisorKubeVirt:

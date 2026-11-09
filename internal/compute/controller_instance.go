@@ -2,6 +2,7 @@ package compute
 
 import (
 	"fmt"
+	"slices"
 	"time"
 )
 
@@ -17,15 +18,40 @@ type VolumeAttachment struct {
 	// part in fingerprints or in request matching.
 	Claim string
 	// DeleteOnTermination asks compute to delete the volume in the storage
-	// service once the instance is gone. The edge sets it for the boot
-	// volume, as EC2 does for a root device; vws-proto has no field for it
-	// yet, so a data volume is always kept.
+	// service once the instance is gone, EC2
+	// BlockDeviceMapping.Ebs.DeleteOnTermination. The edge fills an unset
+	// value with the EC2 default: true for the boot volume, false for a data
+	// volume. Changing it is a spec change but not a new attachment, so
+	// sameAttachment ignores it.
 	DeleteOnTermination bool
+	// AttachTime is when the entry first entered the spec, EC2
+	// VolumeAttachment.AttachTime. The planner sets it and keeps it while
+	// the entry stays; a caller cannot set it, so like Claim it takes no part
+	// in fingerprints or in request matching. It is zero on entries stored
+	// before it existed.
+	AttachTime time.Time
 }
 
 // sameAttachment compares what a caller asked for, not the claim.
 func sameAttachment(a, b VolumeAttachment) bool {
 	return a.Volume == b.Volume && a.DeviceName == b.DeviceName && a.Boot == b.Boot
+}
+
+func sameRequestedAttachment(a, b VolumeAttachment) bool {
+	return sameAttachment(a, b) && a.DeleteOnTermination == b.DeleteOnTermination
+}
+
+// encodeTermination adds DeleteOnTermination to a fingerprint only when an
+// attachment differs from the EC2 default, so every request persisted
+// before the field keeps its fingerprint.
+func encodeTermination(e *encoder, vols []VolumeAttachment) {
+	if !slices.ContainsFunc(vols, func(a VolumeAttachment) bool { return a.DeleteOnTermination != a.Boot }) {
+		return
+	}
+	e.field("delete_on_termination=")
+	for _, a := range vols {
+		e.field(fmt.Sprint(a.DeleteOnTermination))
+	}
 }
 
 // checkAttachments applies the instance.proto volume rules: device names
@@ -94,6 +120,10 @@ type ObservedVolume struct {
 	DeviceName string
 	State      AttachState
 	StateTime  time.Time
+	// AttachTime is output only. ApplyReport sets it from the spec entry,
+	// or from the stored report once the entry left the spec, and ignores
+	// what the controller sent.
+	AttachTime time.Time
 }
 
 // ReportState is the reconcile state a controller reports for one instance.
@@ -160,7 +190,9 @@ type InstanceReport struct {
 	Reason LaunchReason
 	// AttachmentFailure is a permanent volume attach or detach failure at
 	// Generation. A READY report carries it so the attachment operation
-	// fails while the instance keeps running.
+	// fails while the instance keeps running. An ERROR report carries it
+	// when the refusal failed a launch, so the next intent drops the
+	// refused volumes.
 	AttachmentFailure *AttachmentFailure
 }
 
@@ -176,7 +208,8 @@ type InstanceReport struct {
 //     one, or ERROR, which parks that generation. RECONCILING and PENDING
 //     record the report and leave the generation where it was. A READY report
 //     may carry an AttachmentFailure, which fails the attachment operation
-//     without parking the instance.
+//     without parking the instance. An ERROR report may carry one too: the
+//     refusal that failed a launch.
 //
 // A terminated spec never converges on READY, so a controller cannot keep a
 // deleted instance alive by calling it ready.
@@ -201,7 +234,7 @@ func ApplyReport(inst Instance, rep InstanceReport, now time.Time) (InstanceStat
 	next.Report = Report{
 		Node: rep.Node, State: rep.State, Message: rep.Message, Power: rep.Power,
 		Interfaces: append([]ObservedInterface(nil), rep.Interfaces...),
-		Volumes:    append([]ObservedVolume(nil), rep.Volumes...),
+		Volumes:    attachTimes(rep.Volumes, spec.Volumes, st.Report.Volumes),
 	}
 	switch {
 	case rep.State == ReportError:
@@ -211,7 +244,7 @@ func ApplyReport(inst Instance, rep InstanceReport, now time.Time) (InstanceStat
 		}
 		next.Observed = Observed{Generation: rep.Generation, Failure: &Failure{
 			Code: code, Message: rep.Message, Reason: rep.Reason,
-		}}
+		}, AttachmentFailure: rep.AttachmentFailure}
 	case rep.State == ReportReady && spec.Power != PowerTerminated:
 		next.Observed = Observed{Generation: rep.Generation, AttachmentFailure: rep.AttachmentFailure}
 	case rep.State == ReportDeleting && spec.Power == PowerTerminated:
@@ -221,7 +254,31 @@ func ApplyReport(inst Instance, rep InstanceReport, now time.Time) (InstanceStat
 	return next, true, nil
 }
 
-// MaxUserDataBytes is the InstanceSpec.user_data limit.
+// attachTimes copies reported with each AttachTime taken from the spec entry
+// of its attachment, or, for one no longer in the spec (DETACHING), from the
+// stored report. An attachment is a volume on a device, so the old device of
+// a moved volume keeps its own time. One found in neither has none.
+func attachTimes(reported []ObservedVolume, spec []VolumeAttachment, stored []ObservedVolume) []ObservedVolume {
+	if reported == nil {
+		return nil
+	}
+	out := make([]ObservedVolume, len(reported))
+	for i, v := range reported {
+		v.AttachTime = time.Time{}
+		inSpec := func(a VolumeAttachment) bool { return a.Volume == v.Volume && a.DeviceName == v.DeviceName }
+		wasReported := func(o ObservedVolume) bool { return o.Volume == v.Volume && o.DeviceName == v.DeviceName }
+		if j := slices.IndexFunc(spec, inSpec); j >= 0 {
+			v.AttachTime = spec[j].AttachTime
+		} else if j := slices.IndexFunc(stored, wasReported); j >= 0 {
+			v.AttachTime = stored[j].AttachTime
+		}
+		out[i] = v
+	}
+	return out
+}
+
+// MaxUserDataBytes is the limit on each of InstanceSpec.user_data and
+// InstanceSpec.user_data_raw.
 const MaxUserDataBytes = 32768
 
 // CreateInstanceParams is a parsed CreateInstance request body. Strings are
@@ -234,6 +291,8 @@ type CreateInstanceParams struct {
 	Power       Power
 	KeyPair     string
 	UserData    string
+	// UserDataRaw is user_data_raw, any bytes. It excludes UserData.
+	UserDataRaw string
 	NICs        []NetworkInterface
 	Volumes     []VolumeAttachment
 	Labels      Labels
@@ -248,10 +307,12 @@ type createInstance struct {
 	power    Power
 	key      KeyName
 	userData string
-	nics     []NetworkInterface
-	volumes  []VolumeAttachment
-	labels   Labels
-	annots   Annotations
+	// userDataRaw holds bytes, not text.
+	userDataRaw string
+	nics        []NetworkInterface
+	volumes     []VolumeAttachment
+	labels      Labels
+	annots      Annotations
 }
 
 // NewCreateInstance creates a controller-driven instance under the caller's id.
@@ -281,6 +342,12 @@ func NewCreateInstance(p CreateInstanceParams) (Intent, error) {
 	if len(p.UserData) > MaxUserDataBytes {
 		return nil, Errorf(CodeInvalid, "user_data exceeds %d bytes", MaxUserDataBytes)
 	}
+	if len(p.UserDataRaw) > MaxUserDataBytes {
+		return nil, Errorf(CodeInvalid, "user_data_raw exceeds %d bytes", MaxUserDataBytes)
+	}
+	if p.UserData != "" && p.UserDataRaw != "" {
+		return nil, Errorf(CodeInvalid, "user_data and user_data_raw are mutually exclusive")
+	}
 	if err := checkAttachments(p.Zone, p.Volumes); err != nil {
 		return nil, err
 	}
@@ -299,8 +366,8 @@ func NewCreateInstance(p CreateInstanceParams) (Intent, error) {
 	}
 	return createInstance{
 		id: id, project: p.Project, zone: p.Zone, typ: typ, power: p.Power, key: key,
-		userData: p.UserData, nics: cloneNICs(p.NICs), volumes: append([]VolumeAttachment(nil), p.Volumes...), labels: p.Labels,
-		annots: p.Annotations,
+		userData: p.UserData, userDataRaw: p.UserDataRaw, nics: cloneNICs(p.NICs),
+		volumes: append([]VolumeAttachment(nil), p.Volumes...), labels: p.Labels, annots: p.Annotations,
 	}, nil
 }
 
@@ -350,6 +417,13 @@ func (in createInstance) encode(e *encoder) {
 	if in.annots.Len() > 0 {
 		e.stringMap("annotations=", in.annots.m)
 	}
+	// Added last and only when set, so every create persisted before
+	// user_data_raw keeps its fingerprint.
+	if in.userDataRaw != "" {
+		e.field("user_data_raw=")
+		e.field(in.userDataRaw)
+	}
+	encodeTermination(e, in.volumes)
 }
 
 // plan writes generation 1 under the caller's id. An id that already holds
@@ -380,11 +454,16 @@ func (in createInstance) plan(v View, env Env) (Change, error) {
 		}
 		key = &AuthorizedKey{Name: kp.Spec.Name, PublicKey: kp.Spec.PublicKey}
 	}
+	vols := make([]VolumeAttachment, len(in.volumes))
+	for i, a := range in.volumes {
+		a.AttachTime = env.Now
+		vols[i] = a
+	}
 	ch := Change{Write: true, Spec: InstanceSpec{
 		ID: in.id, Generation: 1, CreatedAt: env.Now, ChangedAt: env.Now,
 		Type: in.typ, Key: key, Power: in.power,
-		Project: in.project, Zone: in.zone, UserData: in.userData,
-		Volumes: append([]VolumeAttachment(nil), in.volumes...), NICs: cloneNICs(in.nics),
+		Project: in.project, Zone: in.zone, UserData: in.userData, UserDataRaw: in.userDataRaw,
+		Volumes: vols, NICs: cloneNICs(in.nics),
 	}}
 	if in.carriesMetadata() {
 		ch.Meta = &Metadata{Labels: in.labels, Annotations: in.annots}
@@ -395,7 +474,7 @@ func (in createInstance) plan(v View, env Env) (Change, error) {
 func (in createInstance) matches(cur Instance) bool {
 	s := cur.Spec
 	if s.Power == PowerTerminated || !s.ControllerDriven() || s.Project != in.project || s.Zone != in.zone ||
-		s.Type.name != in.typ.name || s.Power != in.power || s.UserData != in.userData ||
+		s.Type.name != in.typ.name || s.Power != in.power || s.UserData != in.userData || s.UserDataRaw != in.userDataRaw ||
 		len(s.Volumes) != len(in.volumes) || len(s.NICs) != len(in.nics) || !cur.Meta.Labels.Equal(in.labels) ||
 		!cur.Meta.Annotations.Equal(in.annots) {
 		return false
@@ -404,7 +483,7 @@ func (in createInstance) matches(cur Instance) bool {
 		return false
 	}
 	for i, a := range s.Volumes {
-		if !sameAttachment(a, in.volumes[i]) {
+		if !sameRequestedAttachment(a, in.volumes[i]) {
 			return false
 		}
 	}

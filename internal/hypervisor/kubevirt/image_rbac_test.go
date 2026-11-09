@@ -12,6 +12,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	utilyaml "k8s.io/apimachinery/pkg/util/yaml"
 	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -150,6 +151,88 @@ func TestVMRoleLetsCreateImageCloneAVolume(t *testing.T) {
 				Resource: tc.resource, Subresource: tc.sub,
 			},
 		}}
+		if err := limited.Create(ctx, review); err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		if review.Status.Allowed != tc.allowed {
+			t.Errorf("%s: allowed %t, want %t (%s)", tc.name, review.Status.Allowed, tc.allowed, review.Status.Reason)
+		}
+	}
+}
+
+// TestVMRoleLetsCreateImageCloneASnapshot pins vws-compute#164: an image
+// copied from a snapshot, shared from another project or not, is a DataVolume
+// in the image namespace whose source is the VolumeSnapshot storage reported,
+// in the VM namespace where vws-storage keeps every snapshot. CDI authorizes
+// that clone by create on datavolumes/source in the namespace the source
+// names, so a service account bound only to the VM Role must pass that check
+// there, and nowhere else. Reading VolumeSnapshots is not granted: compute
+// never reads one.
+func TestVMRoleLetsCreateImageCloneASnapshot(t *testing.T) {
+	admin, vms, _ := newClient(t)
+	ctx := context.Background()
+	images := vms + "-images"
+	if err := admin.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: images}}); err != nil {
+		t.Fatal(err)
+	}
+	a := New(admin, Config{Namespace: vms, ImageNamespace: images})
+	const object = "snap-5e1c0d93ab7742f0a1b2c3d4e5f60718"
+	snap := hypervisor.ImageSpec{Name: "img-0123456789abcdef0", Present: true, SourceVolumeSnapshot: object}
+	if _, err := a.ConvergeImage(ctx, snap); err == nil {
+		t.Fatal("want an error until CDI finishes")
+	}
+	dv := &unstructured.Unstructured{}
+	dv.SetGroupVersionKind(dvGVK)
+	if err := admin.Get(ctx, client.ObjectKey{Namespace: images, Name: "img-0123456789abcdef0"}, dv); err != nil {
+		t.Fatal(err)
+	}
+	srcNS, _, _ := unstructured.NestedString(dv.Object, "spec", "source", "snapshot", "namespace")
+	srcName, _, _ := unstructured.NestedString(dv.Object, "spec", "source", "snapshot", "name")
+	if srcNS != vms || srcName != object {
+		t.Fatalf("DataVolume clones snapshot %s/%s, want %s/%s", srcNS, srcName, vms, object)
+	}
+
+	role := rbacRole(t, "vws-compute-vms")
+	role.ObjectMeta = metav1.ObjectMeta{Namespace: vms, Name: role.Name}
+	sa := &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Namespace: vms, Name: "vws-compute"}}
+	rb := &rbacv1.RoleBinding{
+		ObjectMeta: metav1.ObjectMeta{Namespace: vms, Name: role.Name},
+		RoleRef:    rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "Role", Name: role.Name},
+		Subjects:   []rbacv1.Subject{{Kind: "ServiceAccount", Name: sa.Name, Namespace: vms}},
+	}
+	for _, o := range []client.Object{&role, sa, rb} {
+		if err := admin.Create(ctx, o); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cfg := rest.CopyConfig(env.Config)
+	cfg.Impersonate = rest.ImpersonationConfig{UserName: "system:serviceaccount:" + vms + ":vws-compute"}
+	limited, err := client.New(cfg, client.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	probe := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Namespace: vms, Name: "probe"}}
+	if err := limited.Create(ctx, probe); err == nil {
+		t.Skip("envtest does not enforce RBAC here (a configmap create was allowed without a grant)")
+	}
+	for _, tc := range []struct {
+		name, ns, verb, group, resource, sub string
+		allowed                              bool
+	}{
+		{"clone from the snapshot's namespace", srcNS, "create", "cdi.kubevirt.io", "datavolumes", "source", true},
+		{"clone from the image namespace", images, "create", "cdi.kubevirt.io", "datavolumes", "source", false},
+		{"read the VolumeSnapshot", srcNS, "get", "snapshot.storage.k8s.io", "volumesnapshots", "", false},
+		{"list VolumeSnapshots", srcNS, "list", "snapshot.storage.k8s.io", "volumesnapshots", "", false},
+	} {
+		review := &authv1.SelfSubjectAccessReview{Spec: authv1.SelfSubjectAccessReviewSpec{
+			ResourceAttributes: &authv1.ResourceAttributes{
+				Namespace: tc.ns, Verb: tc.verb, Group: tc.group,
+				Resource: tc.resource, Subresource: tc.sub, Name: srcName,
+			},
+		}}
+		if tc.verb == "list" {
+			review.Spec.ResourceAttributes.Name = ""
+		}
 		if err := limited.Create(ctx, review); err != nil {
 			t.Fatalf("%s: %v", tc.name, err)
 		}

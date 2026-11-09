@@ -12,7 +12,8 @@ import (
 // (subnet-direct-<name>) gets every interface in device index order, whatever
 // the request order, and no single subnet. A direct interface keeps its fixed
 // address; an overlay one is wired by subnet only. A direct-only instance has
-// no overlay interface.
+// no overlay interface. An instance with overlay interfaces in two subnets
+// gets both in device index order too.
 func TestDrivenMachineWiresDirectInterfaces(t *testing.T) {
 	const vpc = "projects/p/regions/r/vpcs/vpc-1/subnets/"
 	const direct = "projects/p/regions/r/vpcs/vpc-direct/subnets/subnet-direct-"
@@ -31,6 +32,9 @@ func TestDrivenMachineWiresDirectInterfaces(t *testing.T) {
 			compute.NetworkInterface{DeviceName: "nic1", Subnet: vpc + "subnet-a", PrivateIPv4: "10.0.0.5"},
 			compute.NetworkInterface{DeviceName: "nic0", Subnet: direct + "prod", PrivateIPv4: "192.168.200.30"}))
 		h.submit("only", withNICs("only", compute.NetworkInterface{DeviceName: "nic0", Subnet: direct + "prod"}))
+		h.submit("overlays", withNICs("overlays",
+			compute.NetworkInterface{DeviceName: "nic1", Subnet: vpc + "subnet-b"},
+			compute.NetworkInterface{DeviceName: "nic0", Subnet: vpc + "subnet-a"}))
 		h.sweep()
 		want := map[string][]hypervisor.Interface{
 			"mixed": {
@@ -38,7 +42,8 @@ func TestDrivenMachineWiresDirectInterfaces(t *testing.T) {
 				{Name: "nic1", Subnet: "subnet-a"},
 				{Name: "nic2", Direct: "lab"},
 			},
-			"only": {{Name: "nic0", Direct: "prod"}},
+			"only":     {{Name: "nic0", Direct: "prod"}},
+			"overlays": {{Name: "nic0", Subnet: "subnet-a"}, {Name: "nic1", Subnet: "subnet-b"}},
 		}
 		for name, w := range want {
 			m, found := h.agent.Machine(name)
