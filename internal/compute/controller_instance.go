@@ -18,9 +18,11 @@ type VolumeAttachment struct {
 	// part in fingerprints or in request matching.
 	Claim string
 	// DeleteOnTermination asks compute to delete the volume in the storage
-	// service once the instance is gone. The edge sets it for the boot
-	// volume, as EC2 does for a root device; vws-proto has no field for it
-	// yet, so a data volume is always kept.
+	// service once the instance is gone, EC2
+	// BlockDeviceMapping.Ebs.DeleteOnTermination. The edge fills an unset
+	// value with the EC2 default: true for the boot volume, false for a data
+	// volume. Changing it is a spec change but not a new attachment, so
+	// sameAttachment ignores it.
 	DeleteOnTermination bool
 	// AttachTime is when the entry first entered the spec, EC2
 	// VolumeAttachment.AttachTime. The planner sets it and keeps it while
@@ -33,6 +35,23 @@ type VolumeAttachment struct {
 // sameAttachment compares what a caller asked for, not the claim.
 func sameAttachment(a, b VolumeAttachment) bool {
 	return a.Volume == b.Volume && a.DeviceName == b.DeviceName && a.Boot == b.Boot
+}
+
+func sameRequestedAttachment(a, b VolumeAttachment) bool {
+	return sameAttachment(a, b) && a.DeleteOnTermination == b.DeleteOnTermination
+}
+
+// encodeTermination adds DeleteOnTermination to a fingerprint only when an
+// attachment differs from the EC2 default, so every request persisted
+// before the field keeps its fingerprint.
+func encodeTermination(e *encoder, vols []VolumeAttachment) {
+	if !slices.ContainsFunc(vols, func(a VolumeAttachment) bool { return a.DeleteOnTermination != a.Boot }) {
+		return
+	}
+	e.field("delete_on_termination=")
+	for _, a := range vols {
+		e.field(fmt.Sprint(a.DeleteOnTermination))
+	}
 }
 
 // checkAttachments applies the instance.proto volume rules: device names
@@ -404,6 +423,7 @@ func (in createInstance) encode(e *encoder) {
 		e.field("user_data_raw=")
 		e.field(in.userDataRaw)
 	}
+	encodeTermination(e, in.volumes)
 }
 
 // plan writes generation 1 under the caller's id. An id that already holds
@@ -463,7 +483,7 @@ func (in createInstance) matches(cur Instance) bool {
 		return false
 	}
 	for i, a := range s.Volumes {
-		if !sameAttachment(a, in.volumes[i]) {
+		if !sameRequestedAttachment(a, in.volumes[i]) {
 			return false
 		}
 	}

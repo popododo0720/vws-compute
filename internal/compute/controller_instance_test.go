@@ -161,7 +161,10 @@ func TestApplyReport(t *testing.T) {
 func createParams() compute.CreateInstanceParams {
 	return compute.CreateInstanceParams{
 		ID: "web-1", Project: "p", Zone: "z", MachineType: "vws.small", Power: compute.PowerRunning,
-		Volumes: []compute.VolumeAttachment{{Volume: ok(compute.ParseVolumeRef("projects/p/zones/z/volumes/root")), DeviceName: "vda", Boot: true}},
+		Volumes: []compute.VolumeAttachment{{
+			Volume: ok(compute.ParseVolumeRef("projects/p/zones/z/volumes/root")), DeviceName: "vda", Boot: true,
+			DeleteOnTermination: true,
+		}},
 		NICs:    []compute.NetworkInterface{{DeviceName: "eth0", Subnet: "projects/p/regions/r/vpcs/v/subnets/s"}},
 	}
 }

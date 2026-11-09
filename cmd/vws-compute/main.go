@@ -139,7 +139,7 @@ func run(ctx context.Context, cfg config) error {
 			reconciler.WithSnapshotObjects(grpcapi.SnapshotObjects(lookup)),
 		)
 		if del := grpcapi.DeleteVolumes(lookup); del != nil {
-			// Root volumes go with their instance (DeleteOnTermination).
+			// Volumes marked DeleteOnTermination go with their instance.
 			recOpts = append(recOpts, reconciler.WithVolumeDeleter(del))
 		}
 	}

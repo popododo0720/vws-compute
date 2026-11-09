@@ -115,7 +115,10 @@ func instancePB(i compute.Instance, name string) *computev1.Instance {
 		spec.UserDataRaw = []byte(i.Spec.UserDataRaw)
 	}
 	for _, v := range i.Spec.Volumes {
-		out := &computev1.VolumeAttachment{Volume: v.Volume.String(), DeviceName: v.DeviceName, Boot: v.Boot}
+		out := &computev1.VolumeAttachment{
+			Volume: v.Volume.String(), DeviceName: v.DeviceName, Boot: v.Boot,
+			DeleteOnTermination: proto.Bool(v.DeleteOnTermination),
+		}
 		if !v.AttachTime.IsZero() {
 			out.AttachTime = timestamppb.New(v.AttachTime)
 		}
