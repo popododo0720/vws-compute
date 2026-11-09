@@ -40,3 +40,12 @@ const (
 		"JdNV/1eAUjOmPbsKIP5iLJgbAHvYLXM284Judgf1GLfGYngVjWgQf0e+rGlNdwv6xC4Vm/3Qpq7pVH7fgF8U2zDO" +
 		"vKBBykvZ6Q=="
 )
+
+// rsaNegativeLine is a 2048-bit RSA key written without the 0x00 pad its
+// modulus needs, so the modulus decodes negative. ssh-keygen refuses it.
+const rsaNegativeLine = "ssh-rsa " +
+	"AAAAB3NzaC1yc2EAAAADAQABAAABAMcMsyDp3R2PFBNjX2QnYkwCj0krtm+u/LnutaTkcpkk8noRzh68sesJIj6i" +
+	"Y7Jl9a3q0IvNuJQ9D4Et0Pbx8clpIFOosU3LHQtp1/HqqsjjqsasLGDgBuhij3dDIhICoVYWayPdQRxV8FFgq6DM" +
+	"tpRDKxJ3OP63UO3hj1gNHN26ZVBrFdCEtHqGpg+6AtaZUn0l6Qh9vKXwbWTGF88xlAPZTxLd4Rz37dJZxc8emkju" +
+	"0JFQGRSPOEGZ7w0NIBsDPfZZUY6uRvwHjMDlz5togqr6nfwWlmhTdBLP9HYfhJaPKolqCXZ9Q6T5bOP5nFnc9iNV" +
+	"nuxHis8CMUtAUfTAr6E="

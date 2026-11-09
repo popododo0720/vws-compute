@@ -50,8 +50,11 @@ func FuzzParseImportPublicKey(f *testing.F) {
 			if pub.Type() != ssh.KeyAlgoRSA {
 				t.Fatalf("Algorithm RSA, key type %q", pub.Type())
 			}
-			bits := pub.(ssh.CryptoPublicKey).CryptoPublicKey().(*rsa.PublicKey).N.BitLen()
-			if bits < 1024 || bits > 4096 {
+			n := pub.(ssh.CryptoPublicKey).CryptoPublicKey().(*rsa.PublicKey).N
+			if n.Sign() <= 0 {
+				t.Fatalf("accepted an rsa key with modulus sign %d", n.Sign())
+			}
+			if bits := n.BitLen(); bits < 1024 || bits > 4096 {
 				t.Fatalf("accepted a %d-bit rsa key", bits)
 			}
 		default:
