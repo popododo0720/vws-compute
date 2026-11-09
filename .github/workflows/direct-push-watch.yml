@@ -24,4 +24,6 @@ jobs:
           GUARD_MAIN_BRANCH: ${{ github.event.repository.default_branch }}
           BEFORE: ${{ github.event.before }}
           AFTER: ${{ github.sha }}
+          # Repo variable: full SHAs of known commits on main without a pull request (vws-deploy docs/insider-risk.md).
+          GUARD_ALLOW_SHAS: ${{ vars.GUARD_ALLOW_SHAS }}
         run: scripts/guard-agents.sh push-watch "$BEFORE" "$AFTER"
