@@ -1,0 +1,2 @@
+go test fuzz v1
+string("-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAc5lzVt+Swsh/JvsrSBVESKbslSjpKYN71Ka09RdujNk=\n-----END PUBLIC KEY-----\n")
