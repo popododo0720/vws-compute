@@ -24,6 +24,8 @@ jobs:
           mkdir -p "$RUNNER_TEMP/envtest"
           tar -xzf "$RUNNER_TEMP/envtest.tgz" -C "$RUNNER_TEMP/envtest" --strip-components=2
           echo "KUBEBUILDER_ASSETS=$RUNNER_TEMP/envtest" >> "$GITHUB_ENV"
+      # vws-lib is public: confirm the copy matches the tag VENDOR names, not only its recorded hash.
+      - run: scripts/vendor-lib.sh check
       - run: go test -race ./...
 
   # Common golangci-lint baseline (vws-deploy .github/golangci-common.yml, vws-deploy#300).

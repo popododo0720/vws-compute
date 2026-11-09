@@ -1,0 +1,86 @@
+# Common baseline: vws-deploy .github/golangci-common.yml (vws-deploy#300). Existing lll findings
+# are fixed in a follow-up; until then new-from-merge-base holds changed lines to the baseline.
+version: "2"
+linters:
+  default: none
+  enable:
+    - bodyclose
+    - contextcheck
+    - depguard
+    - errcheck
+    - errname
+    - errorlint
+    - govet
+    - ineffassign
+    - lll
+    - misspell
+    - nilerr
+    - nilnil
+    - noctx
+    - sloglint
+    - staticcheck
+    - unused
+    - wrapcheck
+  settings:
+    lll:
+      line-length: 120
+      tab-width: 1
+    misspell:
+      locale: US
+    errcheck:
+      check-type-assertions: true
+      check-blank: true
+    errorlint:
+      errorf: true
+      asserts: true
+      comparison: true
+    wrapcheck:
+      ignore-package-globs:
+        - github.com/popododo0720/vws-lib/errs
+    sloglint:
+      no-mixed-args: true
+      attr-only: true
+      context: all
+      static-msg: true
+      key-naming-case: snake
+    depguard:
+      rules:
+        no-sentry-direct:
+          # Only obs/report may import sentry-go. Services use vws-lib/obs/report.
+          files:
+            - $all
+            - "!**/obs/report/*.go"
+          deny:
+            - pkg: github.com/getsentry/sentry-go
+              desc: use vws-lib/obs/report
+  exclusions:
+    generated: lax
+    # The std-error-handling preset is left out on purpose: it hides missing Close/Write errors.
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+    paths:
+      - third_party
+      - third_party$
+      - builtin$
+      - examples$
+issues:
+  new-from-merge-base: origin/main
+  max-issues-per-linter: 0
+  max-same-issues: 0
+formatters:
+  enable:
+    - gofumpt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/popododo0720/vws-lib
+  exclusions:
+    generated: lax
+    paths:
+      - third_party
+      - third_party$
+      - builtin$
+      - examples$
