@@ -5,6 +5,7 @@ import (
 	"errors"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/popododo0720/vws-compute/internal/compute"
 	"github.com/popododo0720/vws-compute/internal/controller"
@@ -227,7 +228,7 @@ func TestRefusedAttachmentDoesNotBlockAStop(t *testing.T) {
 		if got := h.instance(id).Lifecycle(); got != compute.InstanceStopped {
 			h.t.Fatalf("lifecycle = %d, want stopped", got)
 		}
-		if vols := h.instance(id).Spec.Volumes; len(vols) != 1 || vols[0] != boot {
+		if vols := requested(h.instance(id).Spec.Volumes); len(vols) != 1 || vols[0] != boot {
 			h.t.Fatalf("volumes after stop = %+v, want only the boot entry", vols)
 		}
 	})
@@ -264,7 +265,7 @@ func TestEveryRefusedAttachmentIsDroppedFromDesiredState(t *testing.T) {
 		stop := h.submit("stop", ok(compute.NewSetPower("web", compute.PowerStopped, compute.MetadataPatch{})))
 		h.sweep()
 		h.wantStates(compute.OperationSucceeded, stop)
-		if vols := h.instance(ok(compute.ParseInstanceID("web"))).Spec.Volumes; len(vols) != 1 || vols[0] != boot {
+		if vols := requested(h.instance(ok(compute.ParseInstanceID("web"))).Spec.Volumes); len(vols) != 1 || vols[0] != boot {
 			h.t.Fatalf("volumes after stop = %+v, want only the boot entry", vols)
 		}
 	})
@@ -309,7 +310,7 @@ func TestReattachAfterRefusalIsNotDropped(t *testing.T) {
 				h.sweep()
 				h.wantStates(compute.OperationSucceeded, again)
 				id := ok(compute.ParseInstanceID("web"))
-				if vols := h.instance(id).Spec.Volumes; len(vols) != 2 || vols[1] != tc.again {
+				if vols := requested(h.instance(id).Spec.Volumes); len(vols) != 2 || vols[1] != tc.again {
 					h.t.Fatalf("volumes after re-attach = %+v, want boot and %+v", vols, tc.again)
 				}
 				m, _ := h.agent.Machine("web")
@@ -319,4 +320,15 @@ func TestReattachAfterRefusalIsNotDropped(t *testing.T) {
 			})
 		})
 	}
+}
+
+// requested drops what the planner stamps, so a stored entry compares equal
+// to the attachment a caller asked for.
+func requested(vols []compute.VolumeAttachment) []compute.VolumeAttachment {
+	out := make([]compute.VolumeAttachment, len(vols))
+	for i, v := range vols {
+		v.AttachTime = time.Time{}
+		out[i] = v
+	}
+	return out
 }

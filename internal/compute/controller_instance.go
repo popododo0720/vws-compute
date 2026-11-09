@@ -2,6 +2,7 @@ package compute
 
 import (
 	"fmt"
+	"slices"
 	"time"
 )
 
@@ -21,6 +22,12 @@ type VolumeAttachment struct {
 	// volume, as EC2 does for a root device; vws-proto has no field for it
 	// yet, so a data volume is always kept.
 	DeleteOnTermination bool
+	// AttachTime is when the entry first entered the spec, EC2
+	// VolumeAttachment.AttachTime. The planner sets it and keeps it while
+	// the entry stays; a caller cannot set it, so like Claim it takes no part
+	// in fingerprints or in request matching. It is zero on entries stored
+	// before it existed.
+	AttachTime time.Time
 }
 
 // sameAttachment compares what a caller asked for, not the claim.
@@ -94,6 +101,10 @@ type ObservedVolume struct {
 	DeviceName string
 	State      AttachState
 	StateTime  time.Time
+	// AttachTime is output only. ApplyReport sets it from the spec entry,
+	// or from the stored report once the entry left the spec, and ignores
+	// what the controller sent.
+	AttachTime time.Time
 }
 
 // ReportState is the reconcile state a controller reports for one instance.
@@ -204,7 +215,7 @@ func ApplyReport(inst Instance, rep InstanceReport, now time.Time) (InstanceStat
 	next.Report = Report{
 		Node: rep.Node, State: rep.State, Message: rep.Message, Power: rep.Power,
 		Interfaces: append([]ObservedInterface(nil), rep.Interfaces...),
-		Volumes:    append([]ObservedVolume(nil), rep.Volumes...),
+		Volumes:    attachTimes(rep.Volumes, spec.Volumes, st.Report.Volumes),
 	}
 	switch {
 	case rep.State == ReportError:
@@ -222,6 +233,26 @@ func ApplyReport(inst Instance, rep InstanceReport, now time.Time) (InstanceStat
 	}
 	next.UpdatedAt = now
 	return next, true, nil
+}
+
+// attachTimes copies reported with each AttachTime taken from the spec entry
+// of its volume, or, for a volume no longer in the spec (DETACHING), from the
+// stored report. A volume found in neither has none.
+func attachTimes(reported []ObservedVolume, spec []VolumeAttachment, stored []ObservedVolume) []ObservedVolume {
+	if reported == nil {
+		return nil
+	}
+	out := make([]ObservedVolume, len(reported))
+	for i, v := range reported {
+		v.AttachTime = time.Time{}
+		if j := slices.IndexFunc(spec, func(a VolumeAttachment) bool { return a.Volume == v.Volume }); j >= 0 {
+			v.AttachTime = spec[j].AttachTime
+		} else if j := slices.IndexFunc(stored, func(o ObservedVolume) bool { return o.Volume == v.Volume }); j >= 0 {
+			v.AttachTime = stored[j].AttachTime
+		}
+		out[i] = v
+	}
+	return out
 }
 
 // MaxUserDataBytes is the limit on each of InstanceSpec.user_data and
@@ -400,11 +431,16 @@ func (in createInstance) plan(v View, env Env) (Change, error) {
 		}
 		key = &AuthorizedKey{Name: kp.Spec.Name, PublicKey: kp.Spec.PublicKey}
 	}
+	vols := make([]VolumeAttachment, len(in.volumes))
+	for i, a := range in.volumes {
+		a.AttachTime = env.Now
+		vols[i] = a
+	}
 	ch := Change{Write: true, Spec: InstanceSpec{
 		ID: in.id, Generation: 1, CreatedAt: env.Now, ChangedAt: env.Now,
 		Type: in.typ, Key: key, Power: in.power,
 		Project: in.project, Zone: in.zone, UserData: in.userData, UserDataRaw: in.userDataRaw,
-		Volumes: append([]VolumeAttachment(nil), in.volumes...), NICs: cloneNICs(in.nics),
+		Volumes: vols, NICs: cloneNICs(in.nics),
 	}}
 	if in.carriesMetadata() {
 		ch.Meta = &Metadata{Labels: in.labels, Annotations: in.annots}

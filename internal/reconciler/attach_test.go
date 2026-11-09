@@ -335,7 +335,7 @@ func TestLaunchWithAVolumeStorageIsRemovingFails(t *testing.T) {
 		if lc := inst.Lifecycle(); lc != compute.InstanceRunning {
 			t.Fatalf("lifecycle after start = %d, want running", lc)
 		}
-		if !slices.Equal(inst.Spec.Volumes, []compute.VolumeAttachment{bootEntry}) {
+		if !slices.Equal(requested(inst.Spec.Volumes), []compute.VolumeAttachment{bootEntry}) {
 			t.Fatalf("volumes after start = %+v, want the boot volume only", inst.Spec.Volumes)
 		}
 		if m, _ := h.agent.Machine("web"); m.Power != hypervisor.PowerOn || len(m.Volumes) != 0 {
