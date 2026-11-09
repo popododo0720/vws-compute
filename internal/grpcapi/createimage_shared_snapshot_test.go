@@ -87,6 +87,19 @@ const (
 	otherRegion  = sharedOwner + "/regions/vws-2/snapshots/shared"
 )
 
+// swap replaces the grants and the read error until the returned restore runs.
+func (g *grants) swap(perms map[string][]string, err error) (restore func()) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	oldPerms, oldErr := g.perms, g.err
+	g.perms, g.err = perms, err
+	return func() {
+		g.mu.Lock()
+		defer g.mu.Unlock()
+		g.perms, g.err = oldPerms, oldErr
+	}
+}
+
 func newGrants() *grants {
 	return &grants{perms: map[string][]string{
 		sharedSnap:  {"a444444444444"},
@@ -99,6 +112,8 @@ func newGrants() *grants {
 func createImageFromASharedSnapshot(t *testing.T, h *harness, g *grants) {
 	t.Helper()
 	ctx := context.Background()
+	accepted := map[string]*computev1.CreateImageRequest{}
+	operations := map[string]string{}
 
 	for _, tc := range []struct {
 		name, snapshot, imageID, requestID string
@@ -123,6 +138,7 @@ func createImageFromASharedSnapshot(t *testing.T, h *harness, g *grants) {
 			if err != nil || again.GetName() != op.GetName() {
 				t.Fatalf("retry = %v %v, want operation %s", again.GetName(), err, op.GetName())
 			}
+			accepted[tc.requestID], operations[tc.requestID] = req, op.GetName()
 			done, err := h.ops.WaitOperation(ctx, &longrunningpb.WaitOperationRequest{
 				Name: op.GetName(), Timeout: durationpb.New(10 * time.Second),
 			})
@@ -145,6 +161,41 @@ func createImageFromASharedSnapshot(t *testing.T, h *harness, g *grants) {
 				Name: sharedOwner + "/regions/vws-1/images/" + img.GetName()[len(sharedParent+"/images/"):],
 			}); status.Code(err) != codes.NotFound {
 				t.Fatalf("owner GetImage of the caller's image = %v, want NOT_FOUND", err)
+			}
+		})
+	}
+
+	// A replay returns the stored operation without reading the grant again,
+	// so a grant revoked or unreadable after the image was accepted does not
+	// fail a retry, while a new request or validate_only still reads it.
+	for _, tc := range []struct {
+		name  string
+		perms map[string][]string
+		err   error
+		code  codes.Code
+	}{
+		{"a revoked grant does not fail a replay", map[string][]string{}, nil, codes.NotFound},
+		{"an unreadable grant does not fail a replay", newGrants().perms, errors.New("storage down"), codes.Unavailable},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			restore := g.swap(tc.perms, tc.err)
+			defer restore()
+			before := len(g.questions())
+			for id, req := range accepted {
+				op, err := h.img.CreateImage(ctx, req)
+				if err != nil || op.GetName() != operations[id] {
+					t.Fatalf("replay of %s = %v %v, want operation %s", id, op.GetName(), err, operations[id])
+				}
+			}
+			if asked := g.questions()[before:]; len(asked) != 0 {
+				t.Fatalf("a replay asked %v", asked)
+			}
+			for _, validateOnly := range []bool{true, false} {
+				_, err := h.img.CreateImage(ctx, &computev1.CreateImageRequest{
+					Parent: sharedParent, ImageId: "ami-0000000000000ddd8", RequestId: "a8a8a8a8-a8a8-48a8-88a8-a8a8a8a8a8a8",
+					ValidateOnly: validateOnly, Image: &computev1.Image{Spec: snapSpec(sharedSnap)},
+				})
+				wantCode(t, err, tc.code)
 			}
 		})
 	}
