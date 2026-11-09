@@ -73,8 +73,14 @@ func TestParseImportPublicKeyRSABitRange(t *testing.T) {
 	}
 }
 
+func TestParseImportPublicKeyRefusesANegativeModulus(t *testing.T) {
+	if _, err := compute.ParseImportPublicKey(rsaNegativeLine); compute.CodeOf(err) != compute.CodeInvalid {
+		t.Fatalf("ParseImportPublicKey(negative modulus) err = %v, want CodeInvalid", err)
+	}
+}
+
 func TestParsePublicKeyReadsKeysOutsideTheImportRange(t *testing.T) {
-	for _, line := range []string{rsa1023Line, rsa4097Line} {
+	for _, line := range []string{rsa1023Line, rsa4097Line, rsaNegativeLine} {
 		if _, err := compute.ParsePublicKey(line); err != nil {
 			t.Fatalf("ParsePublicKey of a stored key: %v", err)
 		}

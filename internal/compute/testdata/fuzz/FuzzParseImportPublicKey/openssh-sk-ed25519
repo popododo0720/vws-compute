@@ -1,0 +1,2 @@
+go test fuzz v1
+string("sk-ssh-ed25519@openssh.com AAAAGnNrLXNzaC1lZDI1NTE5QG9wZW5zc2guY29tAAAAIHOZc1bfksLIfyb7K0gVREim7JUo6SmDe9SmtPUXbozZAAAABHNzaDo=")

@@ -1,0 +1,2 @@
+go test fuzz v1
+string("from=\"10.0.0.1\" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHOZc1bfksLIfyb7K0gVREim7JUo6SmDe9SmtPUXbozZ")

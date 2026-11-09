@@ -1,0 +1,2 @@
+go test fuzz v1
+string("ecdsa-sha2-nistp384 AAAAE2VjZHNhLXNoYTItbmlzdHAzODQAAAAIbmlzdHAzODQAAABhBGYEI02iYgPFH7fw8v+tyNJA+DR9sWkEM2ov5KoCjPWIViTibJfJ9PRvyOR0XnVykj2mx9qyR0AJ1x2/yprQrsIspgIVSe1BEq9Dlvn0eD1qHhHnw153OuzktAvFPyKGcA==")

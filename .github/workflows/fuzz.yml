@@ -1,0 +1,44 @@
+name: fuzz
+
+# Each target runs 30s on a pull request that touches its code and 10m every
+# week. A crash leaves its input under the package's testdata/fuzz, uploaded
+# as an artifact so it can be committed as a regression seed.
+on:
+  pull_request:
+    paths:
+      - "internal/compute/keypair.go"
+      - "internal/compute/keypair_fuzz_test.go"
+      - "internal/compute/testdata/fuzz/**"
+      - ".github/workflows/fuzz.yml"
+      - "go.mod"
+      - "go.sum"
+  schedule:
+    - cron: "17 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - { package: ./internal/compute, name: FuzzParseImportPublicKey }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.10"
+      - name: Fuzz ${{ matrix.target.name }}
+        env:
+          FUZZTIME: ${{ github.event_name == 'pull_request' && '30s' || '10m' }}
+        run: go test "${{ matrix.target.package }}" -run '^$' -fuzz '^${{ matrix.target.name }}$' -fuzztime "$FUZZTIME"
+      - name: Upload the crashing input
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: crash-${{ matrix.target.name }}
+          path: "**/testdata/fuzz/${{ matrix.target.name }}/"

@@ -40,7 +40,7 @@ func ParsePublicKey(line string) (PublicKey, error) {
 }
 
 // ParseImportPublicKey parses a key that ImportKeyPair will store. It also
-// requires an ssh-rsa key to be 1024 to 4096 bits.
+// requires an ssh-rsa key to have a positive modulus of 1024 to 4096 bits.
 func ParseImportPublicKey(line string) (PublicKey, error) {
 	return parsePublicKey(line, true)
 }
@@ -65,6 +65,11 @@ func parsePublicKey(line string, importRange bool) (PublicKey, error) {
 		rk, ok := ck.CryptoPublicKey().(*rsa.PublicKey)
 		if !ok {
 			return PublicKey{}, Errorf(CodeInvalid, "invalid public key: unreadable rsa key")
+		}
+		// x/crypto/ssh reads the modulus as a signed mpint, so a modulus
+		// missing its 0x00 pad is negative. OpenSSH refuses such a key.
+		if importRange && rk.N.Sign() <= 0 {
+			return PublicKey{}, Errorf(CodeInvalid, "invalid public key: rsa modulus is not positive")
 		}
 		if importRange && (rk.N.BitLen() < minRSABits || rk.N.BitLen() > maxRSABits) {
 			return PublicKey{}, Errorf(CodeInvalid, "invalid public key: rsa keys need %d to %d bits", minRSABits, maxRSABits)

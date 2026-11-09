@@ -1,0 +1,2 @@
+go test fuzz v1
+string("---- BEGIN SSH2 PUBLIC KEY ----\nComment: \"ed25519 key\"\nAAAAC3NzaC1lZDI1NTE5AAAAIHOZc1bfksLIfyb7K0gVREim7JUo6SmDe9SmtPUXbozZ\n---- END SSH2 PUBLIC KEY ----\n")
