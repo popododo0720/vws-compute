@@ -58,11 +58,33 @@ type Receipt struct {
 // precondition, replanning up to MaxReplans times when that state changed
 // underneath it.
 func (c *Controller) Submit(ctx context.Context, req compute.RequestID, in compute.Intent) (Receipt, error) {
+	return c.SubmitFresh(ctx, req, in, nil)
+}
+
+// SubmitFresh is Submit with fresh run once before the plan, only when req
+// has no stored operation. A check that holds only for a new request (an
+// etag, a snapshot grant, storage's view of a volume) runs there: a replay
+// returns the stored operation without it, and a request whose operation
+// was pruned is checked as a new one, because the same lookup decides both.
+// An error from fresh is returned as is and commits nothing. A non-nil
+// intent fresh returns replaces in and must have in's fingerprint.
+func (c *Controller) SubmitFresh(ctx context.Context, req compute.RequestID, in compute.Intent,
+	fresh func() (compute.Intent, error),
+) (Receipt, error) {
 	if req.IsZero() || in == nil {
 		return Receipt{}, compute.Errorf(compute.CodeInvalid, "a request id and an intent are required")
 	}
 	if r, ok, err := c.replay(ctx, req, in); ok || err != nil {
 		return r, err
+	}
+	if fresh != nil {
+		next, err := fresh()
+		if err != nil {
+			return Receipt{}, err
+		}
+		if next != nil {
+			in = next
+		}
 	}
 	for attempt := 0; attempt <= MaxReplans; attempt++ {
 		v := &recordingView{ctx: ctx, r: c.store}
