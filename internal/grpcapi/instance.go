@@ -169,12 +169,15 @@ func attachments(vols []*computev1.VolumeAttachment, claims map[string]string) (
 		if err != nil {
 			return nil, toStatus(err)
 		}
-		// The root volume goes with the instance, like an EC2 root device
-		// with DeleteOnTermination true. vws-proto has no
-		// delete_on_termination yet, so data volumes stay.
+		// Unset takes the EC2 default: the root device goes with the
+		// instance and a data volume stays.
+		deleteOnTermination := v.GetBoot()
+		if v.DeleteOnTermination != nil {
+			deleteOnTermination = v.GetDeleteOnTermination()
+		}
 		out = append(out, compute.VolumeAttachment{
 			Volume: ref, DeviceName: v.GetDeviceName(), Boot: v.GetBoot(), Claim: claims[v.GetVolume()],
-			DeleteOnTermination: v.GetBoot(),
+			DeleteOnTermination: deleteOnTermination,
 		})
 	}
 	return out, nil

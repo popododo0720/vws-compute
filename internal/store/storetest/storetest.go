@@ -45,6 +45,7 @@ func Run(t *testing.T, open func(t *testing.T) store.Repository) {
 		{"ControllerDrivenInstanceRoundTripsAndOwnsItsVolumes", controllerRoundTrip},
 		{"UserDataRawRoundTripsByteForByte", userDataRawRoundTrip},
 		{"AttachTimesRoundTrip", attachTimesRoundTrip},
+		{"DeleteOnTerminationRoundTrips", deleteOnTerminationRoundTrips},
 		{"ControllerDrivenInstancesAreNotUnconverged", controllerNotUnconverged},
 		{"ReportSettlesAndKeepsTheReport", reportSettles},
 		{"DeleteWaitsForTheControllersReport", deleteWaitsForTheController},

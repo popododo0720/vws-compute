@@ -19,16 +19,26 @@ func controllerSpec(id string, vol string, gen int64, power compute.Power) compu
 		ID: ok(compute.ParseInstanceID(id)), Generation: gen, CreatedAt: t0, ChangedAt: t0,
 		Type: ok(compute.ParseMachineType("n1.medium")), Power: power,
 		Project: "p", Zone: "z", UserData: "#cloud-config",
-		Volumes: []compute.VolumeAttachment{{Volume: ok(compute.ParseVolumeRef(volPrefix + vol)), DeviceName: "vda", Boot: true}},
-		NICs:    []compute.NetworkInterface{{DeviceName: "eth0", Subnet: "projects/p/regions/r/vpcs/v/subnets/s", SecurityGroups: []string{"projects/p/regions/r/vpcs/v/securityGroups/g"}}},
+		Volumes: []compute.VolumeAttachment{
+			{Volume: ok(compute.ParseVolumeRef(volPrefix + vol)), DeviceName: "vda", Boot: true},
+		},
+		NICs: []compute.NetworkInterface{
+			{
+				DeviceName:     "eth0",
+				Subnet:         "projects/p/regions/r/vpcs/v/subnets/s",
+				SecurityGroups: []string{"projects/p/regions/r/vpcs/v/securityGroups/g"},
+			},
+		},
 	}
 }
 
 func createIntent(id, vol string) compute.Intent {
 	return ok(compute.NewCreateInstance(compute.CreateInstanceParams{
 		ID: id, Project: "p", Zone: "z", MachineType: "vws.small", Power: compute.PowerRunning, UserData: "#cloud-config",
-		Volumes: []compute.VolumeAttachment{{Volume: ok(compute.ParseVolumeRef(volPrefix + vol)), DeviceName: "vda", Boot: true}},
-		NICs:    []compute.NetworkInterface{{DeviceName: "eth0", Subnet: "projects/p/regions/r/vpcs/v/subnets/s"}},
+		Volumes: []compute.VolumeAttachment{
+			{Volume: ok(compute.ParseVolumeRef(volPrefix + vol)), DeviceName: "vda", Boot: true},
+		},
+		NICs: []compute.NetworkInterface{{DeviceName: "eth0", Subnet: "projects/p/regions/r/vpcs/v/subnets/s"}},
 	}))
 }
 
@@ -67,8 +77,10 @@ func controllerRoundTrip(f fixture) {
 	got := f.instance("web-1")
 	want := controllerSpec("web-1", "root", 1, compute.PowerRunning)
 	if got.Spec.Project != "p" || got.Spec.Zone != "z" || got.Spec.UserData != "#cloud-config" || !got.Spec.ControllerDriven() ||
-		got.Spec.Type.Name() != "n1.medium" || len(got.Spec.Volumes) != 1 || got.Spec.Volumes[0] != want.Volumes[0] ||
-		len(got.Spec.NICs) != 1 || got.Spec.NICs[0].SecurityGroups[0] != want.NICs[0].SecurityGroups[0] ||
+		got.Spec.Type.Name() != "n1.medium" || len(got.Spec.Volumes) != 1 ||
+		got.Spec.Volumes[0] != want.Volumes[0] ||
+		len(got.Spec.NICs) != 1 ||
+		got.Spec.NICs[0].SecurityGroups[0] != want.NICs[0].SecurityGroups[0] ||
 		!got.Spec.Image.IsZero() {
 		f.t.Fatalf("instance = %+v", got)
 	}
@@ -77,7 +89,9 @@ func controllerRoundTrip(f fixture) {
 	wantCode(f.t, err, compute.CodeFailedPrecondition)
 	_, err = f.s.Instance(context.Background(), ok(compute.ParseInstanceID("web-2")))
 	wantCode(f.t, err, compute.CodeNotFound)
-	if _, err := f.s.OperationByRequest(context.Background(), ok(compute.ParseRequestID("req-2"))); compute.CodeOf(err) != compute.CodeNotFound {
+	if _, err := f.s.OperationByRequest(context.Background(), ok(compute.ParseRequestID("req-2"))); compute.CodeOf(
+		err,
+	) != compute.CodeNotFound {
 		f.t.Fatalf("failed create left an operation: %v", err)
 	}
 	// Another volume is fine.
@@ -158,6 +172,34 @@ func attachTimesRoundTrip(f fixture) {
 	}
 }
 
+// deleteOnTerminationRoundTrips: a boot volume kept and a data volume
+// deleted on termination, the reverse of the EC2 defaults, read back from
+// Instance and Instances.
+func deleteOnTerminationRoundTrips(f fixture) {
+	spec := controllerSpec("web-1", "root", 1, compute.PowerRunning)
+	spec.Volumes = append(spec.Volumes, compute.VolumeAttachment{
+		Volume: ok(compute.ParseVolumeRef(volPrefix + "data")), DeviceName: "vdb", DeleteOnTermination: true,
+	})
+	op, err := compute.NewOperation(compute.Env{Now: t0, Rand: rand.Reader}, ok(compute.ParseRequestID("req-1")),
+		createIntent("web-1", "root"), compute.Change{Spec: spec, Write: true})
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	change := store.DesiredChange{Op: op, Spec: spec, Write: true}
+	if _, err := f.s.CommitDesired(context.Background(), change); err != nil {
+		f.t.Fatal(err)
+	}
+	page, err := f.s.Instances(context.Background(), store.InstanceQuery{})
+	if err != nil || len(page.Items) != 1 {
+		f.t.Fatalf("listed instances = %+v, %v", page.Items, err)
+	}
+	for _, got := range []compute.Instance{f.instance("web-1"), page.Items[0]} {
+		if v := got.Spec.Volumes; len(v) != 2 || v[0].DeleteOnTermination || !v[1].DeleteOnTermination {
+			f.t.Fatalf("volumes = %+v, want the boot volume kept and the data volume deleted on termination", v)
+		}
+	}
+}
+
 func controllerNotUnconverged(f fixture) {
 	f.mustCreateControllerDriven("req-1", "web-1", "root", t0)
 	f.mustCommit("req-2", runIntent("vws.small"), instanceSpec(1, 1, compute.PowerRunning), true)
@@ -184,7 +226,9 @@ func reportSettles(f fixture) {
 		}},
 	}
 
-	if _, err := f.report("web-1", compute.InstanceReport{Generation: 2, State: compute.ReportReady}, t1); compute.CodeOf(err) != compute.CodeAborted {
+	if _, err := f.report("web-1", compute.InstanceReport{Generation: 2, State: compute.ReportReady}, t1); compute.CodeOf(
+		err,
+	) != compute.CodeAborted {
 		f.t.Fatalf("report ahead of spec: %v", err)
 	}
 	f.wantState(op, compute.OperationPending)
@@ -193,7 +237,8 @@ func reportSettles(f fixture) {
 	if err != nil {
 		f.t.Fatal(err)
 	}
-	if got.Status.Observed.Generation != 1 || got.Status.Report.Node != "host-a" || len(got.Status.Report.Interfaces) != 1 {
+	if got.Status.Observed.Generation != 1 || got.Status.Report.Node != "host-a" ||
+		len(got.Status.Report.Interfaces) != 1 {
 		f.t.Fatalf("after report = %+v", got.Status)
 	}
 	vols := f.instance("web-1").Status.Report.Volumes
@@ -272,7 +317,8 @@ func attachClaimsVolumes(f fixture) {
 	data := withData(controllerSpec("web-1", "root-1", 1, compute.PowerRunning), 2, "data", "pvc-data")
 	f.mustCommit("req-4", attachIntent("web-1", data), data, true)
 	got := f.instance("web-1").Spec
-	if len(got.Volumes) != 2 || got.Volumes[1].Claim != "pvc-data" || got.Volumes[0].Volume.String() != volPrefix+"root-1" {
+	if len(got.Volumes) != 2 || got.Volumes[1].Claim != "pvc-data" ||
+		got.Volumes[0].Volume.String() != volPrefix+"root-1" {
 		f.t.Fatalf("after attach = %+v", got.Volumes)
 	}
 
