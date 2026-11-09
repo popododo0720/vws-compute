@@ -142,3 +142,42 @@ func TestReportedAttachTimeComesFromTheSpec(t *testing.T) {
 		t.Fatalf("a volume in neither spec nor report took attach time %v from the caller", got)
 	}
 }
+
+// TestMovedVolumeKeepsTheOldAttachmentsTime: after an update moves a volume
+// to another device, a report still detaching the old device keeps the old
+// attachment's time, and the new device reports the new one.
+func TestMovedVolumeKeepsTheOldAttachmentsTime(t *testing.T) {
+	first, second := t0.Add(-time.Hour), t0
+	inst := controllerDriven(compute.PowerRunning)
+	old := vol("data", "vdb")
+	old.AttachTime = first
+	inst.Spec.Volumes = []compute.VolumeAttachment{old}
+	rep := compute.InstanceReport{
+		Node: controllerNode, Generation: 2, State: compute.ReportReady, Power: compute.PowerRunning,
+		Volumes: []compute.ObservedVolume{{Volume: old.Volume, DeviceName: "vdb", State: compute.AttachAttached}},
+	}
+	inst.Status = ok3(compute.ApplyReport(inst, rep, first))
+
+	moved := old
+	moved.DeviceName, moved.AttachTime = "vdc", second
+	inst.Spec.Generation, inst.Spec.Volumes = 3, []compute.VolumeAttachment{moved}
+	rep.Volumes[0].State = compute.AttachDetaching
+	inst.Status = ok3(compute.ApplyReport(inst, rep, second))
+	if got := inst.Status.Report.Volumes[0].AttachTime; !got.Equal(first) {
+		t.Fatalf("old device detaching attach time = %v, want %v", got, first)
+	}
+
+	rep.Generation = 3
+	rep.Volumes = []compute.ObservedVolume{{Volume: old.Volume, DeviceName: "vdc", State: compute.AttachAttaching}}
+	inst.Status = ok3(compute.ApplyReport(inst, rep, second))
+	if got := inst.Status.Report.Volumes[0].AttachTime; !got.Equal(second) {
+		t.Fatalf("new device attach time = %v, want %v", got, second)
+	}
+}
+
+func ok3(st compute.InstanceStatus, _ bool, err error) compute.InstanceStatus {
+	if err != nil {
+		panic(err)
+	}
+	return st
+}

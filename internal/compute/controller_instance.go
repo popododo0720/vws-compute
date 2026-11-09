@@ -236,8 +236,9 @@ func ApplyReport(inst Instance, rep InstanceReport, now time.Time) (InstanceStat
 }
 
 // attachTimes copies reported with each AttachTime taken from the spec entry
-// of its volume, or, for a volume no longer in the spec (DETACHING), from the
-// stored report. A volume found in neither has none.
+// of its attachment, or, for one no longer in the spec (DETACHING), from the
+// stored report. An attachment is a volume on a device, so the old device of
+// a moved volume keeps its own time. One found in neither has none.
 func attachTimes(reported []ObservedVolume, spec []VolumeAttachment, stored []ObservedVolume) []ObservedVolume {
 	if reported == nil {
 		return nil
@@ -245,9 +246,11 @@ func attachTimes(reported []ObservedVolume, spec []VolumeAttachment, stored []Ob
 	out := make([]ObservedVolume, len(reported))
 	for i, v := range reported {
 		v.AttachTime = time.Time{}
-		if j := slices.IndexFunc(spec, func(a VolumeAttachment) bool { return a.Volume == v.Volume }); j >= 0 {
+		inSpec := func(a VolumeAttachment) bool { return a.Volume == v.Volume && a.DeviceName == v.DeviceName }
+		wasReported := func(o ObservedVolume) bool { return o.Volume == v.Volume && o.DeviceName == v.DeviceName }
+		if j := slices.IndexFunc(spec, inSpec); j >= 0 {
 			v.AttachTime = spec[j].AttachTime
-		} else if j := slices.IndexFunc(stored, func(o ObservedVolume) bool { return o.Volume == v.Volume }); j >= 0 {
+		} else if j := slices.IndexFunc(stored, wasReported); j >= 0 {
 			v.AttachTime = stored[j].AttachTime
 		}
 		out[i] = v
