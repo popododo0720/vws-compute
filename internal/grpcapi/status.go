@@ -33,14 +33,20 @@ func invalidSpec(msg string) error {
 	return withReason(codes.InvalidArgument, "INVALID_SPEC", msg)
 }
 
-// zoneMismatch is INVALID_SPEC with the EC2 code InvalidVolume.ZoneMismatch
-// in ErrorInfo metadata aws_code, so the EC2 edge can answer as AttachVolume
-// does without parsing the message.
-func zoneMismatch(msg string) error {
-	return withInfo(codes.InvalidArgument, &errdetails.ErrorInfo{
-		Reason: "INVALID_SPEC", Domain: errorDomain,
-		Metadata: map[string]string{"aws_code": "InvalidVolume.ZoneMismatch"},
+// withAWSCode is withReason plus the EC2 error code in ErrorInfo metadata
+// aws_code, so the EC2 edge answers with that code without parsing the
+// message.
+func withAWSCode(code codes.Code, reason, awsCode, msg string) error {
+	return withInfo(code, &errdetails.ErrorInfo{
+		Reason: reason, Domain: errorDomain,
+		Metadata: map[string]string{"aws_code": awsCode},
 	}, msg)
+}
+
+// zoneMismatch is INVALID_SPEC with aws_code InvalidVolume.ZoneMismatch, as
+// EC2 AttachVolume answers.
+func zoneMismatch(msg string) error {
+	return withAWSCode(codes.InvalidArgument, "INVALID_SPEC", "InvalidVolume.ZoneMismatch", msg)
 }
 
 func invalidID(msg string) error {
