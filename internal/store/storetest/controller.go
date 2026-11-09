@@ -122,6 +122,42 @@ func userDataRawRoundTrip(f fixture) {
 	}
 }
 
+// attachTimesRoundTrip: the spec entry's attach time and the one ApplyReport
+// puts on the reported entry read back from Instance and Instances.
+func attachTimesRoundTrip(f fixture) {
+	spec := controllerSpec("web-1", "root", 1, compute.PowerRunning)
+	spec.Volumes[0].AttachTime = t0
+	op, err := compute.NewOperation(compute.Env{Now: t0, Rand: rand.Reader}, ok(compute.ParseRequestID("req-1")),
+		createIntent("web-1", "root"), compute.Change{Spec: spec, Write: true})
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	change := store.DesiredChange{Op: op, Spec: spec, Write: true}
+	if _, err := f.s.CommitDesired(context.Background(), change); err != nil {
+		f.t.Fatal(err)
+	}
+	if _, err := f.report("web-1", compute.InstanceReport{
+		Node: "host-a", Generation: 1, State: compute.ReportReady, Power: compute.PowerRunning,
+		Volumes: []compute.ObservedVolume{{
+			Volume: spec.Volumes[0].Volume, DeviceName: "vda", State: compute.AttachAttached, StateTime: t1, AttachTime: t1,
+		}},
+	}, t1); err != nil {
+		f.t.Fatal(err)
+	}
+	page, err := f.s.Instances(context.Background(), store.InstanceQuery{})
+	if err != nil || len(page.Items) != 1 {
+		f.t.Fatalf("listed instances = %+v, %v", page.Items, err)
+	}
+	for _, got := range []compute.Instance{f.instance("web-1"), page.Items[0]} {
+		if a := got.Spec.Volumes[0].AttachTime; !a.Equal(t0) {
+			f.t.Fatalf("spec attach time = %v, want %v", a, t0)
+		}
+		if a := got.Status.Report.Volumes[0].AttachTime; !a.Equal(t0) {
+			f.t.Fatalf("reported attach time = %v, want the spec's %v", a, t0)
+		}
+	}
+}
+
 func controllerNotUnconverged(f fixture) {
 	f.mustCreateControllerDriven("req-1", "web-1", "root", t0)
 	f.mustCommit("req-2", runIntent("vws.small"), instanceSpec(1, 1, compute.PowerRunning), true)

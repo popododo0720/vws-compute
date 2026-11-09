@@ -115,7 +115,11 @@ func instancePB(i compute.Instance, name string) *computev1.Instance {
 		spec.UserDataRaw = []byte(i.Spec.UserDataRaw)
 	}
 	for _, v := range i.Spec.Volumes {
-		spec.Volumes = append(spec.Volumes, &computev1.VolumeAttachment{Volume: v.Volume.String(), DeviceName: v.DeviceName, Boot: v.Boot})
+		out := &computev1.VolumeAttachment{Volume: v.Volume.String(), DeviceName: v.DeviceName, Boot: v.Boot}
+		if !v.AttachTime.IsZero() {
+			out.AttachTime = timestamppb.New(v.AttachTime)
+		}
+		spec.Volumes = append(spec.Volumes, out)
 	}
 	for _, n := range i.Spec.NICs {
 		spec.NetworkInterfaces = append(spec.NetworkInterfaces, &computev1.NetworkInterface{
@@ -153,6 +157,9 @@ func instancePB(i compute.Instance, name string) *computev1.Instance {
 			}
 			if !v.StateTime.IsZero() {
 				out.StateTime = timestamppb.New(v.StateTime)
+			}
+			if !v.AttachTime.IsZero() {
+				out.AttachTime = timestamppb.New(v.AttachTime)
 			}
 			status.Volumes = append(status.Volumes, out)
 		}

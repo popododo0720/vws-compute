@@ -138,6 +138,8 @@ func volumesSettled(spec compute.InstanceSpec, vols []compute.ObservedVolume, re
 	return len(vols) == want
 }
 
+// sameVolumes ignores AttachTime: the store sets it, not the node, so a report
+// this reconciler builds never carries it.
 func sameVolumes(a, b []compute.ObservedVolume) bool {
 	return slices.EqualFunc(a, b, func(x, y compute.ObservedVolume) bool {
 		return x.Volume == y.Volume && x.DeviceName == y.DeviceName && x.State == y.State && x.StateTime.Equal(y.StateTime)

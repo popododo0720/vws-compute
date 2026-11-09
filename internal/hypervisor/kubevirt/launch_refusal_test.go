@@ -4,6 +4,7 @@ import (
 	"context"
 	"slices"
 	"testing"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -152,7 +153,10 @@ func TestRefusedDataVolumeFailsTheLaunch(t *testing.T) {
 			t.Fatalf("refused volume %s still desired after start: %+v", v.Volume, inst.Spec.Volumes)
 		}
 	}
-	if !slices.Contains(inst.Spec.Volumes, okEntry) {
+	if !slices.ContainsFunc(inst.Spec.Volumes, func(v compute.VolumeAttachment) bool {
+		v.AttachTime = time.Time{}
+		return v == okEntry
+	}) {
 		t.Fatalf("/dev/sdg dropped by start: %+v", inst.Spec.Volumes)
 	}
 	if got := runStrategy(t, f.c, f.ns, f.id.String()); got != "Always" {
