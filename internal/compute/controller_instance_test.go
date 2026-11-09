@@ -165,7 +165,7 @@ func createParams() compute.CreateInstanceParams {
 			Volume: ok(compute.ParseVolumeRef("projects/p/zones/z/volumes/root")), DeviceName: "vda", Boot: true,
 			DeleteOnTermination: true,
 		}},
-		NICs:    []compute.NetworkInterface{{DeviceName: "eth0", Subnet: "projects/p/regions/r/vpcs/v/subnets/s"}},
+		NICs: []compute.NetworkInterface{{DeviceName: "eth0", Subnet: "projects/p/regions/r/vpcs/v/subnets/s"}},
 	}
 }
 
