@@ -252,7 +252,7 @@ func (s *Store) write(ctx context.Context, e *entry) error {
 		return tooLarge(e.ref, len(cm.Data[recordKey]))
 	}
 	if err == nil {
-		s.m.recordSize(ctx, len(cm.Data[recordKey]))
+		s.m.recordSize(ctx, e.ref.Kind, len(cm.Data[recordKey]))
 	}
 	return s.cas(ctx, err)
 }

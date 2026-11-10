@@ -232,14 +232,14 @@ func (s *Store) apply(ctx context.Context, c store.DesiredChange, ref compute.Re
 		return true, nil
 	})
 	if err == nil && wrote {
-		s.m.prunedOperations(ctx, len(pruned))
+		s.m.prunedOperations(ctx, ref.Kind, len(pruned))
 		// The resource no longer holds these operations, so their request
 		// ids are forgotten. A failed delete is harmless: Repair removes an
 		// index whose operation the resource does not hold.
 		for _, op := range pruned {
 			deleted, _ := s.releaseIndex(ctx, op.Request, op.ID) //nolint:errcheck // best effort: Repair removes what is left
 			if deleted {
-				s.m.releasedIndex(ctx)
+				s.m.releasedIndex(ctx, ref.Kind)
 			}
 		}
 	}

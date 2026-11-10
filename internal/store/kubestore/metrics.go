@@ -8,6 +8,8 @@ import (
 	"go.opentelemetry.io/otel/metric/noop"
 
 	"github.com/popododo0720/vws-lib/obs"
+
+	"github.com/popododo0720/vws-compute/internal/compute"
 )
 
 // Names of the operation history and record size metrics.
@@ -59,16 +61,20 @@ func newMeters() meters {
 	return meters{pruned: pruned, released: released, size: size}
 }
 
-func (m meters) prunedOperations(ctx context.Context, n int) {
+func (m meters) prunedOperations(ctx context.Context, k compute.Kind, n int) {
 	if n > 0 {
-		m.pruned.Add(ctx, int64(n), obs.Attrs(obs.LabelStore, storeLabel))
+		m.pruned.Add(ctx, int64(n), attrs(k))
 	}
 }
 
-func (m meters) releasedIndex(ctx context.Context) {
-	m.released.Add(ctx, 1, obs.Attrs(obs.LabelStore, storeLabel))
+func (m meters) releasedIndex(ctx context.Context, k compute.Kind) {
+	m.released.Add(ctx, 1, attrs(k))
 }
 
-func (m meters) recordSize(ctx context.Context, n int) {
-	m.size.Record(ctx, int64(n), obs.Attrs(obs.LabelStore, storeLabel))
+func (m meters) recordSize(ctx context.Context, k compute.Kind, n int) {
+	m.size.Record(ctx, int64(n), attrs(k))
+}
+
+func attrs(k compute.Kind) metric.MeasurementOption {
+	return obs.Attrs(obs.LabelStore, storeLabel, obs.LabelKind, k.String())
 }
