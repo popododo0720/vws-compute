@@ -535,14 +535,14 @@ func (a *Agent) update(ctx context.Context, vm *unstructured.Unstructured, spec 
 	return nil
 }
 
-func epoch(n uint32) string { return strconv.FormatUint(uint64(n), 10) }
+func epoch(n int64) string { return strconv.FormatUint(uint64(n), 10) }
 
-func appliedEpoch(vm *unstructured.Unstructured) uint32 {
-	n, err := strconv.ParseUint(vm.GetAnnotations()[AnnotationRebootEpoch], 10, 32)
+func appliedEpoch(vm *unstructured.Unstructured) int64 {
+	n, err := strconv.ParseUint(vm.GetAnnotations()[AnnotationRebootEpoch], 10, 63)
 	if err != nil {
 		return 0
 	}
-	return uint32(n)
+	return int64(n)
 }
 
 // rootClaim returns the claim the root disk is a plain PVC volume of, or ""

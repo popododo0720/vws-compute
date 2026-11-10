@@ -183,13 +183,16 @@ func (o Operation) SettledAt() time.Time { return o.settledAt }
 // the repository invariant
 //
 //	no Pending operation has TargetGeneration <= observed generation,
-//	and none has TargetGeneration < spec generation.
+//	and no non-reboot Pending operation has TargetGeneration < spec generation.
 func Settle(o Operation, spec int64, obs Observed, now time.Time) Operation {
 	if o.state != OperationPending {
 		return o
 	}
 	switch {
 	case o.MetadataOnly:
+		o.state = OperationSucceeded
+	case o.Kind == OpRebootInstance && obs.Generation >= o.TargetGeneration &&
+		obs.Failure == nil && obs.AttachmentFailure == nil:
 		o.state = OperationSucceeded
 	case obs.Generation > o.TargetGeneration:
 		o.state = OperationSuperseded
@@ -202,7 +205,7 @@ func Settle(o Operation, spec int64, obs Observed, now time.Time) Operation {
 		o.state, o.failure = OperationFailed, &failure
 	case obs.Generation == o.TargetGeneration:
 		o.state = OperationSucceeded
-	case spec > o.TargetGeneration:
+	case spec > o.TargetGeneration && o.Kind != OpRebootInstance:
 		o.state = OperationSuperseded
 	default:
 		return o

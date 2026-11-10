@@ -31,6 +31,7 @@ const (
 	// answers with InvalidVolume.ZoneMismatch. It is an invalid request:
 	// retrying it fails the same way.
 	CodeZoneMismatch
+	CodeIncorrectState
 )
 
 var codeNames = [...]string{
@@ -43,6 +44,7 @@ var codeNames = [...]string{
 	CodeInternal:           "Internal",
 	CodeLimitExceeded:      "LimitExceeded",
 	CodeZoneMismatch:       "ZoneMismatch",
+	CodeIncorrectState:     "IncorrectState",
 }
 
 func (c Code) String() string {

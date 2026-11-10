@@ -436,13 +436,14 @@ func unconverged(f fixture) {
 func roundTrip(f fixture) {
 	ctx := context.Background()
 	inst := instanceSpec(1, 1, compute.PowerRunning)
+	inst.RebootEpoch = 1 << 40
 	inst.Type = ok(compute.ParseInstanceType("vws.medium"))
 	inst.Key = &compute.AuthorizedKey{Name: ok(compute.ParseKeyName("deploy")), PublicKey: ok(compute.ParsePublicKey(rsa2048))}
 	op := f.mustCommit("rt-1", runIntent("vws.medium"), inst, true)
 	st := compute.InstanceStatus{
 		Observed:    compute.Observed{Generation: 0},
 		Machine:     compute.MachineOff,
-		RebootEpoch: 2,
+		RebootEpoch: 1 << 40,
 		Retry:       compute.Retry{Attempts: 3, At: t0.Add(8 * time.Second), LastError: "agent unreachable"},
 		UpdatedAt:   t0.Add(time.Second),
 	}

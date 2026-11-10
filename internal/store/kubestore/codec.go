@@ -116,7 +116,7 @@ type instanceJSON struct {
 	KeyName     string `json:"key_name,omitempty"`
 	KeyPublic   string `json:"key_public,omitempty"`
 	Power       uint8  `json:"power"`
-	RebootEpoch uint32 `json:"reboot_epoch,omitempty"`
+	RebootEpoch int64  `json:"reboot_epoch,omitempty"`
 	Project     string `json:"project,omitempty"`
 	Zone        string `json:"zone,omitempty"`
 	UserData    string `json:"user_data,omitempty"`
@@ -129,7 +129,7 @@ type instanceJSON struct {
 
 	Observed     observedJSON `json:"observed"`
 	Machine      uint8        `json:"machine,omitempty"`
-	AppliedEpoch uint32       `json:"applied_epoch,omitempty"`
+	AppliedEpoch int64        `json:"applied_epoch,omitempty"`
 	Retry        retryJSON    `json:"retry"`
 	UpdatedAt    int64        `json:"updated_at,omitempty"`
 	Report       reportJSON   `json:"report"`

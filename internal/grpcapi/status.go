@@ -92,6 +92,8 @@ func toStatus(err error) error {
 	switch compute.CodeOf(err) {
 	case compute.CodeInvalid:
 		return invalidSpec(err.Error())
+	case compute.CodeIncorrectState:
+		return withAWSCode(codes.FailedPrecondition, "INCORRECT_STATE", "IncorrectInstanceState", err.Error())
 	case compute.CodeZoneMismatch:
 		return zoneMismatch(err.Error())
 	case compute.CodeNotFound:
@@ -121,7 +123,7 @@ func grpcCode(c compute.Code) codes.Code {
 		return codes.AlreadyExists
 	case compute.CodeRequestMismatch, compute.CodeAborted:
 		return codes.Aborted
-	case compute.CodeFailedPrecondition:
+	case compute.CodeFailedPrecondition, compute.CodeIncorrectState:
 		return codes.FailedPrecondition
 	case compute.CodeLimitExceeded:
 		return codes.ResourceExhausted

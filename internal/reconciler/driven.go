@@ -49,7 +49,10 @@ func (r *Reconciler) convergeDriven(ctx context.Context, inst compute.Instance) 
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
-	rep := compute.InstanceReport{Generation: spec.Generation, Power: spec.Power}
+	rep := compute.InstanceReport{Generation: spec.Generation, Power: spec.Power, RebootEpoch: inst.Status.RebootEpoch}
+	if agentErr == nil {
+		rep.RebootEpoch = spec.RebootEpoch
+	}
 	switch {
 	case agentErr == nil && spec.Power == compute.PowerTerminated:
 		rep.State = compute.ReportDeleting

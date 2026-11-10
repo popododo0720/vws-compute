@@ -41,11 +41,10 @@ type InstanceSpec struct {
 	// UTF-8, held in a string so the spec stays immutable. At most one of
 	// UserData and UserDataRaw is set.
 	UserDataRaw string
-	// RebootEpoch counts the reboots RebootInstance accepted in earlier
-	// releases. No intent advances it any more. Rebooting is a level, not an
+	// RebootEpoch counts the reboots accepted by RebootInstance. Rebooting is a level, not an
 	// edge: the agent reboots once whenever the epoch it last applied is
 	// behind this one.
-	RebootEpoch uint32
+	RebootEpoch int64
 }
 
 func (s InstanceSpec) Ref() Ref   { return s.ID.Ref() }
@@ -76,7 +75,7 @@ type InstanceStatus struct {
 	Observed Observed
 	Machine  MachineState
 	// RebootEpoch is the epoch the agent last applied.
-	RebootEpoch uint32
+	RebootEpoch int64
 	Retry       Retry
 	UpdatedAt   time.Time
 	// Report is the last accepted controller report. Only ApplyReport sets it.

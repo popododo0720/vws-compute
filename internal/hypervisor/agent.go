@@ -46,7 +46,7 @@ type MachineSpec struct {
 	// RebootEpoch is a level. A running machine whose last applied epoch is
 	// behind it reboots once and records it. Booting a machine applies the
 	// epoch without an extra reboot.
-	RebootEpoch uint32
+	RebootEpoch int64
 	// Volumes is the full set of data volumes attached to the machine, on top
 	// of its root disk. The agent attaches the ones that are missing and
 	// detaches the ones that are no longer listed, on a running machine too.

@@ -157,6 +157,7 @@ var classifiedSpecFields = map[string]map[string]bool{
 		"key_pair":           true,
 		"user_data":          true,
 		"user_data_raw":      true,
+		"reboot_count":       true,
 		"network_interfaces": true,
 		"volumes":            true,
 	},

@@ -170,6 +170,7 @@ func (i Instance) Removed() bool {
 
 // InstanceReport is one controller report for one instance, already parsed.
 type InstanceReport struct {
+	RebootEpoch int64
 	// Node is observed.node.
 	Node string
 	// Generation is observed.generation.
@@ -220,6 +221,8 @@ func ApplyReport(inst Instance, rep InstanceReport, now time.Time) (InstanceStat
 		return st, false, Errorf(CodeFailedPrecondition, "instance %s is not controller-driven", spec.ID)
 	case rep.Generation > spec.Generation:
 		return st, false, Errorf(CodeAborted, "observed generation %d is ahead of the stored generation %d", rep.Generation, spec.Generation)
+	case rep.RebootEpoch < 0 || rep.RebootEpoch > spec.RebootEpoch:
+		return st, false, Errorf(CodeInvalid, "reported reboot count is outside the desired range")
 	case rep.State == ReportUnspecified || rep.State > ReportError:
 		return st, false, Errorf(CodeInvalid, "observed.state is required")
 	case rep.Generation < st.Observed.Generation:
@@ -231,6 +234,9 @@ func ApplyReport(inst Instance, rep InstanceReport, now time.Time) (InstanceStat
 		}
 	}
 	next := st
+	if rep.RebootEpoch > next.RebootEpoch {
+		next.RebootEpoch = rep.RebootEpoch
+	}
 	next.Report = Report{
 		Node: rep.Node, State: rep.State, Message: rep.Message, Power: rep.Power,
 		Interfaces: append([]ObservedInterface(nil), rep.Interfaces...),
@@ -245,7 +251,7 @@ func ApplyReport(inst Instance, rep InstanceReport, now time.Time) (InstanceStat
 		next.Observed = Observed{Generation: rep.Generation, Failure: &Failure{
 			Code: code, Message: rep.Message, Reason: rep.Reason,
 		}, AttachmentFailure: rep.AttachmentFailure}
-	case rep.State == ReportReady && spec.Power != PowerTerminated:
+	case rep.State == ReportReady && spec.Power != PowerTerminated && next.RebootEpoch >= spec.RebootEpoch:
 		next.Observed = Observed{Generation: rep.Generation, AttachmentFailure: rep.AttachmentFailure}
 	case rep.State == ReportDeleting && spec.Power == PowerTerminated:
 		next.Observed = Observed{Generation: rep.Generation}

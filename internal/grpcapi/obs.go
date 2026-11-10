@@ -19,7 +19,7 @@ const ServiceName = "compute"
 
 // audited are the RPC name prefixes that change state. A report is not here:
 // it carries observed state from a controller and would drown the audit log.
-var audited = []string{"Create", "Update", "Delete", "Stop", "Start", "Attach", "Detach", "Import"}
+var audited = []string{"Create", "Update", "Delete", "Stop", "Start", "Attach", "Detach", "Import", "Reboot"}
 
 // ServerOptions is the one place the server interceptors are chosen: vws-lib
 // grpcobs (tracing, vws.rpc.* metrics, request ids, panic recovery, one error

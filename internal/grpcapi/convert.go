@@ -105,6 +105,7 @@ func instancePB(i compute.Instance, name string) *computev1.Instance {
 	life := i.Lifecycle()
 	spec := &computev1.InstanceSpec{
 		MachineType: i.Spec.Type.Name(),
+		RebootCount: i.Spec.RebootEpoch,
 		Power:       powerPB(i.Spec.Power),
 		UserData:    i.Spec.UserData,
 	}
@@ -139,7 +140,8 @@ func instancePB(i compute.Instance, name string) *computev1.Instance {
 			Generation: i.Status.Observed.Generation,
 			Message:    message,
 		},
-		Power: powerPB(i.Spec.Power),
+		Power:       powerPB(i.Spec.Power),
+		RebootCount: i.Status.RebootEpoch,
 	}
 	if i.Spec.ControllerDriven() {
 		state = controllerDrivenReconciliation(i)
@@ -314,6 +316,9 @@ func (s *server) operationPB(ctx context.Context, project, resourceName string, 
 		Generation: op.TargetGeneration,
 		RequestId:  op.Request.String(),
 		CreateTime: timestamppb.New(op.CreatedAt),
+	}
+	if op.Kind == compute.OpRebootInstance {
+		md.Action = "RebootInstances"
 	}
 	if op.State().Terminal() {
 		md.EndTime = timestamppb.New(op.SettledAt())

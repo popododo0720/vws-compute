@@ -438,7 +438,10 @@ func (s *server) ReportInstanceStatus(ctx context.Context, r *computev1.ReportIn
 
 func parseInstanceReport(st *computev1.InstanceStatus) (compute.InstanceReport, error) {
 	obs := st.GetObserved()
-	rep := compute.InstanceReport{Node: obs.GetNode(), Generation: obs.GetGeneration(), Message: obs.GetMessage()}
+	rep := compute.InstanceReport{
+		RebootEpoch: st.GetRebootCount(), Node: obs.GetNode(),
+		Generation: obs.GetGeneration(), Message: obs.GetMessage(),
+	}
 	switch obs.GetState() {
 	case commonv1.ReconciliationState_RECONCILIATION_STATE_PENDING:
 		rep.State = compute.ReportPending

@@ -35,7 +35,7 @@ type Machine struct {
 	UserData string
 	// Power is PowerOff or PowerOn. Destroyed machines are not returned.
 	Power        hypervisor.Power
-	AppliedEpoch uint32
+	AppliedEpoch int64
 	Volumes      []hypervisor.Volume
 	// Subnet and Interfaces are fixed at creation, as the real agent does.
 	Subnet     string
